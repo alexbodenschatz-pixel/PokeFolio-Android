@@ -1,0 +1,18 @@
+<resources>
+    <string name="app_name">PokéFolio</string>
+    <string name="camera_permission_required">Für den Kartenscanner wird der Kamerazugriff benötigt.</string>
+    <string name="camera_start_failed">Die Kamera konnte nicht gestartet werden.</string>
+    <string name="camera_frame_instructions">Karte vollständig in den Rahmen halten\nZum Fokussieren auf die Karte tippen</string>
+    <string name="camera_starting">Kamera wird gestartet …</string>
+    <string name="camera_preview_missing">Keine Kameravorschau. Bitte Scanner erneut öffnen.</string>
+    <string name="camera_preview_description">Kameravorschau für die Pokémon-Karte</string>
+    <string name="scanner_cancel">Abbrechen</string>
+    <string name="scanner_cancel_description">Scanner abbrechen</string>
+    <string name="camera_light">Licht</string>
+    <string name="camera_light_off">Licht aus</string>
+    <string name="camera_light_on_description">Kameralicht einschalten</string>
+    <string name="camera_light_off_description">Kameralicht ausschalten</string>
+    <string name="capture_card">Karte aufnehmen</string>
+    <string name="capture_card_description">Karte im Scanrahmen fotografieren</string>
+    <string name="processing_card">Verarbeite …</string>
+</resources>

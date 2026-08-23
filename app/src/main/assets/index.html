@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>PokéFolio</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header>
+  <div><b>PokéFolio</b><small>Android Standalone</small></div>
+  <span class="pill">v0.7.0</span>
+</header>
+<main>
+  <section id="scan" class="page active">
+    <h1>Messe-Schnellcheck</h1>
+    <p class="muted">Karte scannen, automatisch erkennen und erst danach entscheiden, ob sie gespeichert wird.</p>
+    <div class="tcgs">
+      <button data-tcg="auto" class="active">Automatisch</button>
+      <button data-tcg="pokemon">Pokémon</button>
+      <button data-tcg="yugioh">Yu-Gi-Oh!</button>
+      <button data-tcg="onepiece">One Piece</button>
+    </div>
+
+    <div class="photos">
+      <label class="photo-card">
+        <input id="front" type="file" accept="image/*" capture="environment">
+        <div class="photo-placeholder"><div class="mini-frame"></div><b>Vorderseite</b><span>Kamera mit Scanrahmen oder Galerie</span></div>
+        <img id="frontImg" alt="Vorschau der Kartenvorderseite">
+      </label>
+      <label class="photo-card">
+        <input id="back" type="file" accept="image/*" capture="environment">
+        <div class="photo-placeholder"><div class="mini-frame"></div><b>Rückseite</b><span>für bessere Bewertung empfohlen</span></div>
+        <img id="backImg" alt="Vorschau der Kartenrückseite">
+      </label>
+    </div>
+
+    <div id="recognitionBox" class="recognition card">
+      <div class="recognition-head"><b>Kartenerkennung</b><span id="recognitionState" class="status neutral">Noch kein Scan</span></div>
+      <p id="recognitionText" class="muted">Nach der Vorderseitenaufnahme werden Name, Set und Kartennummer automatisch gesucht.</p>
+      <div id="candidateList"></div>
+      <button id="recognize" class="secondary compact">Erkennung erneut starten</button>
+      <details id="manualDetails">
+        <summary>Manuell suchen</summary>
+        <div class="manual-search"><input id="manualQuery" placeholder="Name oder Kartencode"><button id="manualSearch" class="secondary">Suchen</button></div>
+      </details>
+    </div>
+
+    <div class="card">
+      <label>Name<input id="name" placeholder="wird möglichst automatisch erkannt"></label>
+      <div class="row"><label>Set<input id="set"></label><label>Nummer<input id="number"></label></div>
+      <label>Sprache<select id="lang"><option value="de">Deutsch</option><option value="en">Englisch</option><option value="ja">Japanisch</option></select></label>
+    </div>
+    <button id="analyze" class="primary">Vorgrading starten</button>
+    <div id="result"></div>
+  </section>
+
+  <section id="collection" class="page">
+    <h1>Sammlung</h1>
+    <div class="filters"><button data-filter="all" class="active">Alle</button><button data-filter="pokemon">Pokémon</button><button data-filter="yugioh">Yu-Gi-Oh!</button><button data-filter="onepiece">One Piece</button></div>
+    <div id="collectionList"></div>
+  </section>
+
+  <section id="settings" class="page">
+    <h1>System</h1>
+    <div class="card"><b>Erkennung v0.7</b><p>OCR läuft lokal auf dem Gerät und prüft mehrere Rotationen, Skalierungen und Kontraststufen. Name, Collector Number, Set, KP/HP, Seltenheit und weitere lesbare Merkmale fließen gemeinsam in den Treffer ein.</p></div>
+    <div class="card"><b>Datenabgleich</b><p>Der Kartenabgleich nutzt Pokémon TCG API, YGOPRODeck und OPTCG API. Bei unsicherem Treffer werden mehrere Kandidaten statt einer erfundenen Zuordnung angezeigt.</p></div>
+    <div class="card"><b>Vorgrading</b><p>Der Score ist eine grobe Smartphone-Vorprüfung und kein offizielles PSA-, CGC- oder TAG-Grading. Echtheit und Zustand werden getrennt behandelt.</p></div>
+  </section>
+</main>
+<nav>
+  <button data-page="scan" class="active">⌁<span>Scan</span></button>
+  <button data-page="collection">▦<span>Sammlung</span></button>
+  <button data-page="settings">⚙<span>System</span></button>
+</nav>
+<canvas id="work" hidden></canvas>
+<script src="recognition-core.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
