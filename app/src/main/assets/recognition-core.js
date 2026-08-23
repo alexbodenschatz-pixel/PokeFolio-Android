@@ -14,7 +14,10 @@
     'pokedex', 'pokédex', 'national', 'nummer', 'größe', 'gewicht', 'entwickelt sich',
     'entwicklung', 'rückzug', 'illus', 'nr.'
   ];
-  const pokemonCollectorPrefixes = new Set(['TG', 'GG', 'SV', 'RC', 'SH']);
+  const pokemonCollectorPrefixes = new Set([
+    'TG', 'GG', 'SV', 'RC', 'SH', 'H',
+    'SWSH', 'SVP', 'SM', 'XY', 'BW', 'DP', 'HGSS', 'PR'
+  ]);
 
   function clamp(value, minimum, maximum) {
     return Math.max(minimum, Math.min(maximum, value));
@@ -150,7 +153,11 @@
         const variant = String(pass.variant || 'einfach');
         const entry = {
           text: value,
-          y: /^kopfzeile-/.test(variant) ? rawY * 0.32 : rawY,
+          y: /^kopfzeile-/.test(variant)
+            ? rawY * 0.32
+            : /^unterkante-/.test(variant)
+              ? 0.70 + rawY * 0.30
+              : rawY,
           pass: passIndex,
           variant
         };
@@ -172,8 +179,31 @@
           const key = numberKey(collector.number) + '/' + numberKey(collector.total);
           if (!seenCollectors.has(key)) {
             seenCollectors.add(key);
-            const positionWeight = line.variant === 'einfach' ? 1 : line.y >= 0.78 ? 1.55 : 1.1;
+            const positionWeight = /^unterkante-/.test(line.variant)
+              ? 1.95
+              : line.variant === 'einfach'
+                ? 1
+                : line.y >= 0.78 ? 1.55 : 1.1;
             addVote(collectorVotes, key, collector, positionWeight);
+          }
+        }
+
+        // Black-Star-Promos und ältere Serien tragen häufig nur eine präfixierte
+        // Nummer ohne Nenner. Sie wird ausschließlich im unteren Kartenbereich
+        // akzeptiert, damit Setcodes und Pokédex-Nummern nicht hineinrutschen.
+        if (line.y >= 0.68 && !/pok[eé]dex|national|nr\.?\s*0*\d/i.test(line.text)) {
+          const promoPattern = /\b((?:SWSH|SVP|HGSS|SM|XY|BW|DP|PR)\s*-?\s*[0-9OIL|]{1,3})\b/gi;
+          let promoMatch;
+          while ((promoMatch = promoPattern.exec(line.text)) !== null) {
+            const promo = cleanOcrDigits(promoMatch[1]).replace(/[^A-Z0-9]/g, '');
+            const parsed = promo.match(/^([A-Z]{1,4})(\d{1,3})$/);
+            if (!parsed || !pokemonCollectorPrefixes.has(parsed[1])) continue;
+            const item = {number: parsed[1] + parsed[2], total: '', prefix: parsed[1]};
+            const key = numberKey(item.number) + '/';
+            if (!seenCollectors.has(key)) {
+              seenCollectors.add(key);
+              addVote(collectorVotes, key, item, /^unterkante-/.test(line.variant) ? 1.8 : 1.2);
+            }
           }
         }
       });
@@ -298,43 +328,75 @@
     const evidence = [];
     const candidateNumber = numberKey(candidate.number);
     const collectors = hints.collectorNumbers || [];
-    const matchingCollector = collectors.find(item => numberKey(item.number) === candidateNumber);
-    const nameScore = bestNameSimilarity(hints, candidate.name, manual);
-    let score = 0;
+    const matchingCollector = candidateNumber
+      ? collectors.find(item => numberKey(item.number) === candidateNumber)
+      : null;
+    const collectorStatus = matchingCollector
+      ? 'match'
+      : collectors.length && candidateNumber ? 'mismatch' : 'unknown';
+    const nameScore = clamp(bestNameSimilarity(hints, candidate.name, manual), 0, 1);
+    let score = nameScore * 0.46;
+    if (nameScore >= 0.78) evidence.push('Name');
 
-    if (matchingCollector) {
-      score += 0.38 + Math.min(0.05, Math.max(0, matchingCollector.votes - 1) * 0.018);
+    const candidateTotals = [candidate.printedTotal, candidate.total, candidate.setTotal]
+      .filter(Boolean)
+      .map(numberKey);
+    const setNumberMatches = Boolean(
+      matchingCollector
+      && matchingCollector.total
+      && candidateTotals.includes(numberKey(matchingCollector.total))
+    );
+    if (collectorStatus === 'match') {
+      score = 0.52 + nameScore * 0.16;
       evidence.push('Kartennummer');
-      const candidateTotals = [candidate.printedTotal, candidate.total, candidate.setTotal]
-        .filter(Boolean)
-        .map(numberKey);
-      if (matchingCollector.total && candidateTotals.includes(numberKey(matchingCollector.total))) {
-        score += 0.24;
+      if (setNumberMatches) {
+        score += 0.12;
         evidence.push('Setnummer');
       }
-      score += nameScore * 0.24;
-    } else if (collectors.length) {
-      score = Math.max(score, Math.max(0, nameScore * 0.72 - 0.06));
-    } else {
-      score += nameScore * (manual ? 0.9 : 0.78);
+    } else if (collectorStatus === 'mismatch') {
+      score -= 0.30;
+      evidence.push('Kartennummer abweichend');
     }
 
-    if (nameScore >= 0.78) evidence.push('Name');
     const setValues = [candidate.set, candidate.setId, candidate.series].filter(Boolean);
     const setScore = (hints.pokemonSetCodes || []).reduce((best, entry) => {
       return Math.max(best, ...setValues.map(value => similarity(entry.value, value)));
     }, 0);
-    if (setScore >= 0.7) {
-      score += 0.06 * setScore;
+    const setDetected = Boolean(
+      ((hints.pokemonSetCodes || []).length && setValues.length)
+      || (matchingCollector && matchingCollector.total && candidateTotals.length)
+    );
+    const setStatus = setNumberMatches || setScore >= 0.72
+      ? 'match'
+      : setDetected && setValues.length ? 'mismatch' : 'unknown';
+    if (setScore >= 0.72) {
+      score += 0.08 * setScore;
       evidence.push('Setcode');
+    } else if (setStatus === 'mismatch') {
+      score -= 0.08;
+      evidence.push('Set abweichend');
     }
-    if (hints.hp && candidate.hp && numberKey(hints.hp) === numberKey(candidate.hp)) {
-      score += 0.05;
+
+    const hpStatus = hints.hp && candidate.hp
+      ? numberKey(hints.hp) === numberKey(candidate.hp) ? 'match' : 'mismatch'
+      : 'unknown';
+    if (hpStatus === 'match') {
+      score += 0.09;
       evidence.push('KP/HP');
+    } else if (hpStatus === 'mismatch') {
+      score -= 0.12;
+      evidence.push('KP/HP abweichend');
     }
-    if (hints.rarityHints && hints.rarityHints.some(value => similarity(value, candidate.rarity) >= 0.72)) {
+
+    const rarityDetected = Boolean((hints.rarityHints || []).length);
+    const rarityMatches = rarityDetected && candidate.rarity
+      && hints.rarityHints.some(value => similarity(value, candidate.rarity) >= 0.72);
+    const rarityStatus = rarityMatches ? 'match' : rarityDetected && candidate.rarity ? 'mismatch' : 'unknown';
+    if (rarityMatches) {
       score += 0.025;
       evidence.push('Seltenheit');
+    } else if (rarityStatus === 'mismatch') {
+      score -= 0.025;
     }
     if (hints.stageHints && hints.stageHints.some(stage => {
       return (candidate.subtypes || []).some(subtype => similarity(stage, subtype) >= 0.68);
@@ -346,14 +408,55 @@
       score += 0.025;
       evidence.push('Illustrator');
     }
+
+    // Kalibrierung vor dem Bildvergleich: Name allein ist nur eine Artbestimmung,
+    // keine Identifikation der gedruckten Variante.
+    if (collectorStatus === 'mismatch') {
+      score = Math.min(score, 0.42);
+    } else if (collectorStatus !== 'match') {
+      score = Math.min(score, hpStatus === 'match' ? 0.63 : 0.54);
+    } else {
+      score = Math.min(score, 0.91);
+    }
     const confidence = clamp(score, 0, 0.99);
-    return {...candidate, confidence, textConfidence: confidence, evidence};
+    return {
+      ...candidate,
+      confidence,
+      textConfidence: confidence,
+      evidence: Array.from(new Set(evidence)),
+      matchDetails: {
+        name: nameScore,
+        collector: collectorStatus,
+        collectorDetected: collectors.map(item => item.number).filter(Boolean),
+        set: setStatus,
+        setScore,
+        hp: hpStatus,
+        rarity: rarityStatus,
+        artwork: null,
+        wholeImage: null,
+        headerImage: null,
+        footerImage: null,
+        visualReliable: null
+      }
+    };
   }
 
   function combineVisualSimilarity(candidate, visualSimilarity) {
-    const visual = Number(visualSimilarity);
+    const visualInput = visualSimilarity && typeof visualSimilarity === 'object'
+      ? visualSimilarity
+      : {similarity: visualSimilarity};
+    const visual = Number(visualInput.similarity);
     if (!Number.isFinite(visual)) return {...candidate};
     const normalizedVisual = clamp(visual, 0, 1);
+    const artwork = clamp(Number.isFinite(Number(visualInput.artwork))
+      ? Number(visualInput.artwork) : normalizedVisual, 0, 1);
+    const whole = clamp(Number.isFinite(Number(visualInput.whole))
+      ? Number(visualInput.whole) : normalizedVisual, 0, 1);
+    const header = clamp(Number.isFinite(Number(visualInput.header))
+      ? Number(visualInput.header) : normalizedVisual, 0, 1);
+    const footer = clamp(Number.isFinite(Number(visualInput.footer))
+      ? Number(visualInput.footer) : normalizedVisual, 0, 1);
+    const visualReliable = visualInput.reliable !== false;
     const textConfidence = clamp(
       Number.isFinite(Number(candidate.textConfidence))
         ? Number(candidate.textConfidence)
@@ -361,37 +464,123 @@
       0,
       0.99
     );
-    // Der Bildvergleich korrigiert den textbasierten Score nur moderat. Dadurch
-    // kann ein ähnliches Artwork eine gute OCR stützen, aber nie allein eine
-    // widersprechende Collector Number überstimmen.
-    const reliability = textConfidence >= 0.9 ? 0.65 : 1;
-    const adjustment = (normalizedVisual - 0.5) * 0.24 * reliability;
-    const confidence = clamp(textConfidence + adjustment, 0, 0.99);
+    const details = {...(candidate.matchDetails || {})};
+    const collectorStatus = details.collector || 'unknown';
+    const hpStatus = details.hp || 'unknown';
+    const nameScore = Number(details.name) || 0;
+    const setStatus = details.set || 'unknown';
+    const reliabilityWeight = visualReliable ? 1 : 0.52;
+    const strongVisual = artwork >= (visualReliable ? 0.82 : 0.89)
+      && normalizedVisual >= (visualReliable ? 0.78 : 0.85);
+    const severeArtworkMismatch = visualReliable && (artwork < 0.56 || normalizedVisual < 0.52);
+
+    let score = textConfidence;
+    score += ((normalizedVisual - 0.5) * 0.18 + (artwork - 0.5) * 0.28) * reliabilityWeight;
+    if (strongVisual && nameScore >= 0.82) score += visualReliable ? 0.18 : 0.08;
+    if (severeArtworkMismatch) score -= 0.18;
+    if (setStatus === 'mismatch') score -= 0.12;
+    if (hpStatus === 'mismatch') score -= 0.08;
+    if (details.rarity === 'mismatch') score -= 0.03;
+
+    if (collectorStatus === 'mismatch') {
+      score -= 0.24;
+      score = Math.min(score, strongVisual ? 0.59 : 0.47);
+    } else if (collectorStatus !== 'match') {
+      if (severeArtworkMismatch) {
+        score = Math.min(score, 0.49);
+      } else if (!strongVisual) {
+        score = Math.min(score, hpStatus === 'match' ? 0.64 : 0.55);
+      } else {
+        score = Math.min(score, visualReliable ? 0.89 : 0.74);
+      }
+    } else if (severeArtworkMismatch) {
+      score = Math.min(score, 0.74);
+    }
+    if (setStatus === 'mismatch') score = Math.min(score, 0.84);
+    if (hpStatus === 'mismatch') score = Math.min(score, 0.86);
+
+    // 80+ braucht exakte Nummer oder einen sehr starken, zuverlässigen
+    // Bildtreffer plus passenden Namen. 90+/95+ erfordern mehrere unabhängige
+    // Merkmale und bleiben damit praktisch eindeutigen Varianten vorbehalten.
+    if (score >= 0.80 && !(collectorStatus === 'match' || (strongVisual && nameScore >= 0.82))) {
+      score = 0.79;
+    }
+    if (score >= 0.90) {
+      const strongSignals = (collectorStatus === 'match' ? 1 : 0)
+        + (setStatus === 'match' ? 1 : 0)
+        + (nameScore >= 0.88 ? 1 : 0)
+        + (artwork >= 0.86 && visualReliable ? 1 : 0)
+        + (hpStatus === 'match' ? 0.5 : 0);
+      if (collectorStatus !== 'match' || strongSignals < 3) score = 0.89;
+    }
+    if (score >= 0.95 && !(
+      collectorStatus === 'match'
+      && setStatus === 'match'
+      && nameScore >= 0.90
+      && artwork >= 0.90
+      && visualReliable
+    )) {
+      score = 0.94;
+    }
+
+    const confidence = clamp(score, 0, 0.99);
     const evidence = Array.from(new Set(candidate.evidence || []));
-    if (normalizedVisual >= 0.68 && !evidence.includes('Artwork ähnlich')) {
+    if (artwork >= 0.76 && !evidence.includes('Artwork ähnlich')) {
       evidence.push('Artwork ähnlich');
+    }
+    if (severeArtworkMismatch && !evidence.includes('Artwork abweichend')) {
+      evidence.push('Artwork abweichend');
     }
     return {
       ...candidate,
       confidence,
       textConfidence,
       visualSimilarity: normalizedVisual,
-      evidence
+      visualResult: {
+        similarity: normalizedVisual,
+        artwork,
+        whole,
+        header,
+        footer,
+        reliable: visualReliable,
+        method: String(visualInput.method || '')
+      },
+      evidence,
+      matchDetails: {
+        ...details,
+        artwork,
+        wholeImage: whole,
+        headerImage: header,
+        footerImage: footer,
+        visualReliable
+      }
     };
   }
 
-  function rankPokemonCandidates(candidates, hints, manual) {
-    return candidates
+  function rankPokemonCandidates(candidates, hints, manual, limit) {
+    const ranked = candidates
       .map(candidate => scorePokemonCandidate(candidate, hints, manual || ''))
-      .sort((a, b) => b.confidence - a.confidence)
-      .slice(0, 7);
+      .sort((a, b) => b.confidence - a.confidence);
+    const maximum = Number.isFinite(Number(limit)) ? Math.max(1, Number(limit)) : 7;
+    return ranked.slice(0, maximum);
   }
 
   function isConfident(candidates) {
     if (!candidates || !candidates.length) return false;
     const best = candidates[0].confidence || 0;
     const second = candidates[1] ? candidates[1].confidence || 0 : 0;
-    return best >= 0.82 && (!candidates[1] || best - second >= 0.11);
+    const details = candidates[0].matchDetails || {};
+    const noVisualContradiction = details.artwork == null || details.visualReliable === false || details.artwork >= 0.62;
+    return best >= 0.86 && noVisualContradiction && (!candidates[1] || best - second >= 0.12);
+  }
+
+  function hasPlausibleCandidate(candidates) {
+    if (!candidates || !candidates.length) return false;
+    const best = candidates[0];
+    const details = best.matchDetails || {};
+    return (best.confidence || 0) >= 0.58
+      || details.collector === 'match'
+      || (details.name >= 0.82 && details.artwork >= 0.78 && details.visualReliable !== false);
   }
 
   return {
@@ -405,6 +594,7 @@
     scorePokemonCandidate,
     rankPokemonCandidates,
     combineVisualSimilarity,
-    isConfident
+    isConfident,
+    hasPlausibleCandidate
   };
 });

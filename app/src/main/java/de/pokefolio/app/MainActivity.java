@@ -59,6 +59,7 @@ public final class MainActivity extends Activity {
     private WebView webView;
     private ValueCallback<Uri[]> fileCallback;
     private ExecutorService bridgeExecutor;
+    private ExecutorService networkExecutor;
     private ExecutorService comparisonExecutor;
     private final Set<String> allowedHosts = new HashSet<>(Arrays.asList(
             "api.pokemontcg.io",
@@ -78,6 +79,7 @@ public final class MainActivity extends Activity {
     public void onCreate(Bundle state) {
         super.onCreate(state);
         bridgeExecutor = Executors.newSingleThreadExecutor();
+        networkExecutor = Executors.newFixedThreadPool(4);
         comparisonExecutor = Executors.newFixedThreadPool(3);
         webView = new WebView(this);
         setContentView(webView);
@@ -90,7 +92,7 @@ public final class MainActivity extends Activity {
         settings.setAllowContentAccess(true);
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
         settings.setMediaPlaybackRequiresUserGesture(false);
-        settings.setUserAgentString(settings.getUserAgentString() + " PokeFolio/0.8.0");
+        settings.setUserAgentString(settings.getUserAgentString() + " PokeFolio/0.9.0");
 
         webView.addJavascriptInterface(new NativeBridge(), "PokeNative");
         webView.setWebViewClient(new WebViewClient() {
@@ -172,16 +174,79 @@ public final class MainActivity extends Activity {
 
         @JavascriptInterface
         public void httpGet(String urlString, String requestId) {
-            bridgeExecutor.execute(() -> performHttpGet(urlString, requestId));
+            networkExecutor.execute(() -> performHttpGet(urlString, requestId));
         }
 
         @JavascriptInterface
         public void compareCardImage(String dataUrl, String imageUrl, String requestId) {
-            comparisonExecutor.execute(() -> performVisualComparison(dataUrl, imageUrl, requestId));
+            comparisonExecutor.execute(() -> performVisualComparison(
+                    dataUrl, imageUrl, requestId, false, false, "unprepared"
+            ));
+        }
+
+        @JavascriptInterface
+        public void prepareCardImage(String dataUrl, String requestId) {
+            comparisonExecutor.execute(() -> performCardPreparation(dataUrl, requestId));
+        }
+
+        @JavascriptInterface
+        public void comparePreparedCardImage(
+                String dataUrl,
+                String imageUrl,
+                String requestId,
+                boolean reliable,
+                String method
+        ) {
+            comparisonExecutor.execute(() -> performVisualComparison(
+                    dataUrl, imageUrl, requestId, true, reliable, method
+            ));
         }
     }
 
-    private void performVisualComparison(String dataUrl, String imageUrl, String requestId) {
+    private void performCardPreparation(String dataUrl, String requestId) {
+        JSONObject output = new JSONObject();
+        Bitmap source = null;
+        CardImageProcessor.VisualPreparation preparation = null;
+        try {
+            output.put("requestId", requestId);
+            source = decodeDataUrlBitmap(dataUrl);
+            preparation = CardImageProcessor.prepareForVisualComparisonDetailed(source, true);
+            ByteArrayOutputStream bytes = new ByteArrayOutputStream(120_000);
+            if (!preparation.bitmap.compress(Bitmap.CompressFormat.JPEG, 91, bytes)) {
+                throw new IOException("Der Kartenausschnitt konnte nicht kodiert werden.");
+            }
+            output.put("ok", true);
+            output.put("dataUrl", "data:image/jpeg;base64," + Base64.encodeToString(
+                    bytes.toByteArray(), Base64.NO_WRAP
+            ));
+            output.put("reliable", preparation.reliable);
+            output.put("method", preparation.method);
+            output.put("width", preparation.bitmap.getWidth());
+            output.put("height", preparation.bitmap.getHeight());
+        } catch (Exception error) {
+            Log.w(TAG, "Card preparation failed", error);
+            try {
+                output.put("requestId", requestId);
+                output.put("ok", false);
+                output.put("error", safeMessage(error, "Karte konnte nicht ausgeschnitten werden."));
+            } catch (Exception ignored) {
+                // Keep the response best-effort.
+            }
+        } finally {
+            if (preparation != null && !preparation.bitmap.isRecycled()) preparation.bitmap.recycle();
+            if (source != null && !source.isRecycled()) source.recycle();
+        }
+        sendJs("onNativePreparedCard", output);
+    }
+
+    private void performVisualComparison(
+            String dataUrl,
+            String imageUrl,
+            String requestId,
+            boolean prepared,
+            boolean preparationReliable,
+            String preparationMethod
+    ) {
         JSONObject output = new JSONObject();
         Bitmap photographed = null;
         Bitmap reference = null;
@@ -190,12 +255,22 @@ public final class MainActivity extends Activity {
             output.put("imageUrl", imageUrl);
             photographed = decodeDataUrlBitmap(dataUrl);
             reference = downloadReferenceBitmap(imageUrl);
-            CardVisualMatcher.Result result = CardVisualMatcher.compare(photographed, reference);
+            CardVisualMatcher.Result result = prepared
+                    ? CardVisualMatcher.comparePrepared(
+                            photographed,
+                            reference,
+                            preparationReliable,
+                            preparationMethod
+                    )
+                    : CardVisualMatcher.compare(photographed, reference);
             output.put("ok", true);
             output.put("similarity", result.similarity);
-            output.put("artworkHash", result.artworkHash);
-            output.put("structure", result.structure);
-            output.put("color", result.color);
+            output.put("whole", result.whole);
+            output.put("header", result.header);
+            output.put("artwork", result.artwork);
+            output.put("footer", result.footer);
+            output.put("reliable", result.reliable);
+            output.put("method", result.method);
         } catch (Exception error) {
             Log.w(TAG, "Visual card comparison failed for " + imageUrl, error);
             try {
@@ -243,7 +318,7 @@ public final class MainActivity extends Activity {
             connection.setReadTimeout(8000);
             connection.setInstanceFollowRedirects(false);
             connection.setRequestProperty("Accept", "image/avif,image/webp,image/*");
-            connection.setRequestProperty("User-Agent", "PokeFolio/0.8.0 Android");
+            connection.setRequestProperty("User-Agent", "PokeFolio/0.9.0 Android");
             int status = connection.getResponseCode();
             if (status < 200 || status >= 300) {
                 throw new IOException("Kartenbild HTTP " + status);
@@ -441,7 +516,7 @@ public final class MainActivity extends Activity {
             connection.setRequestMethod("GET");
             connection.setRequestProperty("Accept", "application/json");
             connection.setRequestProperty("Cache-Control", "no-cache");
-            connection.setRequestProperty("User-Agent", "PokeFolio/0.8.0 Android");
+            connection.setRequestProperty("User-Agent", "PokeFolio/0.9.0 Android");
             status = connection.getResponseCode();
             InputStream stream = status >= 200 && status < 400
                     ? connection.getInputStream()
@@ -552,6 +627,9 @@ public final class MainActivity extends Activity {
         }
         if (bridgeExecutor != null) {
             bridgeExecutor.shutdown();
+        }
+        if (networkExecutor != null) {
+            networkExecutor.shutdown();
         }
         if (comparisonExecutor != null) {
             comparisonExecutor.shutdown();

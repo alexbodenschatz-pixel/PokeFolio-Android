@@ -138,7 +138,8 @@
 
   function buildPokemonTcgUrls(hints, manual) {
     return buildPokemonTcgQueries(hints, manual).map(query =>
-      POKEMON_TCG_ENDPOINT + '?q=' + encodeURIComponent(query) + '&pageSize=100'
+      POKEMON_TCG_ENDPOINT + '?q=' + encodeURIComponent(query)
+        + '&pageSize=100&select=id,name,number,images,set,rarity,hp,subtypes,artist,cardmarket,tcgplayer'
     );
   }
 
@@ -163,7 +164,7 @@
       const query = new URLSearchParams({
         ...parameters,
         'pagination:page': '1',
-        'pagination:itemsPerPage': '60'
+        'pagination:itemsPerPage': '100'
       });
       return `${TCGDEX_ENDPOINT}/${lang}/cards?${query.toString()}`;
     }))].slice(0, 5);

@@ -31,3 +31,13 @@ test('verwendet kleine Bilder für Listen und große Bilder für die Detailansic
   assert.match(app, /tcgdexImageUrl\(card\.image, 'high'\)/);
   assert.match(app, /candidate\.imageLarge \|\| candidate\.imageSmall/);
 });
+
+test('zeigt die getrennte Begründung für Name, Nummer, Artwork, KP und Set', () => {
+  assert.match(app, /class="match-breakdown"/);
+  assert.match(app, /<span>Name<\/span>/);
+  assert.match(app, /<span>Kartennummer<\/span>/);
+  assert.match(app, /<span>Artwork<\/span>/);
+  assert.match(app, /<span>KP\/HP<\/span>/);
+  assert.match(app, /<span>Set<\/span>/);
+  assert.match(app, /% Gesamt/);
+});

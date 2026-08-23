@@ -14,6 +14,8 @@ test('erzeugt nur robuste Pokémon-TCG-Abfragen ohne problematische Phrasen oder
   assert.ok(urls.every(url => !url.includes('%22')));
   assert.ok(urls.every(url => !decodeURIComponent(url).includes('name:*')));
   assert.ok(urls.every(url => url.startsWith('https://api.pokemontcg.io/v2/cards?')));
+  assert.ok(urls.every(url => url.includes('pageSize=100')));
+  assert.ok(urls.every(url => url.includes('select=id,name,number,images,set,rarity,hp')));
 });
 
 test('wiederholt HTTP 500 und 429 mit kurzem Backoff bis eine Variante erfolgreich ist', async () => {
@@ -87,4 +89,5 @@ test('erzeugt einen deutschsprachigen TCGdex-Ausweichweg für Name und Collector
   assert.ok(urls.some(url => url.startsWith('https://api.tcgdex.net/v2/de/cards?')));
   assert.ok(urls.some(url => url.includes('name=Glurak+ex')));
   assert.ok(urls.some(url => url.includes('localId=25')));
+  assert.ok(urls.every(url => url.includes('pagination%3AitemsPerPage=100')));
 });

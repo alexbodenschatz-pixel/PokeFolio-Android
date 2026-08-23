@@ -18,6 +18,7 @@ let requestSequence = 1;
 const pendingOcr = new Map();
 const pendingHttp = new Map();
 const pendingVisual = new Map();
+const pendingPreparation = new Map();
 const previewUrls = new Map();
 
 $$('nav button').forEach(button => {
@@ -138,18 +139,24 @@ async function ocrDataUrl(file) {
   return canvas.toDataURL('image/jpeg', 0.91);
 }
 
-/** Smaller full-frame copy for parallel visual comparisons; keeps perspective context. */
+/** Locates and rectifies the printed card once before any candidate comparison. */
 async function visualComparisonDataUrl(file) {
   const image = await imageFromFile(file);
   const canvas = $('#work');
   const context = canvas.getContext('2d', {willReadFrequently: true});
-  const factor = Math.min(1, 1000 / Math.max(image.naturalWidth, image.naturalHeight));
+  const factor = Math.min(1, 1600 / Math.max(image.naturalWidth, image.naturalHeight));
   canvas.width = Math.max(2, Math.round(image.naturalWidth * factor));
   canvas.height = Math.max(2, Math.round(image.naturalHeight * factor));
   context.fillStyle = '#fff';
   context.fillRect(0, 0, canvas.width, canvas.height);
   context.drawImage(image, 0, 0, canvas.width, canvas.height);
-  return canvas.toDataURL('image/jpeg', 0.84);
+  const sourceDataUrl = canvas.toDataURL('image/jpeg', 0.9);
+  try {
+    return await nativePrepareCard(sourceDataUrl);
+  } catch (error) {
+    console.warn('Kartenkontur nicht vorab verfügbar:', error.message);
+    return {dataUrl: sourceDataUrl, reliable: false, method: 'native-fallback', prepared: false};
+  }
 }
 
 function drawRotated(image, rotation) {
@@ -261,6 +268,20 @@ window.onNativeVisualResult = json => {
   }
 };
 
+window.onNativePreparedCard = json => {
+  try {
+    const response = JSON.parse(json);
+    const pending = pendingPreparation.get(response.requestId);
+    if (!pending) return;
+    clearTimeout(pending.timeout);
+    pendingPreparation.delete(response.requestId);
+    if (response.ok) pending.resolve({...response, prepared: true});
+    else pending.reject(new Error(response.error || 'Karte konnte nicht ausgeschnitten werden.'));
+  } catch (error) {
+    console.error(error);
+  }
+};
+
 function nativeOcr(dataUrl, language) {
   return new Promise((resolve, reject) => {
     if (!window.PokeNative || (!PokeNative.recognizeCard && !PokeNative.recognizeText)) {
@@ -278,7 +299,23 @@ function nativeOcr(dataUrl, language) {
   });
 }
 
-function nativeVisualCompare(dataUrl, imageUrl) {
+function nativePrepareCard(dataUrl) {
+  return new Promise((resolve, reject) => {
+    if (!window.PokeNative || !PokeNative.prepareCardImage) {
+      reject(new Error('Lokale Kartenlokalisierung nicht verfügbar.'));
+      return;
+    }
+    const requestId = 'prepare' + requestSequence++;
+    const timeout = setTimeout(() => {
+      pendingPreparation.delete(requestId);
+      reject(new Error('Die Kartenlokalisierung hat zu lange gedauert.'));
+    }, 16000);
+    pendingPreparation.set(requestId, {resolve, reject, timeout});
+    PokeNative.prepareCardImage(dataUrl, requestId);
+  });
+}
+
+function nativeVisualCompare(preparedCard, imageUrl) {
   return new Promise((resolve, reject) => {
     if (!window.PokeNative || !PokeNative.compareCardImage || !imageUrl) {
       reject(new Error('Lokaler Bildvergleich nicht verfügbar.'));
@@ -290,7 +327,17 @@ function nativeVisualCompare(dataUrl, imageUrl) {
       reject(new Error('Der Bildvergleich hat zu lange gedauert.'));
     }, 15000);
     pendingVisual.set(requestId, {resolve, reject, timeout});
-    PokeNative.compareCardImage(dataUrl, imageUrl, requestId);
+    if (preparedCard.prepared && PokeNative.comparePreparedCardImage) {
+      PokeNative.comparePreparedCardImage(
+        preparedCard.dataUrl,
+        imageUrl,
+        requestId,
+        preparedCard.reliable !== false,
+        preparedCard.method || 'prepared'
+      );
+    } else {
+      PokeNative.compareCardImage(preparedCard.dataUrl, imageUrl, requestId);
+    }
   });
 }
 
@@ -433,8 +480,78 @@ function pokemonCardFromTcgdex(card) {
   };
 }
 
-async function pokemonSearch(hints, manual = '') {
-  const byId = new Map();
+async function mapWithConcurrency(values, concurrency, mapper) {
+  const output = new Array(values.length);
+  let nextIndex = 0;
+  async function worker() {
+    while (nextIndex < values.length) {
+      const index = nextIndex++;
+      output[index] = await mapper(values[index], index);
+    }
+  }
+  await Promise.all(Array.from({length: Math.min(concurrency, values.length)}, () => worker()));
+  return output;
+}
+
+async function hydrateTcgdexCards(cards, language, runToken) {
+  const unique = [...new Map(cards.map(card => [card.id, card])).values()].slice(0, 60);
+  let failures = 0;
+  return mapWithConcurrency(unique, 4, async brief => {
+    if (runToken !== undefined && runToken !== recognitionRun) return brief;
+    if (brief.hp && brief.set && brief.rarity) return brief;
+    if (failures >= 4) return brief;
+    try {
+      const full = await nativeGetOnce(
+        'https://api.tcgdex.net/v2/' + encodeURIComponent(language)
+          + '/cards/' + encodeURIComponent(brief.id)
+      );
+      return {...brief, ...full, image: full.image || brief.image, localId: full.localId || brief.localId};
+    } catch (error) {
+      failures++;
+      console.warn('TCGdex-Detail konnte nicht geladen werden:', brief.id, error.message);
+      return brief;
+    }
+  });
+}
+
+function pokemonVariantKey(candidate) {
+  const setKey = Recognition.norm(candidate.setId || candidate.set || '')
+    .replace(/\s+/g, '')
+    .replace(/^([a-z]+)0+(\d)/, '$1$2');
+  const numberKey = Recognition.numberKey(candidate.number || '');
+  if (setKey && numberKey) return setKey + '|' + numberKey;
+  return Recognition.norm(candidate.name) + '|' + setKey + '|' + numberKey;
+}
+
+function mergePokemonCandidate(current, incoming, language) {
+  if (!current) return incoming;
+  const incomingLocalized = incoming.source && incoming.source.includes('TCGdex');
+  const preferIncomingText = language === 'de' && incomingLocalized;
+  const sources = new Set(
+    String(current.source || '').split(' + ').concat(String(incoming.source || '').split(' + ')).filter(Boolean)
+  );
+  return {
+    ...current,
+    name: preferIncomingText && incoming.name ? incoming.name : current.name || incoming.name,
+    set: preferIncomingText && incoming.set ? incoming.set : current.set || incoming.set,
+    setId: current.setId || incoming.setId,
+    series: current.series || incoming.series,
+    number: current.number || incoming.number,
+    printedTotal: current.printedTotal || incoming.printedTotal,
+    total: current.total || incoming.total,
+    rarity: preferIncomingText && incoming.rarity ? incoming.rarity : current.rarity || incoming.rarity,
+    hp: current.hp || incoming.hp,
+    subtypes: current.subtypes && current.subtypes.length ? current.subtypes : incoming.subtypes,
+    artist: current.artist || incoming.artist,
+    imageSmall: current.imageSmall || incoming.imageSmall,
+    imageLarge: current.imageLarge || incoming.imageLarge,
+    price: current.price || incoming.price,
+    source: [...sources].join(' + ')
+  };
+}
+
+async function pokemonSearch(hints, manual = '', runToken) {
+  const primaryCards = new Map();
   const language = $('#lang').value === 'de' ? 'de' : 'en';
   const primaryPromise = Api.settleSearchVariants(
     Api.buildPokemonTcgUrls(hints, manual),
@@ -451,10 +568,10 @@ async function pokemonSearch(hints, manual = '') {
     : null;
   const primary = await primaryPromise;
   primary.values.forEach(response => {
-    (response.value.data || []).forEach(card => byId.set('pokemontcg:' + card.id, pokemonCardFromApi(card)));
+    (response.value.data || []).forEach(card => primaryCards.set(card.id, pokemonCardFromApi(card)));
   });
 
-  const useAlternative = language === 'de' || !byId.size || primary.unavailable;
+  const useAlternative = language === 'de' || !primaryCards.size || primary.unavailable;
   const alternative = useAlternative
     ? await (localizedPromise || Api.settleSearchVariants(
       Api.buildTcgdexUrls(hints, manual, language),
@@ -462,13 +579,36 @@ async function pokemonSearch(hints, manual = '') {
       {attempts: 3, backoffMs: [250, 650], logger: message => console.error(message)}
     ))
     : {values: [], errors: [], successCount: 0, unavailable: false};
+  const tcgdexBriefs = new Map();
   alternative.values.forEach(response => {
     const list = Array.isArray(response.value) ? response.value : response.value && response.value.data || [];
-    list.forEach(card => byId.set('tcgdex:' + card.id, pokemonCardFromTcgdex(card)));
+    list.forEach(card => tcgdexBriefs.set(card.id, card));
+  });
+  const primaryVariantKeys = new Set([...primaryCards.values()].map(pokemonVariantKey));
+  const briefCandidates = [...tcgdexBriefs.values()].map(pokemonCardFromTcgdex);
+  const missingDetails = [...tcgdexBriefs.values()].filter((brief, index) => {
+    return !primaryVariantKeys.has(pokemonVariantKey(briefCandidates[index]));
+  });
+  const hydratedMissing = useAlternative
+    ? await hydrateTcgdexCards(missingDetails, language, runToken)
+    : [];
+  const hydratedById = new Map(hydratedMissing.map(card => [card.id, card]));
+  const tcgdexCards = [...tcgdexBriefs.values()].map(brief => hydratedById.get(brief.id) || brief);
+
+  const variants = new Map();
+  [...primaryCards.values(), ...tcgdexCards.map(pokemonCardFromTcgdex)].forEach(candidate => {
+    const key = pokemonVariantKey(candidate);
+    variants.set(key, mergePokemonCandidate(variants.get(key), candidate, language));
+  });
+  const broadlyRanked = Recognition.rankPokemonCandidates(
+    [...variants.values()], hints, manual, 80
+  ).filter(candidate => {
+    const details = candidate.matchDetails || {};
+    return details.collector === 'match' || details.name >= 0.58;
   });
 
   return {
-    candidates: Recognition.rankPokemonCandidates([...byId.values()], hints, manual),
+    candidates: broadlyRanked,
     status: {
       primaryUnavailable: primary.unavailable,
       alternativeUnavailable: useAlternative && alternative.unavailable,
@@ -586,29 +726,37 @@ async function onePieceSearch(hints, manual = '') {
   return [];
 }
 
-async function lookupCandidates(kind, hints, manual = '') {
-  if (kind === 'pokemon') return pokemonSearch(hints, manual);
+async function lookupCandidates(kind, hints, manual = '', runToken) {
+  if (kind === 'pokemon') return pokemonSearch(hints, manual, runToken);
   if (kind === 'yugioh') return {candidates: await yugiohSearch(hints, manual), status: emptyLookupStatus()};
   if (kind === 'onepiece') return {candidates: await onePieceSearch(hints, manual), status: emptyLookupStatus()};
   return {candidates: [], status: emptyLookupStatus()};
 }
 
-async function enrichWithVisualSimilarity(list, dataUrl) {
-  const visualLimit = Math.min(5, list.length);
-  const enriched = await Promise.all(list.slice(0, visualLimit).map(async candidate => {
-    const imageUrl = candidate.imageSmall || candidate.imageLarge;
+async function enrichWithVisualSimilarity(list, preparedCard, runToken) {
+  const visualLimit = Math.min(60, list.length);
+  let consecutiveFailures = 0;
+  const enriched = await mapWithConcurrency(list.slice(0, visualLimit), 3, async candidate => {
+    if (runToken !== undefined && runToken !== recognitionRun) return candidate;
+    if (candidate.tcg !== 'pokemon') return candidate;
+    // The list keeps lightweight thumbnails, but variant discrimination needs
+    // the highest-resolution artwork available (fine frame/footer differences).
+    const imageUrl = candidate.imageLarge || candidate.imageSmall;
     if (!imageUrl) return candidate;
+    if (consecutiveFailures >= 6) return candidate;
     try {
-      const result = await nativeVisualCompare(dataUrl, imageUrl);
-      return Recognition.combineVisualSimilarity(candidate, result.similarity);
+      const result = await nativeVisualCompare(preparedCard, imageUrl);
+      consecutiveFailures = 0;
+      return Recognition.combineVisualSimilarity(candidate, result);
     } catch (error) {
+      consecutiveFailures++;
       console.warn('Bildvergleich für Kandidat fehlgeschlagen:', candidate.id, error.message);
       return candidate;
     }
-  }));
+  });
   return enriched.concat(list.slice(visualLimit))
     .sort((left, right) => (right.confidence || 0) - (left.confidence || 0))
-    .slice(0, 7);
+    .slice(0, 60);
 }
 
 function evidenceLabel(value) {
@@ -618,11 +766,39 @@ function evidenceLabel(value) {
     'Setnummer': 'Set stimmt',
     'Setcode': 'Set stimmt',
     'Artwork ähnlich': 'Artwork ähnlich',
+    'Artwork abweichend': 'Artwork weicht ab',
     'KP/HP': 'KP/HP stimmt',
+    'KP/HP abweichend': 'KP/HP weichen ab',
+    'Kartennummer abweichend': 'Kartennummer weicht ab',
+    'Set abweichend': 'Set weicht ab',
     'Seltenheit': 'Seltenheit stimmt',
     'Illustrator': 'Illustrator stimmt',
     'Entwicklungsstufe': 'Entwicklungsstufe stimmt'
   })[value] || value;
+}
+
+function matchStatus(value, unknownText = 'unbekannt') {
+  return value === 'match' ? 'stimmt' : value === 'mismatch' ? 'abweichend' : unknownText;
+}
+
+function candidateBreakdown(candidate) {
+  const details = candidate.matchDetails || {};
+  const name = Number.isFinite(Number(details.name))
+    ? Math.round(Number(details.name) * 100) + ' %' : 'nicht erkannt';
+  const collector = matchStatus(details.collector, 'nicht erkannt');
+  const hp = matchStatus(details.hp, 'unbekannt');
+  const set = matchStatus(details.set, 'unbekannt');
+  const artwork = Number.isFinite(Number(details.artwork))
+    ? Math.round(Number(details.artwork) * 100) + ' %'
+      + (details.visualReliable === false ? ' (Kontur unsicher)' : '')
+    : 'nicht verfügbar';
+  return `<div class="match-breakdown">
+    <div><span>Name</span><b>${esc(name)}</b></div>
+    <div><span>Kartennummer</span><b class="${esc(details.collector || 'unknown')}">${esc(collector)}</b></div>
+    <div><span>Artwork</span><b>${esc(artwork)}</b></div>
+    <div><span>KP/HP</span><b class="${esc(details.hp || 'unknown')}">${esc(hp)}</b></div>
+    <div><span>Set</span><b class="${esc(details.set || 'unknown')}">${esc(set)}</b></div>
+  </div>`;
 }
 
 function renderCandidates(showEmpty = false) {
@@ -638,14 +814,17 @@ function renderCandidates(showEmpty = false) {
 
   const shown = candidates.slice(0, 5);
   const confident = Recognition.isConfident(candidates);
+  const plausible = Recognition.hasPlausibleCandidate(candidates);
   empty.hidden = true;
   comparison.hidden = false;
   $('#scanReference').hidden = !previewUrls.has('front');
   if (previewUrls.has('front')) $('#comparisonScanImg').src = previewUrls.get('front');
-  $('#matchesTitle').textContent = confident ? 'Bester Treffer' : 'Mögliche Treffer';
+  $('#matchesTitle').textContent = confident
+    ? 'Bester Treffer'
+    : plausible ? 'Mögliche Treffer' : 'Keine eindeutige Karte gefunden';
   $('#matchesSubtitle').textContent = confident
     ? 'Deutlichste Übereinstimmung mit Alternativen'
-    : 'Mehrere Karten könnten passen';
+    : plausible ? 'Mehrere Karten könnten passen' : 'Varianten weichen in wichtigen Merkmalen ab';
 
   box.innerHTML = shown.map((candidate, index) => {
     const confidence = Math.round(clamp(Number(candidate.confidence) || 0, 0, 1) * 100);
@@ -656,7 +835,9 @@ function renderCandidates(showEmpty = false) {
       .map(value => `<span>${esc(evidenceLabel(value))}</span>`)
       .join('');
     const price = candidate.price ? esc(candidate.price.label) : 'Kein Preis verfügbar';
-    const bestBadge = index === 0 ? '<span class="best-badge">Bester Treffer</span>' : '';
+    const bestBadge = index === 0
+      ? `<span class="best-badge">${confident ? 'Bester Treffer' : plausible ? 'Wahrscheinlichster Treffer' : 'Niedrige Übereinstimmung'}</span>`
+      : '';
     const image = imageUrl
       ? `<img loading="lazy" decoding="async" src="${esc(imageUrl)}" alt="${esc(candidate.name)}" onerror="candidateImageFailed(this)">`
       : '';
@@ -665,7 +846,7 @@ function renderCandidates(showEmpty = false) {
       ? `<button type="button" class="candidate-image-button" onclick="openCandidateImage(${index})" aria-label="${esc(candidate.name)} vergrößern">${imageContent}</button>`
       : `<div class="candidate-image-button no-image">${imageContent}</div>`;
     return `<article class="candidate-card${index === 0 ? ' best' : ''}${high ? ' high-confidence' : ''}${selected ? ' selected' : ''}">
-      <div class="candidate-visual">${bestBadge}${imageWrapper}<span class="confidence-badge">${confidence} %</span></div>
+      <div class="candidate-visual">${bestBadge}${imageWrapper}<span class="confidence-badge">${confidence} % Gesamt</span></div>
       <div class="candidate-content">
         <div class="candidate-title"><b>${esc(candidate.name || 'Unbekannte Karte')}</b><small>${esc(candidate.set || 'Set unbekannt')}</small></div>
         <dl class="candidate-meta">
@@ -674,6 +855,7 @@ function renderCandidates(showEmpty = false) {
           <div><dt>Preis</dt><dd>${price}</dd></div>
         </dl>
         <div class="confidence-track" aria-label="Trefferwahrscheinlichkeit ${confidence} Prozent"><span style="width:${confidence}%"></span></div>
+        ${candidate.tcg === 'pokemon' ? candidateBreakdown(candidate) : ''}
         <div class="candidate-reasons">${reasons || '<span>Bild und Kartendaten prüfen</span>'}</div>
         <small class="candidate-source">Quelle: ${esc(candidate.source || 'Kartendatenbank')}</small>
         <button class="choose-card" type="button" onclick="applyCandidate(${index})">${selected ? 'Ausgewählt' : 'Diese Karte wählen'}</button>
@@ -763,13 +945,13 @@ async function runRecognition(manual = false) {
     const hints = Recognition.extractHints(ocrResult);
     const kind = Recognition.classifyTcg(hints, manual ? selectedTcg : selectedTcg);
     recognizedTcg = kind;
-    const lookup = await lookupCandidates(kind, hints, '');
+    const lookup = await lookupCandidates(kind, hints, '', run);
     if (run !== recognitionRun) return null;
     let foundCandidates = lookup.candidates;
-    if (foundCandidates.some(candidate => candidate.imageSmall || candidate.imageLarge)) {
+    if (foundCandidates.some(candidate => candidate.tcg === 'pokemon' && (candidate.imageSmall || candidate.imageLarge))) {
       setRecState('busy', 'Vergleiche Kartenbilder …', 'Artwork und Bildstruktur werden lokal mit den besten Treffern abgeglichen.');
       const visualDataUrl = await visualComparisonDataUrl(file);
-      foundCandidates = await enrichWithVisualSimilarity(foundCandidates, visualDataUrl);
+      foundCandidates = await enrichWithVisualSimilarity(foundCandidates, visualDataUrl, run);
       if (run !== recognitionRun) return null;
     }
     candidates = foundCandidates;
@@ -796,6 +978,15 @@ async function runRecognition(manual = false) {
     }
 
     const best = candidates[0];
+    if (!Recognition.hasPlausibleCandidate(candidates)) {
+      recognition = null;
+      setRecState(
+        'warn',
+        'Keine eindeutige Karte gefunden',
+        'Die gefundenen Varianten stimmen bei Artwork, Kartennummer oder anderen starken Merkmalen nicht ausreichend überein. Bitte erneut scannen oder manuell suchen.'
+      );
+      return best;
+    }
     if (Recognition.isConfident(candidates)) {
       recognition = null;
       setRecState(
@@ -836,23 +1027,28 @@ $('#manualSearch').onclick = async () => {
       const match = query.toUpperCase().match(/\b(?:OP|ST|EB|PRB|EX|DON)\d{2}-\d{3}\b/);
       if (match) hints.onepieceId = match[0];
     }
-    const lookup = await lookupCandidates(kind, hints, query);
+    const lookup = await lookupCandidates(kind, hints, query, run);
     if (run !== recognitionRun) return;
     let foundCandidates = lookup.candidates;
     const frontFile = $('#front').files[0];
-    if (frontFile && foundCandidates.some(candidate => candidate.imageSmall || candidate.imageLarge)) {
+    if (frontFile && foundCandidates.some(candidate => candidate.tcg === 'pokemon' && (candidate.imageSmall || candidate.imageLarge))) {
       const dataUrl = await visualComparisonDataUrl(frontFile);
-      foundCandidates = await enrichWithVisualSimilarity(foundCandidates, dataUrl);
+      foundCandidates = await enrichWithVisualSimilarity(foundCandidates, dataUrl, run);
       if (run !== recognitionRun) return;
     }
     candidates = foundCandidates;
     renderCandidates(!candidates.length);
     const recovery = !candidates.length && recoveryMessage(lookup.status);
+    const plausible = Recognition.hasPlausibleCandidate(candidates);
     setRecState(
       candidates.length || recovery ? 'warn' : 'bad',
-      candidates.length ? 'Treffer gefunden' : recovery ? 'Kartendienst nicht erreichbar' : 'Keine Treffer',
       candidates.length
-        ? 'Bitte Bilder und Kartendaten vergleichen und die passende Karte wählen.'
+        ? plausible ? 'Treffer gefunden' : 'Keine eindeutige Karte gefunden'
+        : recovery ? 'Kartendienst nicht erreichbar' : 'Keine Treffer',
+      candidates.length
+        ? plausible
+          ? 'Bitte Bilder und Kartendaten vergleichen und die passende Karte wählen.'
+          : 'Die Varianten weichen in wichtigen Merkmalen ab. Versuche zusätzliche Set- oder Nummernangaben.'
         : recovery || 'Versuche Name, Setcode oder Kartennummer anders einzugeben.'
     );
   } catch (error) {

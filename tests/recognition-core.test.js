@@ -52,7 +52,9 @@ test('kombiniert Name, Collector Number, Setgröße und KP für den besten Poké
 
   assert.equal(ranked[0].id, 'correct');
   assert.ok(ranked[0].confidence > ranked[1].confidence + 0.1);
-  assert.deepEqual(ranked[0].evidence.slice(0, 3), ['Kartennummer', 'Setnummer', 'Name']);
+  assert.ok(ranked[0].evidence.includes('Kartennummer'));
+  assert.ok(ranked[0].evidence.includes('Setnummer'));
+  assert.ok(ranked[0].evidence.includes('Name'));
   assert.equal(recognition.isConfident(ranked), true);
 });
 
@@ -195,16 +197,18 @@ test('kombiniert Artwork-Ähnlichkeit nachvollziehbar mit dem OCR-Score', () => 
   assert.ok(enriched.evidence.includes('Artwork ähnlich'));
 });
 
-test('lässt Bildähnlichkeit nie allein einen starken Nummerntreffer überholen', () => {
+test('bewertet exakte Nummer plus passendes Artwork höher als Artwork allein', () => {
   const exactNumber = recognition.combineVisualSimilarity({
-    id: 'exact', confidence: 0.94, textConfidence: 0.94, evidence: ['Kartennummer', 'Setnummer']
-  }, 0.35);
+    id: 'exact', confidence: 0.89, textConfidence: 0.89, evidence: ['Kartennummer', 'Setnummer'],
+    matchDetails: {name: 1, collector: 'match', set: 'match', hp: 'match'}
+  }, {similarity: 0.92, artwork: 0.94, whole: 0.9, header: 0.9, footer: 0.91, reliable: true});
   const similarArtworkOnly = recognition.combineVisualSimilarity({
-    id: 'art', confidence: 0.52, textConfidence: 0.52, evidence: []
-  }, 1);
+    id: 'art', confidence: 0.46, textConfidence: 0.46, evidence: ['Name'],
+    matchDetails: {name: 1, collector: 'unknown', set: 'unknown', hp: 'unknown'}
+  }, {similarity: 0.94, artwork: 0.96, whole: 0.92, header: 0.9, footer: 0.9, reliable: true});
 
   assert.ok(exactNumber.confidence > similarArtworkOnly.confidence);
-  assert.ok(similarArtworkOnly.confidence <= 0.64);
+  assert.ok(similarArtworkOnly.confidence <= 0.89);
 });
 
 test('behält den Textscore bei fehlendem Kartenbild unverändert', () => {
@@ -213,4 +217,162 @@ test('behält den Textscore bei fehlendem Kartenbild unverändert', () => {
 
   assert.equal(result.confidence, 0.67);
   assert.equal(result.visualSimilarity, undefined);
+});
+
+test('begrenzt Xerneas nur mit Name beziehungsweise Name plus KP deutlich unter 80 Prozent', () => {
+  const nameOnly = recognition.scorePokemonCandidate(
+    {id: 'name', name: 'Xerneas', number: '12', hp: '130'},
+    recognition.extractHints('Xerneas'),
+    ''
+  );
+  const nameAndHp = recognition.scorePokemonCandidate(
+    {id: 'hp', name: 'Xerneas', number: '12', hp: '130'},
+    recognition.extractHints('Xerneas\nKP 130'),
+    ''
+  );
+
+  assert.ok(nameOnly.confidence <= 0.54);
+  assert.ok(nameAndHp.confidence <= 0.63);
+  assert.ok(nameAndHp.confidence < 0.8);
+});
+
+test('wertet beim Xerneas-Full-Art-Test falsche Artworks stark ab', () => {
+  const hints = recognition.extractHints('Xerneas\nKP 130');
+  const base = recognition.rankPokemonCandidates([
+    {id: 'matching-full-art', name: 'Xerneas', number: 'XY07', hp: '130'},
+    {id: 'wrong-standard-a', name: 'Xerneas', number: '12', hp: '130'},
+    {id: 'wrong-standard-b', name: 'Xerneas', number: '81', hp: '130'}
+  ], hints, '', 20);
+  const visual = new Map([
+    ['matching-full-art', {similarity: 0.91, whole: 0.90, header: 0.86, artwork: 0.94, footer: 0.88, reliable: true}],
+    ['wrong-standard-a', {similarity: 0.55, whole: 0.58, header: 0.82, artwork: 0.41, footer: 0.53, reliable: true}],
+    ['wrong-standard-b', {similarity: 0.59, whole: 0.61, header: 0.80, artwork: 0.47, footer: 0.57, reliable: true}]
+  ]);
+  const ranked = base
+    .map(candidate => recognition.combineVisualSimilarity(candidate, visual.get(candidate.id)))
+    .sort((a, b) => b.confidence - a.confidence);
+
+  assert.equal(ranked[0].id, 'matching-full-art');
+  assert.ok(ranked[0].confidence >= 0.80);
+  assert.ok(ranked[0].confidence - ranked[1].confidence >= 0.25);
+  assert.ok(ranked[1].confidence < 0.60);
+  assert.ok(ranked[2].confidence < 0.60);
+  assert.ok(ranked.slice(1).every(candidate => candidate.evidence.includes('Artwork abweichend')));
+});
+
+test('meldet bei ausschließlich abweichenden Xerneas-Artworks keinen plausiblen Treffer', () => {
+  const hints = recognition.extractHints('Xerneas\nKP 130');
+  const wrong = recognition.rankPokemonCandidates([
+    {id: 'a', name: 'Xerneas', number: '12', hp: '130'},
+    {id: 'b', name: 'Xerneas', number: '81', hp: '130'}
+  ], hints, '', 20).map(candidate => recognition.combineVisualSimilarity(candidate, {
+    similarity: 0.54,
+    whole: 0.56,
+    header: 0.8,
+    artwork: 0.4,
+    footer: 0.5,
+    reliable: true
+  })).sort((a, b) => b.confidence - a.confidence);
+
+  assert.equal(recognition.hasPlausibleCandidate(wrong), false);
+  assert.equal(recognition.isConfident(wrong), false);
+});
+
+test('bestraft erkannte Widersprüche auch bei hoher Bildähnlichkeit aktiv', () => {
+  const conflicting = recognition.combineVisualSimilarity({
+    id: 'conflict',
+    confidence: 0.82,
+    textConfidence: 0.82,
+    evidence: ['Name'],
+    matchDetails: {
+      name: 1,
+      collector: 'match',
+      set: 'mismatch',
+      hp: 'mismatch',
+      rarity: 'mismatch'
+    }
+  }, {
+    similarity: 0.94,
+    whole: 0.94,
+    header: 0.93,
+    artwork: 0.95,
+    footer: 0.92,
+    reliable: true
+  });
+  const wrongCollector = recognition.combineVisualSimilarity({
+    id: 'wrong-number',
+    confidence: 0.46,
+    textConfidence: 0.46,
+    evidence: ['Name'],
+    matchDetails: {name: 1, collector: 'mismatch', set: 'unknown', hp: 'match'}
+  }, {
+    similarity: 0.94,
+    whole: 0.94,
+    header: 0.93,
+    artwork: 0.95,
+    footer: 0.92,
+    reliable: true
+  });
+
+  assert.ok(conflicting.confidence <= 0.84);
+  assert.ok(wrongCollector.confidence <= 0.59);
+});
+
+test('kennzeichnet einen Fallback-Kartenausschnitt und begrenzt dessen Einfluss', () => {
+  const result = recognition.combineVisualSimilarity({
+    id: 'fallback',
+    confidence: 0.55,
+    textConfidence: 0.55,
+    evidence: ['Name', 'KP/HP'],
+    matchDetails: {name: 1, collector: 'unknown', set: 'unknown', hp: 'match'}
+  }, {
+    similarity: 0.94,
+    whole: 0.93,
+    header: 0.92,
+    artwork: 0.95,
+    footer: 0.91,
+    reliable: false,
+    method: 'center-fallback'
+  });
+
+  assert.equal(result.matchDetails.visualReliable, false);
+  assert.equal(result.visualResult.method, 'center-fallback');
+  assert.ok(result.confidence <= 0.74);
+});
+
+test('lässt nahezu identische Holo- und Reverse-Holo-Varianten bewusst mehrdeutig', () => {
+  const hints = recognition.extractHints('Xerneas\nKP 130');
+  const variants = recognition.rankPokemonCandidates([
+    {id: 'holo', name: 'Xerneas', number: '12', hp: '130', rarity: 'Holo Rare'},
+    {id: 'reverse', name: 'Xerneas', number: '12', hp: '130', rarity: 'Reverse Holo'}
+  ], hints, '', 20).map((candidate, index) => recognition.combineVisualSimilarity(candidate, {
+    similarity: index ? 0.90 : 0.91,
+    whole: 0.9,
+    header: 0.9,
+    artwork: index ? 0.91 : 0.92,
+    footer: 0.88,
+    reliable: true
+  })).sort((a, b) => b.confidence - a.confidence);
+
+  assert.equal(recognition.isConfident(variants), false);
+});
+
+test('liest präfixierte Promo-Nummern nur aus dem unteren Kartenbereich', () => {
+  const hints = recognition.extractHints({passes: [{
+    variant: 'unterkante-scharf-0',
+    text: 'SWSH123\nIllus. Test',
+    lines: [{text: 'SWSH123', y: 0.72}]
+  }]});
+
+  assert.equal(hints.collectorNumbers[0].number, 'SWSH123');
+  assert.equal(recognition.extractHints('Pokédex-Nr. 0716').collectorNumbers.length, 0);
+});
+
+test('kann für die breite Variantenprüfung mehr als sieben Kandidaten behalten', () => {
+  const hints = recognition.extractHints('Xerneas');
+  const candidates = Array.from({length: 15}, (_, index) => ({
+    id: String(index), name: 'Xerneas', number: String(index + 1)
+  }));
+
+  assert.equal(recognition.rankPokemonCandidates(candidates, hints, '', 60).length, 15);
 });

@@ -2,137 +2,255 @@ package de.pokefolio.app;
 
 import android.graphics.Bitmap;
 
-/** Lightweight local artwork comparison; OCR and card metadata remain authoritative. */
+import java.util.Arrays;
+
+/** Regional, exposure-tolerant card fingerprint without a heavyweight ML dependency. */
 public final class CardVisualMatcher {
+    private static final Region WHOLE = new Region(0.025f, 0.025f, 0.975f, 0.975f);
+    private static final Region HEADER = new Region(0.045f, 0.025f, 0.955f, 0.19f);
+    private static final Region ARTWORK = new Region(0.045f, 0.14f, 0.955f, 0.66f);
+    private static final Region FOOTER = new Region(0.035f, 0.73f, 0.965f, 0.985f);
+
     private CardVisualMatcher() {
     }
 
     public static final class Result {
         public final double similarity;
-        public final double artworkHash;
-        public final double structure;
-        public final double color;
+        public final double whole;
+        public final double header;
+        public final double artwork;
+        public final double footer;
+        public final boolean reliable;
+        public final String method;
 
-        Result(double similarity, double artworkHash, double structure, double color) {
+        Result(
+                double similarity,
+                double whole,
+                double header,
+                double artwork,
+                double footer,
+                boolean reliable,
+                String method
+        ) {
             this.similarity = similarity;
-            this.artworkHash = artworkHash;
-            this.structure = structure;
-            this.color = color;
+            this.whole = whole;
+            this.header = header;
+            this.artwork = artwork;
+            this.footer = footer;
+            this.reliable = reliable;
+            this.method = method;
         }
     }
 
     public static Result compare(Bitmap photographedCard, Bitmap referenceCard) {
-        Bitmap left = CardImageProcessor.prepareForVisualComparison(photographedCard, true);
-        Bitmap right = CardImageProcessor.prepareForVisualComparison(referenceCard, false);
+        CardImageProcessor.VisualPreparation scan =
+                CardImageProcessor.prepareForVisualComparisonDetailed(photographedCard, true);
+        CardImageProcessor.VisualPreparation reference =
+                CardImageProcessor.prepareForVisualComparisonDetailed(referenceCard, false);
         try {
-            long leftArtworkHash = differenceHash(left, 0.055f, 0.14f, 0.945f, 0.64f);
-            long rightArtworkHash = differenceHash(right, 0.055f, 0.14f, 0.945f, 0.64f);
-            double artworkHash = 1d - Long.bitCount(leftArtworkHash ^ rightArtworkHash) / 64d;
-
-            long leftWholeHash = differenceHash(left, 0.03f, 0.04f, 0.97f, 0.96f);
-            long rightWholeHash = differenceHash(right, 0.03f, 0.04f, 0.97f, 0.96f);
-            double wholeHash = 1d - Long.bitCount(leftWholeHash ^ rightWholeHash) / 64d;
-
-            double structure = structureCorrelation(left, right);
-            double color = colorGridSimilarity(left, right);
-            double combined = clamp(
-                    artworkHash * 0.43d
-                            + structure * 0.27d
-                            + wholeHash * 0.15d
-                            + color * 0.15d,
-                    0d,
-                    1d
-            );
-            return new Result(combined, artworkHash, structure, color);
+            return compareNormalized(scan.bitmap, reference.bitmap, scan.reliable, scan.method);
         } finally {
-            left.recycle();
-            right.recycle();
+            scan.bitmap.recycle();
+            reference.bitmap.recycle();
         }
     }
 
-    private static long differenceHash(
-            Bitmap source,
-            float leftFraction,
-            float topFraction,
-            float rightFraction,
-            float bottomFraction
+    public static Result comparePrepared(
+            Bitmap preparedScan,
+            Bitmap referenceCard,
+            boolean reliable,
+            String method
     ) {
-        int left = Math.max(0, Math.round(source.getWidth() * leftFraction));
-        int top = Math.max(0, Math.round(source.getHeight() * topFraction));
-        int right = Math.min(source.getWidth(), Math.round(source.getWidth() * rightFraction));
-        int bottom = Math.min(source.getHeight(), Math.round(source.getHeight() * bottomFraction));
-        Bitmap crop = Bitmap.createBitmap(source, left, top, Math.max(2, right - left), Math.max(2, bottom - top));
-        Bitmap tiny = Bitmap.createScaledBitmap(crop, 9, 8, true);
-        if (crop != source && crop != tiny) crop.recycle();
+        CardImageProcessor.VisualPreparation reference =
+                CardImageProcessor.prepareForVisualComparisonDetailed(referenceCard, false);
+        try {
+            return compareNormalized(preparedScan, reference.bitmap, reliable, method);
+        } finally {
+            reference.bitmap.recycle();
+        }
+    }
+
+    private static Result compareNormalized(
+            Bitmap scan,
+            Bitmap reference,
+            boolean reliable,
+            String method
+    ) {
+        double whole = compareRegion(scan, reference, WHOLE);
+        double header = compareRegion(scan, reference, HEADER);
+        double artwork = compareRegion(scan, reference, ARTWORK);
+        double footer = compareRegion(scan, reference, FOOTER);
+        // Artwork separates print variants most strongly. Header/footer preserve
+        // layout generation, HP, set and collector-number structure.
+        double combined = clamp(
+                whole * 0.16d
+                        + header * 0.12d
+                        + artwork * 0.54d
+                        + footer * 0.18d,
+                0d,
+                1d
+        );
+        return new Result(combined, whole, header, artwork, footer, reliable, method);
+    }
+
+    private static double compareRegion(Bitmap left, Bitmap right, Region region) {
+        double[] grayLeft = grayscale(left, region, 32, 32);
+        double[] grayRight = grayscale(right, region, 32, 32);
+        long pHashLeft = perceptualHash(grayLeft, 32, 32);
+        long pHashRight = perceptualHash(grayRight, 32, 32);
+        double pHash = 1d - Long.bitCount(pHashLeft ^ pHashRight) / 64d;
+
+        long dHashLeft = differenceHash(left, region);
+        long dHashRight = differenceHash(right, region);
+        double dHash = 1d - Long.bitCount(dHashLeft ^ dHashRight) / 64d;
+
+        double grayCorrelation = normalizedCorrelation(grayLeft, grayRight);
+        double gradient = gradientSimilarity(grayLeft, grayRight, 32, 32);
+        double color = colorHistogramSimilarity(left, right, region);
+        return clamp(
+                pHash * 0.28d
+                        + dHash * 0.24d
+                        + grayCorrelation * 0.20d
+                        + gradient * 0.20d
+                        + color * 0.08d,
+                0d,
+                1d
+        );
+    }
+
+    /** Low-frequency 8x8 DCT hash (pHash-style), resilient to exposure and resize changes. */
+    private static long perceptualHash(double[] values, int width, int height) {
+        double[] coefficients = new double[64];
+        double[][] cosineX = new double[8][width];
+        double[][] cosineY = new double[8][height];
+        for (int frequency = 0; frequency < 8; frequency++) {
+            for (int x = 0; x < width; x++) {
+                cosineX[frequency][x] = Math.cos(
+                        (2d * x + 1d) * frequency * Math.PI / (2d * width)
+                );
+            }
+            for (int y = 0; y < height; y++) {
+                cosineY[frequency][y] = Math.cos(
+                        (2d * y + 1d) * frequency * Math.PI / (2d * height)
+                );
+            }
+        }
+        int index = 0;
+        for (int v = 0; v < 8; v++) {
+            for (int u = 0; u < 8; u++) {
+                double sum = 0d;
+                for (int y = 0; y < height; y++) {
+                    for (int x = 0; x < width; x++) {
+                        sum += values[y * width + x] * cosineX[u][x] * cosineY[v][y];
+                    }
+                }
+                coefficients[index++] = sum;
+            }
+        }
+        double[] withoutDc = Arrays.copyOfRange(coefficients, 1, coefficients.length);
+        Arrays.sort(withoutDc);
+        double median = withoutDc[withoutDc.length / 2];
+        long hash = 0L;
+        for (double coefficient : coefficients) {
+            hash <<= 1;
+            if (coefficient >= median) hash |= 1L;
+        }
+        return hash;
+    }
+
+    private static long differenceHash(Bitmap source, Region region) {
+        double[] values = grayscale(source, region, 9, 8);
         long hash = 0L;
         for (int y = 0; y < 8; y++) {
             for (int x = 0; x < 8; x++) {
                 hash <<= 1;
-                if (luminance(tiny.getPixel(x, y)) < luminance(tiny.getPixel(x + 1, y))) {
-                    hash |= 1L;
-                }
+                if (values[y * 9 + x] < values[y * 9 + x + 1]) hash |= 1L;
             }
         }
-        tiny.recycle();
         return hash;
     }
 
-    /** Pearson correlation over the artwork luminance grid, tolerant of exposure changes. */
-    private static double structureCorrelation(Bitmap left, Bitmap right) {
-        double[] a = artworkLuminance(left, 16, 12);
-        double[] b = artworkLuminance(right, 16, 12);
-        double meanA = mean(a);
-        double meanB = mean(b);
+    /** Pearson correlation is stable under uniform brightness/contrast changes. */
+    private static double normalizedCorrelation(double[] left, double[] right) {
+        double meanLeft = mean(left);
+        double meanRight = mean(right);
         double numerator = 0d;
-        double squareA = 0d;
-        double squareB = 0d;
-        for (int index = 0; index < a.length; index++) {
-            double centeredA = a[index] - meanA;
-            double centeredB = b[index] - meanB;
-            numerator += centeredA * centeredB;
-            squareA += centeredA * centeredA;
-            squareB += centeredB * centeredB;
+        double squareLeft = 0d;
+        double squareRight = 0d;
+        for (int index = 0; index < left.length; index++) {
+            double a = left[index] - meanLeft;
+            double b = right[index] - meanRight;
+            numerator += a * b;
+            squareLeft += a * a;
+            squareRight += b * b;
         }
-        if (squareA < 1d || squareB < 1d) return 0.5d;
-        return clamp((numerator / Math.sqrt(squareA * squareB) + 1d) / 2d, 0d, 1d);
+        if (squareLeft < 1d || squareRight < 1d) return 0.5d;
+        return clamp((numerator / Math.sqrt(squareLeft * squareRight) + 1d) / 2d, 0d, 1d);
     }
 
-    private static double colorGridSimilarity(Bitmap left, Bitmap right) {
-        Bitmap a = artworkBitmap(left, 8, 6);
-        Bitmap b = artworkBitmap(right, 8, 6);
-        double difference = 0d;
-        for (int y = 0; y < 6; y++) {
-            for (int x = 0; x < 8; x++) {
-                int ca = a.getPixel(x, y);
-                int cb = b.getPixel(x, y);
-                difference += Math.abs(((ca >> 16) & 0xff) - ((cb >> 16) & 0xff));
-                difference += Math.abs(((ca >> 8) & 0xff) - ((cb >> 8) & 0xff));
-                difference += Math.abs((ca & 0xff) - (cb & 0xff));
+    private static double gradientSimilarity(double[] left, double[] right, int width, int height) {
+        double[] gradientLeft = gradient(left, width, height);
+        double[] gradientRight = gradient(right, width, height);
+        return normalizedCorrelation(gradientLeft, gradientRight);
+    }
+
+    private static double[] gradient(double[] values, int width, int height) {
+        double[] output = new double[(width - 2) * (height - 2)];
+        int target = 0;
+        for (int y = 1; y < height - 1; y++) {
+            for (int x = 1; x < width - 1; x++) {
+                double horizontal = values[y * width + x + 1] - values[y * width + x - 1];
+                double vertical = values[(y + 1) * width + x] - values[(y - 1) * width + x];
+                output[target++] = Math.hypot(horizontal, vertical);
             }
         }
-        a.recycle();
-        b.recycle();
-        return clamp(1d - difference / (8d * 6d * 3d * 255d), 0d, 1d);
+        return output;
     }
 
-    private static double[] artworkLuminance(Bitmap source, int width, int height) {
-        Bitmap artwork = artworkBitmap(source, width, height);
+    /** Coarse RGB histograms retain broad artwork palette while ignoring pixel noise. */
+    private static double colorHistogramSimilarity(Bitmap left, Bitmap right, Region region) {
+        double[] a = colorHistogram(left, region);
+        double[] b = colorHistogram(right, region);
+        double intersection = 0d;
+        for (int index = 0; index < a.length; index++) intersection += Math.min(a[index], b[index]);
+        return clamp(intersection / 3d, 0d, 1d);
+    }
+
+    private static double[] colorHistogram(Bitmap source, Region region) {
+        Bitmap sample = sample(source, region, 24, 24);
+        double[] histogram = new double[12];
+        int count = sample.getWidth() * sample.getHeight();
+        for (int y = 0; y < sample.getHeight(); y++) {
+            for (int x = 0; x < sample.getWidth(); x++) {
+                int color = sample.getPixel(x, y);
+                histogram[Math.min(3, ((color >> 16) & 0xff) / 64)]++;
+                histogram[4 + Math.min(3, ((color >> 8) & 0xff) / 64)]++;
+                histogram[8 + Math.min(3, (color & 0xff) / 64)]++;
+            }
+        }
+        sample.recycle();
+        for (int index = 0; index < histogram.length; index++) histogram[index] /= Math.max(1, count);
+        return histogram;
+    }
+
+    private static double[] grayscale(Bitmap source, Region region, int width, int height) {
+        Bitmap sample = sample(source, region, width, height);
         double[] values = new double[width * height];
         for (int y = 0; y < height; y++) {
             for (int x = 0; x < width; x++) {
-                values[y * width + x] = luminance(artwork.getPixel(x, y));
+                values[y * width + x] = luminance(sample.getPixel(x, y));
             }
         }
-        artwork.recycle();
+        sample.recycle();
         return values;
     }
 
-    private static Bitmap artworkBitmap(Bitmap source, int width, int height) {
-        int left = Math.round(source.getWidth() * 0.055f);
-        int top = Math.round(source.getHeight() * 0.14f);
-        int right = Math.round(source.getWidth() * 0.945f);
-        int bottom = Math.round(source.getHeight() * 0.64f);
-        Bitmap crop = Bitmap.createBitmap(source, left, top, right - left, bottom - top);
+    private static Bitmap sample(Bitmap source, Region region, int width, int height) {
+        int left = Math.max(0, Math.round(source.getWidth() * region.left));
+        int top = Math.max(0, Math.round(source.getHeight() * region.top));
+        int right = Math.min(source.getWidth(), Math.round(source.getWidth() * region.right));
+        int bottom = Math.min(source.getHeight(), Math.round(source.getHeight() * region.bottom));
+        Bitmap crop = Bitmap.createBitmap(source, left, top, Math.max(2, right - left), Math.max(2, bottom - top));
         Bitmap output = Bitmap.createScaledBitmap(crop, width, height, true);
         if (crop != source && crop != output) crop.recycle();
         return output;
@@ -152,5 +270,19 @@ public final class CardVisualMatcher {
 
     private static double clamp(double value, double minimum, double maximum) {
         return Math.max(minimum, Math.min(maximum, value));
+    }
+
+    private static final class Region {
+        final float left;
+        final float top;
+        final float right;
+        final float bottom;
+
+        Region(float left, float top, float right, float bottom) {
+            this.left = left;
+            this.top = top;
+            this.right = right;
+            this.bottom = bottom;
+        }
     }
 }

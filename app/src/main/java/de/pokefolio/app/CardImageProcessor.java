@@ -34,6 +34,18 @@ public final class CardImageProcessor {
         }
     }
 
+    public static final class VisualPreparation {
+        public final Bitmap bitmap;
+        public final boolean reliable;
+        public final String method;
+
+        VisualPreparation(Bitmap bitmap, boolean reliable, String method) {
+            this.bitmap = bitmap;
+            this.reliable = reliable;
+            this.method = method;
+        }
+    }
+
     public static Bitmap decodeAndOrient(File file, int maxDimension) throws IOException {
         BitmapFactory.Options bounds = new BitmapFactory.Options();
         bounds.inJustDecodeBounds = true;
@@ -171,6 +183,7 @@ public final class CardImageProcessor {
                     largeHeader.recycle();
                 }
                 header.recycle();
+                addCollectorOcrVariants(variants, card, rotation);
                 if (card != normal) {
                     card.recycle();
                 }
@@ -200,35 +213,124 @@ public final class CardImageProcessor {
 
     /** Reference database images are already rectified and skip edge detection. */
     public static Bitmap prepareForVisualComparison(Bitmap source, boolean attemptPerspectiveCorrection) {
-        Bitmap scaled = scaleDown(source, 1200);
-        Bitmap rectified = attemptPerspectiveCorrection ? rectifyCard(scaled) : null;
-        Bitmap base = rectified != null ? rectified : scaled;
+        return prepareForVisualComparisonDetailed(source, attemptPerspectiveCorrection).bitmap;
+    }
 
-        float currentRatio = base.getWidth() / (float) base.getHeight();
+    /** Locates, rectifies and normalizes the printed card while reporting fallback reliability. */
+    public static VisualPreparation prepareForVisualComparisonDetailed(
+            Bitmap source,
+            boolean attemptPerspectiveCorrection
+    ) {
+        Bitmap scaled = scaleDown(source, 1600);
+        Bitmap rectified = attemptPerspectiveCorrection ? rectifyCard(scaled) : null;
+        Bitmap boundedFallback = attemptPerspectiveCorrection && rectified == null
+                ? cropLikelyCardBounds(scaled)
+                : null;
+        Bitmap base = rectified != null ? rectified : boundedFallback != null ? boundedFallback : scaled;
+        Bitmap oriented = base.getWidth() > base.getHeight() ? rotate(base, 90) : base;
+
+        float currentRatio = oriented.getWidth() / (float) oriented.getHeight();
         int left = 0;
         int top = 0;
-        int width = base.getWidth();
-        int height = base.getHeight();
+        int width = oriented.getWidth();
+        int height = oriented.getHeight();
         if (currentRatio > CARD_RATIO) {
             width = Math.max(2, Math.round(height * CARD_RATIO));
-            left = (base.getWidth() - width) / 2;
+            left = (oriented.getWidth() - width) / 2;
         } else {
             height = Math.max(2, Math.round(width / CARD_RATIO));
-            top = (base.getHeight() - height) / 2;
+            top = (oriented.getHeight() - height) / 2;
         }
-        Bitmap crop = Bitmap.createBitmap(base, left, top, width, height);
-        Bitmap normalized = Bitmap.createScaledBitmap(crop, 126, 176, true);
+        Bitmap crop = Bitmap.createBitmap(oriented, left, top, width, height);
+        Bitmap normalized = Bitmap.createScaledBitmap(crop, 378, 528, true);
 
-        if (crop != base && crop != normalized) {
+        if (crop != oriented && crop != normalized) {
             crop.recycle();
+        }
+        if (oriented != base && !oriented.isRecycled() && oriented != normalized) {
+            oriented.recycle();
         }
         if (rectified != null && !rectified.isRecycled() && rectified != normalized) {
             rectified.recycle();
         }
+        if (boundedFallback != null && !boundedFallback.isRecycled() && boundedFallback != normalized) {
+            boundedFallback.recycle();
+        }
         if (scaled != source && !scaled.isRecycled() && scaled != normalized) {
             scaled.recycle();
         }
-        return normalized;
+        return new VisualPreparation(
+                normalized,
+                !attemptPerspectiveCorrection || rectified != null,
+                attemptPerspectiveCorrection
+                        ? rectified != null
+                            ? "perspective"
+                            : boundedFallback != null ? "edge-fallback" : "center-fallback"
+                        : "reference"
+        );
+    }
+
+    /** Axis-aligned fallback that removes table/background even when four-point fitting is weak. */
+    private static Bitmap cropLikelyCardBounds(Bitmap source) {
+        Bitmap analysis = scaleDown(source, 520);
+        int width = analysis.getWidth();
+        int height = analysis.getHeight();
+        int[] pixels = new int[width * height];
+        analysis.getPixels(pixels, 0, width, 0, 0, width, height);
+        int[] luminance = new int[pixels.length];
+        for (int index = 0; index < pixels.length; index++) {
+            int color = pixels[index];
+            luminance[index] = (77 * ((color >> 16) & 0xff)
+                    + 150 * ((color >> 8) & 0xff)
+                    + 29 * (color & 0xff)) >> 8;
+        }
+        float[] verticalEnergy = new float[width];
+        float[] horizontalEnergy = new float[height];
+        for (int y = 2; y < height - 2; y += 2) {
+            int row = y * width;
+            for (int x = 2; x < width - 2; x += 2) {
+                verticalEnergy[x] += Math.abs(luminance[row + x + 1] - luminance[row + x - 1]);
+                horizontalEnergy[y] += Math.abs(luminance[row + width + x] - luminance[row - width + x]);
+            }
+        }
+        smooth(verticalEnergy, 4);
+        smooth(horizontalEnergy, 4);
+        int left = peak(verticalEnergy, Math.round(width * 0.015f), Math.round(width * 0.48f));
+        int right = peak(verticalEnergy, Math.round(width * 0.52f), Math.round(width * 0.985f));
+        int top = peak(horizontalEnergy, Math.round(height * 0.015f), Math.round(height * 0.48f));
+        int bottom = peak(horizontalEnergy, Math.round(height * 0.52f), Math.round(height * 0.985f));
+        float rectangleWidth = right - left;
+        float rectangleHeight = bottom - top;
+        float portraitRatio = Math.min(rectangleWidth, rectangleHeight)
+                / Math.max(1f, Math.max(rectangleWidth, rectangleHeight));
+        boolean plausible = rectangleWidth >= width * 0.30f
+                && rectangleHeight >= height * 0.30f
+                && rectangleWidth * rectangleHeight >= width * height * 0.18f
+                && portraitRatio >= 0.50f
+                && portraitRatio <= 0.88f
+                && peakRatio(verticalEnergy, left, right) >= 1.06f
+                && peakRatio(horizontalEnergy, top, bottom) >= 1.06f;
+        if (!plausible) {
+            if (analysis != source) analysis.recycle();
+            return null;
+        }
+
+        float scaleX = source.getWidth() / (float) width;
+        float scaleY = source.getHeight() / (float) height;
+        int paddingX = Math.max(1, Math.round(rectangleWidth * scaleX * 0.012f));
+        int paddingY = Math.max(1, Math.round(rectangleHeight * scaleY * 0.012f));
+        int cropLeft = clamp(Math.round(left * scaleX) - paddingX, 0, source.getWidth() - 2);
+        int cropTop = clamp(Math.round(top * scaleY) - paddingY, 0, source.getHeight() - 2);
+        int cropRight = clamp(Math.round(right * scaleX) + paddingX, cropLeft + 2, source.getWidth());
+        int cropBottom = clamp(Math.round(bottom * scaleY) + paddingY, cropTop + 2, source.getHeight());
+        if (analysis != source) analysis.recycle();
+        return Bitmap.createBitmap(
+                source,
+                cropLeft,
+                cropTop,
+                cropRight - cropLeft,
+                cropBottom - cropTop
+        );
     }
 
     /** Attempts a four-point document transform. Returns null when the edge evidence is weak. */
@@ -496,6 +598,75 @@ public final class CardImageProcessor {
             crop.recycle();
         }
         return scaled;
+    }
+
+    private static void addCollectorOcrVariants(List<OcrVariant> variants, Bitmap card, int rotation) {
+        int top = Math.max(0, Math.round(card.getHeight() * 0.68f));
+        Bitmap bottom = Bitmap.createBitmap(card, 0, top, card.getWidth(), card.getHeight() - top);
+        int normalWidth = 1100;
+        Bitmap normal = Bitmap.createScaledBitmap(
+                bottom,
+                normalWidth,
+                Math.max(2, Math.round(bottom.getHeight() * normalWidth / (float) bottom.getWidth())),
+                true
+        );
+        variants.add(new OcrVariant("unterkante-normal-" + rotation, normal));
+        variants.add(new OcrVariant("unterkante-grau-" + rotation, grayscaleForOcr(normal)));
+        variants.add(new OcrVariant("unterkante-kontrast-" + rotation, enhanceForOcr(normal)));
+
+        int sharpWidth = 1500;
+        Bitmap sharpLarge = Bitmap.createScaledBitmap(
+                bottom,
+                sharpWidth,
+                Math.max(2, Math.round(bottom.getHeight() * sharpWidth / (float) bottom.getWidth())),
+                true
+        );
+        Bitmap sharpGray = grayscaleForOcr(sharpLarge);
+        variants.add(new OcrVariant("unterkante-scharf-" + rotation, sharpenForOcr(sharpGray)));
+        sharpGray.recycle();
+        if (sharpLarge != bottom) sharpLarge.recycle();
+        if (bottom != card) bottom.recycle();
+    }
+
+    private static Bitmap grayscaleForOcr(Bitmap source) {
+        Bitmap output = Bitmap.createBitmap(source.getWidth(), source.getHeight(), Bitmap.Config.ARGB_8888);
+        Canvas canvas = new Canvas(output);
+        Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
+        ColorMatrix grayscale = new ColorMatrix();
+        grayscale.setSaturation(0f);
+        paint.setColorFilter(new ColorMatrixColorFilter(grayscale));
+        canvas.drawBitmap(source, 0f, 0f, paint);
+        return output;
+    }
+
+    /** Small unsharp kernel for low-contrast collector-number print. */
+    private static Bitmap sharpenForOcr(Bitmap source) {
+        int width = source.getWidth();
+        int height = source.getHeight();
+        int[] input = new int[width * height];
+        int[] output = new int[input.length];
+        source.getPixels(input, 0, width, 0, 0, width, height);
+        System.arraycopy(input, 0, output, 0, input.length);
+        for (int y = 1; y < height - 1; y++) {
+            int row = y * width;
+            for (int x = 1; x < width - 1; x++) {
+                int index = row + x;
+                int center = input[index] & 0xff;
+                int sharpened = clamp(
+                        center * 5
+                                - (input[index - 1] & 0xff)
+                                - (input[index + 1] & 0xff)
+                                - (input[index - width] & 0xff)
+                                - (input[index + width] & 0xff),
+                        0,
+                        255
+                );
+                output[index] = 0xff000000 | sharpened << 16 | sharpened << 8 | sharpened;
+            }
+        }
+        Bitmap bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+        bitmap.setPixels(output, 0, width, 0, 0, width, height);
+        return bitmap;
     }
 
     private static Bitmap enhanceForOcr(Bitmap source) {
