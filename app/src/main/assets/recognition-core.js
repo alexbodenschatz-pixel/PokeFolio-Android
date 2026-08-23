@@ -10,8 +10,11 @@
     'energy', 'energie', 'pokemon', 'pokémon', 'sammeln', 'ziehe', 'schaden',
     'damage', 'attack', 'ability', 'fähigkeit', 'illustrator', 'illustration',
     'copyright', 'bandai', 'konami', 'character', 'leader', 'counter', 'don!!',
-    'event', 'retreat', 'weakness', 'resistance', 'schwäche', 'resistenz'
+    'event', 'retreat', 'weakness', 'resistance', 'schwäche', 'resistenz',
+    'pokedex', 'pokédex', 'national', 'nummer', 'größe', 'gewicht', 'entwickelt sich',
+    'entwicklung', 'rückzug', 'illus', 'nr.'
   ];
+  const pokemonCollectorPrefixes = new Set(['TG', 'GG', 'SV', 'RC', 'SH']);
 
   function clamp(value, minimum, maximum) {
     return Math.max(minimum, Math.min(maximum, value));
@@ -69,6 +72,40 @@
     return match[1] + String(parseInt(match[2], 10)) + match[3];
   }
 
+  function parsePokemonCollector(numberValue, totalValue, context) {
+    const line = String(context && context.text || '');
+    const y = Number(context && context.y);
+    const simpleInput = Boolean(context && context.simpleInput);
+    if (/\b(?:pok[eé]dex|national(?:er)?\s+pok[eé]dex|nr\.?|no\.?)\s*[:#-]?\s*0*\d{1,4}\b/i.test(line)) {
+      return null;
+    }
+    const number = cleanOcrDigits(numberValue).replace(/[^A-Z0-9]/g, '');
+    const totalRaw = cleanOcrDigits(totalValue).replace(/[^A-Z0-9]/g, '');
+    const numberMatch = number.match(/^([A-Z]{0,4})(\d{1,3})([A-Z]?)$/);
+    const totalMatch = totalRaw.match(/^([A-Z]{0,4})(\d{1,3})$/);
+    if (!numberMatch || !totalMatch) return null;
+    const numberPrefix = numberMatch[1];
+    const totalPrefix = totalMatch[1];
+    if (numberPrefix && !pokemonCollectorPrefixes.has(numberPrefix)) return null;
+    if (totalPrefix && !pokemonCollectorPrefixes.has(totalPrefix)) return null;
+    if (numberPrefix && totalPrefix && numberPrefix !== totalPrefix) return null;
+    if (!simpleInput && Number.isFinite(y)) {
+      const minimumY = numberPrefix || totalPrefix ? 0.46 : 0.58;
+      if (y < minimumY) return null;
+    }
+    const total = String(parseInt(totalMatch[2], 10));
+    if (!total || Number(total) < 1 || Number(total) > 999) return null;
+    const digits = numberPrefix
+      ? numberMatch[2]
+      : String(parseInt(numberMatch[2], 10));
+    if (!digits || Number(numberMatch[2]) > 999) return null;
+    return {
+      number: numberPrefix + digits + numberMatch[3],
+      total,
+      prefix: numberPrefix || totalPrefix || ''
+    };
+  }
+
   function collectPasses(input) {
     if (typeof input === 'string') return [{variant: 'einfach', text: input, lines: []}];
     if (!input || typeof input !== 'object') return [];
@@ -103,30 +140,43 @@
           y: index / Math.max(1, all.length)
         }));
       const seenLines = new Set();
+      const normalizedLines = [];
       lines.forEach(rawLine => {
         const value = String(rawLine.text || '').replace(/\s+/g, ' ').trim();
         const key = norm(value);
         if (!value || seenLines.has(key)) return;
         seenLines.add(key);
-        lineEntries.push({
+        const rawY = Number.isFinite(Number(rawLine.y)) ? Number(rawLine.y) : 0.5;
+        const variant = String(pass.variant || 'einfach');
+        const entry = {
           text: value,
-          y: Number.isFinite(Number(rawLine.y)) ? Number(rawLine.y) : 0.5,
-          pass: passIndex
-        });
+          y: /^kopfzeile-/.test(variant) ? rawY * 0.32 : rawY,
+          pass: passIndex,
+          variant
+        };
+        lineEntries.push(entry);
+        normalizedLines.push(entry);
       });
 
-      const collectorPattern = /\b([A-Z]{0,3}\s*-?\s*[0-9OIL|]{1,3}[A-Z]?)\s*[\/／]\s*([A-Z]{0,3}\s*-?\s*[0-9OIL|]{1,3})\b/gi;
-      let collectorMatch;
       const seenCollectors = new Set();
-      while ((collectorMatch = collectorPattern.exec(text)) !== null) {
-        const number = cleanOcrDigits(collectorMatch[1]).replace(/\s/g, '');
-        const total = cleanOcrDigits(collectorMatch[2]).replace(/\D/g, '');
-        const key = numberKey(number) + '/' + numberKey(total);
-        if (number && total && !seenCollectors.has(key)) {
-          seenCollectors.add(key);
-          addVote(collectorVotes, key, {number, total}, 1);
+      normalizedLines.forEach(line => {
+        const collectorPattern = /\b([A-Z]{0,4}\s*-?\s*[0-9OIL|]{1,3}[A-Z]?)\s*[\/／]\s*([A-Z]{0,4}\s*-?\s*[0-9OIL|]{1,3})\b/gi;
+        let collectorMatch;
+        while ((collectorMatch = collectorPattern.exec(line.text)) !== null) {
+          const collector = parsePokemonCollector(collectorMatch[1], collectorMatch[2], {
+            text: line.text,
+            y: line.y,
+            simpleInput: line.variant === 'einfach'
+          });
+          if (!collector) continue;
+          const key = numberKey(collector.number) + '/' + numberKey(collector.total);
+          if (!seenCollectors.has(key)) {
+            seenCollectors.add(key);
+            const positionWeight = line.variant === 'einfach' ? 1 : line.y >= 0.78 ? 1.55 : 1.1;
+            addVote(collectorVotes, key, collector, positionWeight);
+          }
         }
-      }
+      });
 
       const upper = text.toUpperCase();
       const setPattern = /\b((?:SV|SWSH|SM|XY|BW|HGSS|DP|PL|EX)[A-Z0-9-]{1,8})\b/g;
@@ -151,6 +201,7 @@
 
     const lineVotes = new Map();
     lineEntries.forEach(line => {
+      const containedHp = /\b(?:KP|HP)\s*[0-9OIL|]{2,3}\b/i.test(line.text);
       let value = line.text
         .replace(/\b(?:KP|HP)\s*[0-9OIL|]{2,3}\b/ig, '')
         .replace(/^(?:BASIS|BASIC|PHASE|STAGE)\s*\d*\s*/i, '')
@@ -161,8 +212,12 @@
       if (value.length < 2 || value.length > 48 || letters < 2 || digits > letters) return;
       if (bannedNameTerms.some(term => normalized.includes(norm(term)))) return;
       if (/^[A-Z0-9-]{5,}$/.test(value) || /\d+\s*[\/／]\s*\d+/.test(value)) return;
-      const positionBonus = line.y <= 0.38 ? 1.35 : line.y <= 0.58 ? 0.45 : 0;
-      addVote(lineVotes, normalized, value, 1 + positionBonus);
+      if (/\b(?:pok[eé]dex|nr\.?|no\.?)\s*[:#-]?\s*0*\d{1,4}\b/i.test(value)) return;
+      const positionBonus = line.y <= 0.23 ? 2.25 : line.y <= 0.33 ? 1.05 : line.y <= 0.44 ? 0.15 : -0.72;
+      const headerBonus = /^kopfzeile-/.test(line.variant) ? 0.9 : 0;
+      const hpBonus = containedHp && line.y <= 0.34 ? 0.65 : 0;
+      const weight = 1 + positionBonus + headerBonus + hpBonus;
+      if (weight > 0.2) addVote(lineVotes, normalized, value, weight);
     });
 
     const nameHints = [...lineVotes.values()]
@@ -313,6 +368,7 @@
     norm,
     similarity,
     numberKey,
+    parsePokemonCollector,
     extractHints,
     classifyTcg,
     scorePokemonCandidate,

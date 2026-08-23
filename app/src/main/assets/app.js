@@ -3,6 +3,7 @@
 const $ = selector => document.querySelector(selector);
 const $$ = selector => document.querySelectorAll(selector);
 const Recognition = window.PokeRecognition;
+const Api = window.PokeApi;
 
 let selectedTcg = 'auto';
 let recognizedTcg = 'pokemon';
@@ -205,13 +206,24 @@ window.onNativeHttpResult = json => {
     clearTimeout(pending.timeout);
     pendingHttp.delete(response.requestId);
     if (!response.ok) {
-      pending.reject(new Error('HTTP ' + (response.status || '') + ' ' + (response.error || '')));
+      pending.reject(Api.createHttpError({
+        url: response.url || pending.url,
+        status: response.status,
+        body: response.body,
+        retryAfterMs: response.retryAfterMs,
+        error: response.error || ('HTTP ' + (response.status || 0))
+      }));
       return;
     }
     try {
       pending.resolve(JSON.parse(response.body));
     } catch (error) {
-      pending.reject(new Error('Die Kartendatenbank hat ungültige Daten geliefert.'));
+      pending.reject(Api.createHttpError({
+        url: response.url || pending.url,
+        status: response.status,
+        body: response.body,
+        error: 'Die Kartendatenbank hat ungültige Daten geliefert.'
+      }));
     }
   } catch (error) {
     console.error(error);
@@ -235,22 +247,65 @@ function nativeOcr(dataUrl, language) {
   });
 }
 
-function nativeGet(url) {
+function nativeGetOnce(url) {
   return new Promise((resolve, reject) => {
     if (window.PokeNative && PokeNative.httpGet) {
       const requestId = 'http' + requestSequence++;
       const timeout = setTimeout(() => {
         pendingHttp.delete(requestId);
-        reject(new Error('Die Kartendatenbank antwortet nicht.'));
-      }, 22000);
-      pendingHttp.set(requestId, {resolve, reject, timeout});
+        reject(Api.createHttpError({
+          url,
+          status: 0,
+          body: '',
+          error: 'Die Kartendatenbank antwortet nicht.'
+        }));
+      }, 16000);
+      pendingHttp.set(requestId, {resolve, reject, timeout, url});
       PokeNative.httpGet(url, requestId);
       return;
     }
-    fetch(url).then(response => {
-      if (!response.ok) throw new Error('HTTP ' + response.status);
-      return response.json();
-    }).then(resolve, reject);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
+    fetch(url, {headers: {'Accept': 'application/json'}, signal: controller.signal})
+      .then(async response => {
+        const body = await response.text();
+        if (!response.ok) {
+          const retryAfter = Number(response.headers.get('Retry-After'));
+          throw Api.createHttpError({
+            url,
+            status: response.status,
+            body,
+            retryAfterMs: Number.isFinite(retryAfter) ? retryAfter * 1000 : 0,
+            error: 'HTTP ' + response.status
+          });
+        }
+        try {
+          return JSON.parse(body);
+        } catch (error) {
+          throw Api.createHttpError({
+            url,
+            status: response.status,
+            body,
+            error: 'Die Kartendatenbank hat ungültige Daten geliefert.'
+          });
+        }
+      })
+      .then(resolve, error => {
+        if (error && error.name === 'AbortError') {
+          reject(Api.createHttpError({url, status: 0, error: 'Zeitüberschreitung der Kartendatenbank.'}));
+        } else {
+          reject(error);
+        }
+      })
+      .finally(() => clearTimeout(timeout));
+  });
+}
+
+function nativeGet(url) {
+  return Api.requestJsonWithRetry(url, nativeGetOnce, {
+    attempts: 3,
+    backoffMs: [250, 650],
+    logger: message => console.error(message)
   });
 }
 
@@ -298,54 +353,89 @@ function pokemonCardFromApi(card) {
   };
 }
 
+function pokemonCardFromTcgdex(card) {
+  const set = card.set || {};
+  const cardCount = set.cardCount || {};
+  return {
+    tcg: 'pokemon',
+    id: 'tcgdex:' + card.id,
+    name: card.name,
+    number: card.localId || card.number || '',
+    set: set.name || '',
+    setId: set.id || String(card.id || '').split('-')[0],
+    series: set.serie && set.serie.name || '',
+    printedTotal: cardCount.official || '',
+    total: cardCount.total || '',
+    rarity: card.rarity || '',
+    hp: card.hp || '',
+    subtypes: card.stage ? [card.stage] : [],
+    artist: card.illustrator || '',
+    source: 'TCGdex (Deutsch)',
+    price: null
+  };
+}
+
 async function pokemonSearch(hints, manual = '') {
-  const queries = [];
-  (hints.collectorNumbers || []).slice(0, 2).forEach(item => {
-    const rawValue = String(item.number || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
-    const normalizedValue = Recognition.numberKey(rawValue);
-    if (rawValue) queries.push('number:' + rawValue);
-    if (normalizedValue && normalizedValue !== rawValue) queries.push('number:' + normalizedValue);
-  });
-  const names = manual
-    ? [{value: manual}]
-    : (hints.nameHints || []).slice(0, 2);
-  names.forEach(item => {
-    const value = String(item.value || '').replace(/["\\]/g, '').trim();
-    if (value && /[A-Za-zÀ-ÿ]/.test(value)) queries.push('name:"' + value + '"');
-  });
-  if (!queries.length) return [];
-
-  const uniqueQueries = [...new Set(queries)].slice(0, 4);
-  const responses = await Promise.allSettled(uniqueQueries.map(query => nativeGet(
-    'https://api.pokemontcg.io/v2/cards?q=' + encodeURIComponent(query) + '&pageSize=100'
-  )));
   const byId = new Map();
-  let lastError = null;
-  responses.forEach(response => {
-    if (response.status === 'fulfilled') {
-      (response.value.data || []).forEach(card => byId.set(card.id, pokemonCardFromApi(card)));
-    } else {
-      lastError = response.reason;
-    }
+  const language = $('#lang').value === 'de' ? 'de' : 'en';
+  const primaryPromise = Api.settleSearchVariants(
+    Api.buildPokemonTcgUrls(hints, manual),
+    nativeGetOnce,
+    {attempts: 3, backoffMs: [250, 650], logger: message => console.error(message)}
+  );
+  // German cards use the localized provider in parallel, so an unhealthy primary API adds no delay.
+  const localizedPromise = language === 'de'
+    ? Api.settleSearchVariants(
+      Api.buildTcgdexUrls(hints, manual, language),
+      nativeGetOnce,
+      {attempts: 3, backoffMs: [250, 650], logger: message => console.error(message)}
+    )
+    : null;
+  const primary = await primaryPromise;
+  primary.values.forEach(response => {
+    (response.value.data || []).forEach(card => byId.set('pokemontcg:' + card.id, pokemonCardFromApi(card)));
   });
 
-  if (!byId.size && names.length) {
-    const longestWord = String(names[0].value || '')
-      .split(/\s+/)
-      .sort((a, b) => b.length - a.length)[0];
-    if (longestWord && longestWord.length > 3) {
-      try {
-        const fallback = await nativeGet(
-          'https://api.pokemontcg.io/v2/cards?q=' + encodeURIComponent('name:*' + longestWord + '*') + '&pageSize=60'
-        );
-        (fallback.data || []).forEach(card => byId.set(card.id, pokemonCardFromApi(card)));
-      } catch (error) {
-        lastError = error;
-      }
+  const useAlternative = language === 'de' || !byId.size || primary.unavailable;
+  const alternative = useAlternative
+    ? await (localizedPromise || Api.settleSearchVariants(
+      Api.buildTcgdexUrls(hints, manual, language),
+      nativeGetOnce,
+      {attempts: 3, backoffMs: [250, 650], logger: message => console.error(message)}
+    ))
+    : {values: [], errors: [], successCount: 0, unavailable: false};
+  alternative.values.forEach(response => {
+    const list = Array.isArray(response.value) ? response.value : response.value && response.value.data || [];
+    list.forEach(card => byId.set('tcgdex:' + card.id, pokemonCardFromTcgdex(card)));
+  });
+
+  return {
+    candidates: Recognition.rankPokemonCandidates([...byId.values()], hints, manual),
+    status: {
+      primaryUnavailable: primary.unavailable,
+      alternativeUnavailable: useAlternative && alternative.unavailable,
+      primaryErrors: primary.errors,
+      alternativeErrors: alternative.errors
     }
+  };
+}
+
+function emptyLookupStatus() {
+  return {
+    primaryUnavailable: false,
+    alternativeUnavailable: false,
+    primaryErrors: [],
+    alternativeErrors: []
+  };
+}
+
+function recoveryMessage(status) {
+  if (!status || !status.primaryUnavailable) return '';
+  $('#manualDetails').open = true;
+  if (status.alternativeUnavailable) {
+    return 'Die Pokémon-Kartendienste sind momentan nicht erreichbar. Die lokale OCR ist abgeschlossen; du kannst Name, Set und Nummer weiterhin manuell eintragen und später erneut suchen.';
   }
-  if (!byId.size && lastError) throw lastError;
-  return Recognition.rankPokemonCandidates([...byId.values()], hints, manual);
+  return 'Die Pokémon-TCG-API ist momentan nicht erreichbar. Die deutschsprachige Ausweichsuche wurde weiter ausgewertet; du kannst außerdem jederzeit manuell suchen.';
 }
 
 async function yugiohSearch(hints, manual = '') {
@@ -431,11 +521,11 @@ async function onePieceSearch(hints, manual = '') {
   return [];
 }
 
-function lookupCandidates(kind, hints, manual = '') {
+async function lookupCandidates(kind, hints, manual = '') {
   if (kind === 'pokemon') return pokemonSearch(hints, manual);
-  if (kind === 'yugioh') return yugiohSearch(hints, manual);
-  if (kind === 'onepiece') return onePieceSearch(hints, manual);
-  return Promise.resolve([]);
+  if (kind === 'yugioh') return {candidates: await yugiohSearch(hints, manual), status: emptyLookupStatus()};
+  if (kind === 'onepiece') return {candidates: await onePieceSearch(hints, manual), status: emptyLookupStatus()};
+  return {candidates: [], status: emptyLookupStatus()};
 }
 
 function renderCandidates() {
@@ -498,12 +588,18 @@ async function runRecognition(manual = false) {
     const hints = Recognition.extractHints(ocrResult);
     const kind = Recognition.classifyTcg(hints, manual ? selectedTcg : selectedTcg);
     recognizedTcg = kind;
-    candidates = await lookupCandidates(kind, hints, '');
+    const lookup = await lookupCandidates(kind, hints, '');
+    candidates = lookup.candidates;
     if (run !== recognitionRun) return null;
     renderCandidates();
 
     if (!candidates.length) {
       recognition = null;
+      const recovery = recoveryMessage(lookup.status);
+      if (recovery) {
+        setRecState('warn', 'Kartendienst nicht erreichbar', recovery);
+        return null;
+      }
       const hint = hints.nameHint
         || hints.onepieceId
         || hints.yugiohSetCode
@@ -552,17 +648,24 @@ $('#manualSearch').onclick = async () => {
       const match = query.toUpperCase().match(/\b(?:OP|ST|EB|PRB|EX|DON)\d{2}-\d{3}\b/);
       if (match) hints.onepieceId = match[0];
     }
-    candidates = await lookupCandidates(kind, hints, query);
+    const lookup = await lookupCandidates(kind, hints, query);
+    candidates = lookup.candidates;
     renderCandidates();
+    const recovery = !candidates.length && recoveryMessage(lookup.status);
     setRecState(
-      candidates.length ? 'warn' : 'bad',
-      candidates.length ? 'Treffer gefunden' : 'Keine Treffer',
+      candidates.length || recovery ? 'warn' : 'bad',
+      candidates.length ? 'Treffer gefunden' : recovery ? 'Kartendienst nicht erreichbar' : 'Keine Treffer',
       candidates.length
         ? 'Bitte die passende Karte übernehmen.'
-        : 'Versuche Name, Setcode oder Kartennummer anders einzugeben.'
+        : recovery || 'Versuche Name, Setcode oder Kartennummer anders einzugeben.'
     );
   } catch (error) {
-    setRecState('bad', 'Suche fehlgeschlagen', error.message || 'Unbekannter Fehler.');
+    $('#manualDetails').open = true;
+    setRecState(
+      'warn',
+      'Suche vorübergehend nicht möglich',
+      (error.message || 'Unbekannter Fehler.') + ' Du kannst Name, Set und Nummer weiterhin manuell eintragen.'
+    );
   }
 };
 

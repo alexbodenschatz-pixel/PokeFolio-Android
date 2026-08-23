@@ -157,6 +157,20 @@ public final class CardImageProcessor {
             if (ratio >= 0.42f && ratio <= 1.08f) {
                 Bitmap card = centerCropToCard(normal);
                 variants.add(new OcrVariant("karte-kontrast-" + rotation, enhanceForOcr(card)));
+                int headerHeight = Math.max(2, Math.round(card.getHeight() * 0.30f));
+                Bitmap header = Bitmap.createBitmap(card, 0, 0, card.getWidth(), headerHeight);
+                int targetWidth = Math.max(1200, header.getWidth());
+                Bitmap largeHeader = Bitmap.createScaledBitmap(
+                        header,
+                        targetWidth,
+                        Math.max(2, Math.round(header.getHeight() * targetWidth / (float) header.getWidth())),
+                        true
+                );
+                variants.add(new OcrVariant("kopfzeile-" + rotation, enhanceForOcr(largeHeader)));
+                if (largeHeader != header) {
+                    largeHeader.recycle();
+                }
+                header.recycle();
                 if (card != normal) {
                     card.recycle();
                 }

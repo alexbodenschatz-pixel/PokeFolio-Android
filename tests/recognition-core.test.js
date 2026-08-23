@@ -73,3 +73,85 @@ test('erkennt TCG-spezifische Codes auch aus unscharfen OCR-Zeilen', () => {
   assert.equal(recognition.classifyTcg(recognition.extractHints('LOB-DE001\nATK 3000 DEF 2500'), 'auto'), 'yugioh');
   assert.equal(recognition.classifyTcg(recognition.extractHints('Glurak\nKP 330\n199/165'), 'auto'), 'pokemon');
 });
+
+test('verwechselt deutsche Pokédex-Nummern nicht mit der Collector Number', () => {
+  const hints = recognition.extractHints({
+    passes: [{
+      variant: 'karte-kontrast-0',
+      text: 'Krarmor\nPokédex-Nr. 0227\n125/197',
+      lines: [
+        {text: 'Krarmor', y: 0.08},
+        {text: 'Pokédex-Nr. 0227', y: 0.72},
+        {text: '125/197', y: 0.93}
+      ]
+    }]
+  });
+
+  assert.equal(hints.nameHint, 'Krarmor');
+  assert.deepEqual(hints.collectorNumbers.map(item => `${item.number}/${item.total}`), ['125/197']);
+  assert.equal(recognition.parsePokemonCollector('0227', '1025', {
+    text: 'Pokédex-Nr. 0227 / 1025', y: 0.9
+  }), null);
+});
+
+test('akzeptiert typische Pokémon-Collector-Number-Muster und verwirft fremde Präfixe', () => {
+  assert.deepEqual(
+    recognition.parsePokemonCollector('TG01', 'TG30', {text: 'TG01/TG30', y: 0.92}),
+    {number: 'TG01', total: '30', prefix: 'TG'}
+  );
+  assert.deepEqual(
+    recognition.parsePokemonCollector('SV001', 'SV122', {text: 'SV001/SV122', y: 0.92}),
+    {number: 'SV001', total: '122', prefix: 'SV'}
+  );
+  assert.equal(
+    recognition.parsePokemonCollector('ABC123', 'XYZ198', {text: 'ABC123/XYZ198', y: 0.92}),
+    null
+  );
+});
+
+test('bevorzugt bei deutscher Kamera-OCR den mehrfach gelesenen Namen in der Kartenkopfzeile', () => {
+  const hints = recognition.extractHints({passes: [
+    {
+      variant: 'vollbild-0',
+      text: 'BASIS Glurak ex KP 330\nPokédex-Nr. 0006\nExplosiver Wirbel\n199/165',
+      lines: [
+        {text: 'BASIS Glurak ex KP 330', y: 0.08},
+        {text: 'Pokédex-Nr. 0006', y: 0.31},
+        {text: 'Explosiver Wirbel', y: 0.58},
+        {text: '199/165', y: 0.93}
+      ]
+    },
+    {
+      variant: 'kopfzeile-0',
+      text: 'Glurak ex\nKP 330',
+      lines: [{text: 'Glurak ex', y: 0.18}, {text: 'KP 330', y: 0.22}]
+    },
+    {
+      variant: 'karte-kontrast-0',
+      text: 'Glurak ex\nExplosiver Wirbel\n199/165',
+      lines: [{text: 'Glurak ex', y: 0.08}, {text: 'Explosiver Wirbel', y: 0.58}, {text: '199/165', y: 0.92}]
+    }
+  ]});
+
+  assert.equal(hints.nameHint, 'Glurak ex');
+  assert.equal(hints.hp, '330');
+  assert.equal(hints.collectorNumbers[0].number, '199');
+});
+
+test('verwendet bei Galerie-OCR die Position über mehrere Perspektiv- und Kontrastdurchläufe', () => {
+  const hints = recognition.extractHints({passes: [
+    {
+      variant: 'karte-kontrast-90',
+      text: 'Pikachu\nElektroball\n025/185',
+      lines: [{text: 'Pikachu', y: 0.09}, {text: 'Elektroball', y: 0.53}, {text: '025/185', y: 0.94}]
+    },
+    {
+      variant: 'kopfzeile-90',
+      text: 'BASIS Pikachu\nKP 70',
+      lines: [{text: 'BASIS Pikachu', y: 0.21}, {text: 'KP 70', y: 0.28}]
+    }
+  ]});
+
+  assert.equal(hints.nameHint, 'Pikachu');
+  assert.equal(hints.collectorNumbers[0].number, '25');
+});

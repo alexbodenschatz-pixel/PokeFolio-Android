@@ -58,6 +58,7 @@ public final class MainActivity extends Activity {
     private ExecutorService bridgeExecutor;
     private final Set<String> allowedHosts = new HashSet<>(Arrays.asList(
             "api.pokemontcg.io",
+            "api.tcgdex.net",
             "db.ygoprodeck.com",
             "optcgapi.com"
     ));
@@ -293,20 +294,24 @@ public final class MainActivity extends Activity {
     private void performHttpGet(String urlString, String requestId) {
         JSONObject output = new JSONObject();
         HttpURLConnection connection = null;
+        int status = 0;
+        String responseBody = "";
         try {
             output.put("requestId", requestId);
+            output.put("url", urlString);
             URL url = new URL(urlString);
             String host = url.getHost().toLowerCase(Locale.US);
             if (!"https".equalsIgnoreCase(url.getProtocol()) || !allowedHosts.contains(host)) {
                 throw new SecurityException("Nicht erlaubte Datenquelle.");
             }
             connection = (HttpURLConnection) url.openConnection();
-            connection.setConnectTimeout(9000);
-            connection.setReadTimeout(14000);
+            connection.setConnectTimeout(6500);
+            connection.setReadTimeout(9500);
             connection.setRequestMethod("GET");
             connection.setRequestProperty("Accept", "application/json");
-            connection.setRequestProperty("User-Agent", "PokeFolio/0.7.0 Android");
-            int status = connection.getResponseCode();
+            connection.setRequestProperty("Cache-Control", "no-cache");
+            connection.setRequestProperty("User-Agent", "PokeFolio/0.7.1 Android");
+            status = connection.getResponseCode();
             InputStream stream = status >= 200 && status < 400
                     ? connection.getInputStream()
                     : connection.getErrorStream();
@@ -320,13 +325,29 @@ public final class MainActivity extends Activity {
                     }
                 }
             }
+            responseBody = body.toString();
             output.put("ok", status >= 200 && status < 300);
             output.put("status", status);
-            output.put("body", body.toString());
+            output.put("body", responseBody);
+            String retryAfter = connection.getHeaderField("Retry-After");
+            if (retryAfter != null) {
+                try {
+                    output.put("retryAfterMs", Math.min(3000L, Long.parseLong(retryAfter.trim()) * 1000L));
+                } catch (NumberFormatException ignored) {
+                    // HTTP-date Retry-After values fall back to the short JavaScript backoff.
+                }
+            }
+            if (status < 200 || status >= 300) {
+                output.put("error", "HTTP " + status);
+                logHttpFailure(urlString, status, responseBody, null);
+            }
         } catch (Exception error) {
-            Log.w(TAG, "HTTP bridge request failed", error);
+            logHttpFailure(urlString, status, responseBody, error);
             try {
                 output.put("ok", false);
+                output.put("url", urlString);
+                output.put("status", status);
+                output.put("body", responseBody);
                 output.put("error", safeMessage(error, "Netzwerkanfrage fehlgeschlagen."));
             } catch (Exception ignored) {
                 // Keep best-effort response.
@@ -337,6 +358,23 @@ public final class MainActivity extends Activity {
             }
         }
         sendJs("onNativeHttpResult", output);
+    }
+
+    private static void logHttpFailure(String url, int status, String body, Exception error) {
+        String compactBody = body == null || body.trim().isEmpty()
+                ? "<leer>"
+                : body.replaceAll("\\s+", " ").trim();
+        if (compactBody.length() > 6000) {
+            compactBody = compactBody.substring(0, 6000) + "…";
+        }
+        String message = "HTTP request failed URL=" + url
+                + " Status=" + status
+                + " Body=" + compactBody;
+        if (error == null) {
+            Log.w(TAG, message);
+        } else {
+            Log.w(TAG, message, error);
+        }
     }
 
     private static String safeMessage(Exception error, String fallback) {
