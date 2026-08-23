@@ -32,6 +32,8 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.BufferedReader;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
@@ -52,14 +54,22 @@ public final class MainActivity extends Activity {
     private static final int FILE_CHOOSER = 1001;
     private static final int CAMERA_PERMISSION = 2001;
     private static final int MAX_BRIDGE_IMAGE_BYTES = 14_000_000;
+    private static final int MAX_REFERENCE_IMAGE_BYTES = 8_000_000;
 
     private WebView webView;
     private ValueCallback<Uri[]> fileCallback;
     private ExecutorService bridgeExecutor;
+    private ExecutorService comparisonExecutor;
     private final Set<String> allowedHosts = new HashSet<>(Arrays.asList(
             "api.pokemontcg.io",
             "api.tcgdex.net",
             "db.ygoprodeck.com",
+            "optcgapi.com"
+    ));
+    private final Set<String> allowedImageHosts = new HashSet<>(Arrays.asList(
+            "images.pokemontcg.io",
+            "assets.tcgdex.net",
+            "images.ygoprodeck.com",
             "optcgapi.com"
     ));
 
@@ -68,6 +78,7 @@ public final class MainActivity extends Activity {
     public void onCreate(Bundle state) {
         super.onCreate(state);
         bridgeExecutor = Executors.newSingleThreadExecutor();
+        comparisonExecutor = Executors.newFixedThreadPool(3);
         webView = new WebView(this);
         setContentView(webView);
 
@@ -79,7 +90,7 @@ public final class MainActivity extends Activity {
         settings.setAllowContentAccess(true);
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
         settings.setMediaPlaybackRequiresUserGesture(false);
-        settings.setUserAgentString(settings.getUserAgentString() + " PokeFolio/0.7.0");
+        settings.setUserAgentString(settings.getUserAgentString() + " PokeFolio/0.8.0");
 
         webView.addJavascriptInterface(new NativeBridge(), "PokeNative");
         webView.setWebViewClient(new WebViewClient() {
@@ -163,6 +174,126 @@ public final class MainActivity extends Activity {
         public void httpGet(String urlString, String requestId) {
             bridgeExecutor.execute(() -> performHttpGet(urlString, requestId));
         }
+
+        @JavascriptInterface
+        public void compareCardImage(String dataUrl, String imageUrl, String requestId) {
+            comparisonExecutor.execute(() -> performVisualComparison(dataUrl, imageUrl, requestId));
+        }
+    }
+
+    private void performVisualComparison(String dataUrl, String imageUrl, String requestId) {
+        JSONObject output = new JSONObject();
+        Bitmap photographed = null;
+        Bitmap reference = null;
+        try {
+            output.put("requestId", requestId);
+            output.put("imageUrl", imageUrl);
+            photographed = decodeDataUrlBitmap(dataUrl);
+            reference = downloadReferenceBitmap(imageUrl);
+            CardVisualMatcher.Result result = CardVisualMatcher.compare(photographed, reference);
+            output.put("ok", true);
+            output.put("similarity", result.similarity);
+            output.put("artworkHash", result.artworkHash);
+            output.put("structure", result.structure);
+            output.put("color", result.color);
+        } catch (Exception error) {
+            Log.w(TAG, "Visual card comparison failed for " + imageUrl, error);
+            try {
+                output.put("requestId", requestId);
+                output.put("imageUrl", imageUrl);
+                output.put("ok", false);
+                output.put("error", safeMessage(error, "Bildvergleich fehlgeschlagen."));
+            } catch (Exception ignored) {
+                // Keep the response best-effort.
+            }
+        } finally {
+            if (photographed != null && !photographed.isRecycled()) photographed.recycle();
+            if (reference != null && !reference.isRecycled()) reference.recycle();
+        }
+        sendJs("onNativeVisualResult", output);
+    }
+
+    private Bitmap decodeDataUrlBitmap(String dataUrl) throws IOException {
+        int comma = dataUrl.indexOf(',');
+        String encoded = comma >= 0 ? dataUrl.substring(comma + 1) : dataUrl;
+        byte[] bytes;
+        try {
+            bytes = Base64.decode(encoded, Base64.DEFAULT);
+        } catch (IllegalArgumentException error) {
+            throw new IOException("Das Scanbild ist ungültig.", error);
+        }
+        if (bytes.length == 0 || bytes.length > MAX_BRIDGE_IMAGE_BYTES) {
+            throw new IOException("Das Scanbild ist für den Vergleich zu groß.");
+        }
+        Bitmap bitmap = decodeSampledBitmap(bytes, 2200);
+        if (bitmap == null) throw new IOException("Das Scanbild konnte nicht dekodiert werden.");
+        return bitmap;
+    }
+
+    private Bitmap downloadReferenceBitmap(String urlString) throws IOException {
+        URL url = new URL(urlString);
+        String host = url.getHost().toLowerCase(Locale.US);
+        if (!"https".equalsIgnoreCase(url.getProtocol()) || !allowedImageHosts.contains(host)) {
+            throw new SecurityException("Nicht erlaubte Kartenbildquelle.");
+        }
+        HttpURLConnection connection = null;
+        try {
+            connection = (HttpURLConnection) url.openConnection();
+            connection.setConnectTimeout(5000);
+            connection.setReadTimeout(8000);
+            connection.setInstanceFollowRedirects(false);
+            connection.setRequestProperty("Accept", "image/avif,image/webp,image/*");
+            connection.setRequestProperty("User-Agent", "PokeFolio/0.8.0 Android");
+            int status = connection.getResponseCode();
+            if (status < 200 || status >= 300) {
+                throw new IOException("Kartenbild HTTP " + status);
+            }
+            String contentType = connection.getContentType();
+            if (contentType != null && !contentType.toLowerCase(Locale.US).startsWith("image/")) {
+                throw new IOException("Die Kartenbildquelle lieferte kein Bild.");
+            }
+            int contentLength = connection.getContentLength();
+            if (contentLength > MAX_REFERENCE_IMAGE_BYTES) {
+                throw new IOException("Das Referenzbild ist zu groß.");
+            }
+            byte[] bytes;
+            try (InputStream input = connection.getInputStream();
+                 ByteArrayOutputStream output = new ByteArrayOutputStream(
+                         contentLength > 0 ? Math.min(contentLength, MAX_REFERENCE_IMAGE_BYTES) : 64_000
+                 )) {
+                byte[] buffer = new byte[16_384];
+                int count;
+                int total = 0;
+                while ((count = input.read(buffer)) != -1) {
+                    total += count;
+                    if (total > MAX_REFERENCE_IMAGE_BYTES) {
+                        throw new IOException("Das Referenzbild ist zu groß.");
+                    }
+                    output.write(buffer, 0, count);
+                }
+                bytes = output.toByteArray();
+            }
+            Bitmap bitmap = decodeSampledBitmap(bytes, 1600);
+            if (bitmap == null) throw new IOException("Das Referenzbild konnte nicht dekodiert werden.");
+            return bitmap;
+        } finally {
+            if (connection != null) connection.disconnect();
+        }
+    }
+
+    private static Bitmap decodeSampledBitmap(byte[] bytes, int maxDimension) {
+        BitmapFactory.Options bounds = new BitmapFactory.Options();
+        bounds.inJustDecodeBounds = true;
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.length, bounds);
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null;
+        int sample = 1;
+        while (Math.max(bounds.outWidth / sample, bounds.outHeight / sample) > maxDimension) {
+            sample *= 2;
+        }
+        BitmapFactory.Options options = new BitmapFactory.Options();
+        options.inSampleSize = sample;
+        options.inPreferredConfig = Bitmap.Config.ARGB_8888;
+        return BitmapFactory.decodeByteArray(bytes, 0, bytes.length, options);
     }
 
     private void startCardRecognition(String dataUrl, String requestId, String language) {
@@ -310,7 +441,7 @@ public final class MainActivity extends Activity {
             connection.setRequestMethod("GET");
             connection.setRequestProperty("Accept", "application/json");
             connection.setRequestProperty("Cache-Control", "no-cache");
-            connection.setRequestProperty("User-Agent", "PokeFolio/0.7.1 Android");
+            connection.setRequestProperty("User-Agent", "PokeFolio/0.8.0 Android");
             status = connection.getResponseCode();
             InputStream stream = status >= 200 && status < 400
                     ? connection.getInputStream()
@@ -421,6 +552,9 @@ public final class MainActivity extends Activity {
         }
         if (bridgeExecutor != null) {
             bridgeExecutor.shutdown();
+        }
+        if (comparisonExecutor != null) {
+            comparisonExecutor.shutdown();
         }
         super.onDestroy();
     }

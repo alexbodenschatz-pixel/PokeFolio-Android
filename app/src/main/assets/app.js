@@ -17,6 +17,7 @@ let recognizedRotation = 0;
 let requestSequence = 1;
 const pendingOcr = new Map();
 const pendingHttp = new Map();
+const pendingVisual = new Map();
 const previewUrls = new Map();
 
 $$('nav button').forEach(button => {
@@ -65,6 +66,8 @@ function bindPhoto(id) {
       recognition = null;
       candidates = [];
       recognizedRotation = 0;
+      $('#comparisonScanImg').src = previewUrl;
+      renderCandidates(false);
       scheduleRecognition(180);
     }
   };
@@ -133,6 +136,20 @@ async function ocrDataUrl(file) {
   context.fillRect(0, 0, canvas.width, canvas.height);
   context.drawImage(image, 0, 0, canvas.width, canvas.height);
   return canvas.toDataURL('image/jpeg', 0.91);
+}
+
+/** Smaller full-frame copy for parallel visual comparisons; keeps perspective context. */
+async function visualComparisonDataUrl(file) {
+  const image = await imageFromFile(file);
+  const canvas = $('#work');
+  const context = canvas.getContext('2d', {willReadFrequently: true});
+  const factor = Math.min(1, 1000 / Math.max(image.naturalWidth, image.naturalHeight));
+  canvas.width = Math.max(2, Math.round(image.naturalWidth * factor));
+  canvas.height = Math.max(2, Math.round(image.naturalHeight * factor));
+  context.fillStyle = '#fff';
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  context.drawImage(image, 0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL('image/jpeg', 0.84);
 }
 
 function drawRotated(image, rotation) {
@@ -230,6 +247,20 @@ window.onNativeHttpResult = json => {
   }
 };
 
+window.onNativeVisualResult = json => {
+  try {
+    const response = JSON.parse(json);
+    const pending = pendingVisual.get(response.requestId);
+    if (!pending) return;
+    clearTimeout(pending.timeout);
+    pendingVisual.delete(response.requestId);
+    if (response.ok) pending.resolve(response);
+    else pending.reject(new Error(response.error || 'Bildvergleich fehlgeschlagen.'));
+  } catch (error) {
+    console.error(error);
+  }
+};
+
 function nativeOcr(dataUrl, language) {
   return new Promise((resolve, reject) => {
     if (!window.PokeNative || (!PokeNative.recognizeCard && !PokeNative.recognizeText)) {
@@ -244,6 +275,22 @@ function nativeOcr(dataUrl, language) {
     pendingOcr.set(requestId, {resolve, reject, timeout});
     if (PokeNative.recognizeCard) PokeNative.recognizeCard(dataUrl, requestId, language);
     else PokeNative.recognizeText(dataUrl, requestId, language);
+  });
+}
+
+function nativeVisualCompare(dataUrl, imageUrl) {
+  return new Promise((resolve, reject) => {
+    if (!window.PokeNative || !PokeNative.compareCardImage || !imageUrl) {
+      reject(new Error('Lokaler Bildvergleich nicht verfügbar.'));
+      return;
+    }
+    const requestId = 'visual' + requestSequence++;
+    const timeout = setTimeout(() => {
+      pendingVisual.delete(requestId);
+      reject(new Error('Der Bildvergleich hat zu lange gedauert.'));
+    }, 15000);
+    pendingVisual.set(requestId, {resolve, reject, timeout});
+    PokeNative.compareCardImage(dataUrl, imageUrl, requestId);
   });
 }
 
@@ -344,6 +391,8 @@ function pokemonCardFromApi(card) {
     hp: card.hp || '',
     subtypes: card.subtypes || [],
     artist: card.artist || '',
+    imageSmall: card.images && (card.images.small || card.images.large) || '',
+    imageLarge: card.images && (card.images.large || card.images.small) || '',
     source: 'Pokémon TCG API',
     price: Number.isFinite(Number(eurPrice))
       ? {value: Number(eurPrice), currency: 'EUR', label: Number(eurPrice).toFixed(2).replace('.', ',') + ' €'}
@@ -351,6 +400,13 @@ function pokemonCardFromApi(card) {
         ? {value: Number(usdPrice), currency: 'USD', label: '$' + Number(usdPrice).toFixed(2)}
         : null
   };
+}
+
+function tcgdexImageUrl(value, quality) {
+  const base = String(value || '').replace(/\/$/, '');
+  if (!base) return '';
+  if (/\.(?:avif|webp|png|jpe?g)$/i.test(base)) return base;
+  return base + '/' + quality + '.webp';
 }
 
 function pokemonCardFromTcgdex(card) {
@@ -370,6 +426,8 @@ function pokemonCardFromTcgdex(card) {
     hp: card.hp || '',
     subtypes: card.stage ? [card.stage] : [],
     artist: card.illustrator || '',
+    imageSmall: tcgdexImageUrl(card.image, 'low'),
+    imageLarge: tcgdexImageUrl(card.image, 'high'),
     source: 'TCGdex (Deutsch)',
     price: null
   };
@@ -455,6 +513,8 @@ async function yugiohSearch(hints, manual = '') {
           number: card.set_code || hints.yugiohSetCode,
           set: card.set_name || '',
           rarity: card.set_rarity || '',
+          imageSmall: (card.card_images && card.card_images[0] && (card.card_images[0].image_url_small || card.card_images[0].image_url)) || '',
+          imageLarge: (card.card_images && card.card_images[0] && (card.card_images[0].image_url || card.card_images[0].image_url_small)) || '',
           source: 'YGOPRODeck',
           confidence: 0.98,
           evidence: ['Setcode']
@@ -479,6 +539,8 @@ async function yugiohSearch(hints, manual = '') {
       number: firstSet.set_code || '',
       set: firstSet.set_name || '',
       rarity: firstSet.set_rarity || '',
+      imageSmall: (card.card_images && card.card_images[0] && (card.card_images[0].image_url_small || card.card_images[0].image_url)) || '',
+      imageLarge: (card.card_images && card.card_images[0] && (card.card_images[0].image_url || card.card_images[0].image_url_small)) || '',
       source: 'YGOPRODeck',
       confidence: Recognition.similarity(query, card.name),
       evidence: ['Name']
@@ -490,6 +552,7 @@ function parseOnePieceCard(response, id) {
   let card = Array.isArray(response) ? response[0] : response;
   if (card && card.data) card = Array.isArray(card.data) ? card.data[0] : card.data;
   if (!card) return null;
+  const image = card.image_url || card.card_image || card.image || card.imageUrl || '';
   return {
     tcg: 'onepiece',
     id: card.card_id || card.id || id,
@@ -497,6 +560,8 @@ function parseOnePieceCard(response, id) {
     number: card.card_id || card.card_number || id,
     set: card.set_name || card.set || '',
     rarity: card.rarity || card.card_rarity || '',
+    imageSmall: image,
+    imageLarge: card.image_url_large || card.card_image_large || image,
     source: 'OPTCG API',
     confidence: 0.99,
     evidence: ['Kartencode']
@@ -528,28 +593,136 @@ async function lookupCandidates(kind, hints, manual = '') {
   return {candidates: [], status: emptyLookupStatus()};
 }
 
-function renderCandidates() {
+async function enrichWithVisualSimilarity(list, dataUrl) {
+  const visualLimit = Math.min(5, list.length);
+  const enriched = await Promise.all(list.slice(0, visualLimit).map(async candidate => {
+    const imageUrl = candidate.imageSmall || candidate.imageLarge;
+    if (!imageUrl) return candidate;
+    try {
+      const result = await nativeVisualCompare(dataUrl, imageUrl);
+      return Recognition.combineVisualSimilarity(candidate, result.similarity);
+    } catch (error) {
+      console.warn('Bildvergleich für Kandidat fehlgeschlagen:', candidate.id, error.message);
+      return candidate;
+    }
+  }));
+  return enriched.concat(list.slice(visualLimit))
+    .sort((left, right) => (right.confidence || 0) - (left.confidence || 0))
+    .slice(0, 7);
+}
+
+function evidenceLabel(value) {
+  return ({
+    'Name': 'Name stimmt',
+    'Kartennummer': 'Kartennummer stimmt',
+    'Setnummer': 'Set stimmt',
+    'Setcode': 'Set stimmt',
+    'Artwork ähnlich': 'Artwork ähnlich',
+    'KP/HP': 'KP/HP stimmt',
+    'Seltenheit': 'Seltenheit stimmt',
+    'Illustrator': 'Illustrator stimmt',
+    'Entwicklungsstufe': 'Entwicklungsstufe stimmt'
+  })[value] || value;
+}
+
+function renderCandidates(showEmpty = false) {
   const box = $('#candidateList');
+  const comparison = $('#matchComparison');
+  const empty = $('#emptyMatches');
   if (!candidates.length) {
     box.innerHTML = '';
+    comparison.hidden = true;
+    empty.hidden = !showEmpty;
     return;
   }
-  box.innerHTML = candidates.map((candidate, index) => {
-    const evidence = (candidate.evidence || []).length
-      ? '<div class="candidate-evidence">Abgleich: ' + esc(candidate.evidence.join(', ')) + '</div>'
+
+  const shown = candidates.slice(0, 5);
+  const confident = Recognition.isConfident(candidates);
+  empty.hidden = true;
+  comparison.hidden = false;
+  $('#scanReference').hidden = !previewUrls.has('front');
+  if (previewUrls.has('front')) $('#comparisonScanImg').src = previewUrls.get('front');
+  $('#matchesTitle').textContent = confident ? 'Bester Treffer' : 'Mögliche Treffer';
+  $('#matchesSubtitle').textContent = confident
+    ? 'Deutlichste Übereinstimmung mit Alternativen'
+    : 'Mehrere Karten könnten passen';
+
+  box.innerHTML = shown.map((candidate, index) => {
+    const confidence = Math.round(clamp(Number(candidate.confidence) || 0, 0, 1) * 100);
+    const high = confidence >= 82;
+    const selected = Boolean(recognition && recognition.accepted && recognition.id === candidate.id);
+    const imageUrl = candidate.imageSmall || candidate.imageLarge || '';
+    const reasons = (candidate.evidence || []).slice(0, 5)
+      .map(value => `<span>${esc(evidenceLabel(value))}</span>`)
+      .join('');
+    const price = candidate.price ? esc(candidate.price.label) : 'Kein Preis verfügbar';
+    const bestBadge = index === 0 ? '<span class="best-badge">Bester Treffer</span>' : '';
+    const image = imageUrl
+      ? `<img loading="lazy" decoding="async" src="${esc(imageUrl)}" alt="${esc(candidate.name)}" onerror="candidateImageFailed(this)">`
       : '';
-    const price = candidate.price ? ' · ca. ' + esc(candidate.price.label) : '';
-    return `<div class="candidate">
-      <div>
-        <b>${esc(candidate.name)}</b>
-        <small>${esc(candidate.set || '')} ${esc(candidate.number || '')}${candidate.rarity ? ' · ' + esc(candidate.rarity) : ''}${price}</small>
-        <div class="candidate-confidence">Treffer ${Math.round((candidate.confidence || 0) * 100)} % · ${esc(candidate.source)}</div>
-        ${evidence}
+    const imageContent = `<span class="candidate-image-placeholder${imageUrl ? '' : ' visible'}" aria-hidden="true"><b>Kartenbild</b><small>nicht verfügbar</small></span>${image}`;
+    const imageWrapper = imageUrl
+      ? `<button type="button" class="candidate-image-button" onclick="openCandidateImage(${index})" aria-label="${esc(candidate.name)} vergrößern">${imageContent}</button>`
+      : `<div class="candidate-image-button no-image">${imageContent}</div>`;
+    return `<article class="candidate-card${index === 0 ? ' best' : ''}${high ? ' high-confidence' : ''}${selected ? ' selected' : ''}">
+      <div class="candidate-visual">${bestBadge}${imageWrapper}<span class="confidence-badge">${confidence} %</span></div>
+      <div class="candidate-content">
+        <div class="candidate-title"><b>${esc(candidate.name || 'Unbekannte Karte')}</b><small>${esc(candidate.set || 'Set unbekannt')}</small></div>
+        <dl class="candidate-meta">
+          <div><dt>Nummer</dt><dd>${esc(candidate.number || '–')}</dd></div>
+          <div><dt>Seltenheit</dt><dd>${esc(candidate.rarity || '–')}</dd></div>
+          <div><dt>Preis</dt><dd>${price}</dd></div>
+        </dl>
+        <div class="confidence-track" aria-label="Trefferwahrscheinlichkeit ${confidence} Prozent"><span style="width:${confidence}%"></span></div>
+        <div class="candidate-reasons">${reasons || '<span>Bild und Kartendaten prüfen</span>'}</div>
+        <small class="candidate-source">Quelle: ${esc(candidate.source || 'Kartendatenbank')}</small>
+        <button class="choose-card" type="button" onclick="applyCandidate(${index})">${selected ? 'Ausgewählt' : 'Diese Karte wählen'}</button>
       </div>
-      <button aria-label="${esc(candidate.name)} übernehmen" onclick="applyCandidate(${index})">Übernehmen</button>
-    </div>`;
+    </article>`;
   }).join('');
 }
+
+window.candidateImageFailed = image => {
+  image.hidden = true;
+  const placeholder = image.parentElement && image.parentElement.querySelector('.candidate-image-placeholder');
+  if (placeholder) placeholder.classList.add('visible');
+};
+
+window.openCandidateImage = index => {
+  const candidate = candidates[index];
+  if (!candidate) return;
+  const imageUrl = candidate.imageLarge || candidate.imageSmall;
+  if (!imageUrl) return;
+  $('#lightboxImage').src = imageUrl;
+  $('#lightboxCaption').textContent = [candidate.name, candidate.set, candidate.number].filter(Boolean).join(' · ');
+  $('#imageLightbox').hidden = false;
+};
+
+window.openScanPreview = () => {
+  const imageUrl = previewUrls.get('front');
+  if (!imageUrl) return;
+  $('#lightboxImage').src = imageUrl;
+  $('#lightboxCaption').textContent = 'Gescanntes Bild';
+  $('#imageLightbox').hidden = false;
+};
+
+window.closeImageLightbox = () => {
+  $('#imageLightbox').hidden = true;
+  $('#lightboxImage').removeAttribute('src');
+};
+
+window.takeNewPhoto = () => $('#front').click();
+window.openManualSearch = () => {
+  $('#manualDetails').open = true;
+  $('#manualQuery').focus();
+};
+
+$('#imageLightbox').onclick = event => {
+  if (event.target === $('#imageLightbox')) closeImageLightbox();
+};
+document.addEventListener('keydown', event => {
+  if (event.key === 'Escape' && !$('#imageLightbox').hidden) closeImageLightbox();
+});
 
 window.applyCandidate = index => {
   const candidate = candidates[index];
@@ -564,7 +737,7 @@ window.applyCandidate = index => {
     'Erkannt',
     `${label(candidate.tcg)} · ${candidate.name}${candidate.set ? ' · ' + candidate.set : ''}`
   );
-  renderCandidates();
+  renderCandidates(false);
 };
 
 async function runRecognition(manual = false) {
@@ -579,7 +752,9 @@ async function runRecognition(manual = false) {
     'Analysiere …',
     'Rotation, Perspektive, Kontrast und Kartenmerkmale werden lokal ausgewertet.'
   );
-  $('#candidateList').innerHTML = '';
+  recognition = null;
+  candidates = [];
+  renderCandidates(false);
   try {
     const dataUrl = await ocrDataUrl(file);
     const ocrResult = await nativeOcr(dataUrl, $('#lang').value);
@@ -589,9 +764,16 @@ async function runRecognition(manual = false) {
     const kind = Recognition.classifyTcg(hints, manual ? selectedTcg : selectedTcg);
     recognizedTcg = kind;
     const lookup = await lookupCandidates(kind, hints, '');
-    candidates = lookup.candidates;
     if (run !== recognitionRun) return null;
-    renderCandidates();
+    let foundCandidates = lookup.candidates;
+    if (foundCandidates.some(candidate => candidate.imageSmall || candidate.imageLarge)) {
+      setRecState('busy', 'Vergleiche Kartenbilder …', 'Artwork und Bildstruktur werden lokal mit den besten Treffern abgeglichen.');
+      const visualDataUrl = await visualComparisonDataUrl(file);
+      foundCandidates = await enrichWithVisualSimilarity(foundCandidates, visualDataUrl);
+      if (run !== recognitionRun) return null;
+    }
+    candidates = foundCandidates;
+    renderCandidates(!candidates.length);
 
     if (!candidates.length) {
       recognition = null;
@@ -607,7 +789,7 @@ async function runRecognition(manual = false) {
         || 'keine eindeutigen Merkmale';
       setRecState(
         'warn',
-        'Nicht eindeutig',
+        'Keine eindeutige Karte gefunden',
         `Gelesen: ${hint}. Bitte TCG auswählen oder Name bzw. Kartencode manuell suchen.`
       );
       return null;
@@ -615,21 +797,26 @@ async function runRecognition(manual = false) {
 
     const best = candidates[0];
     if (Recognition.isConfident(candidates)) {
-      applyCandidate(0);
+      recognition = null;
+      setRecState(
+        'good',
+        'Bester Treffer',
+        'Ein Treffer hebt sich deutlich ab. Bitte vergleiche das Kartenbild und bestätige mit „Diese Karte wählen“.'
+      );
       return best;
     }
     recognition = null;
     setRecState(
       'warn',
-      'Bitte auswählen',
-      `${candidates.length} mögliche Treffer aus Name, Kartennummer, Set und weiteren Merkmalen gefunden.`
+      'Mehrere Karten könnten passen',
+      `${Math.min(5, candidates.length)} wahrscheinliche Treffer aus Name, Kartennummer, Set, Artwork und weiteren Merkmalen gefunden.`
     );
     return best;
   } catch (error) {
     if (run !== recognitionRun) return null;
     recognition = null;
     candidates = [];
-    renderCandidates();
+    renderCandidates(true);
     setRecState('bad', 'Erkennung fehlgeschlagen', error.message || 'Unbekannter Fehler.');
     return null;
   }
@@ -640,6 +827,7 @@ $('#recognize').onclick = () => runRecognition(false);
 $('#manualSearch').onclick = async () => {
   const query = $('#manualQuery').value.trim();
   if (!query) return;
+  const run = ++recognitionRun;
   const kind = selectedTcg === 'auto' ? recognizedTcg : selectedTcg;
   setRecState('busy', 'Suche …', 'Manuelle Kartensuche läuft.');
   try {
@@ -649,14 +837,22 @@ $('#manualSearch').onclick = async () => {
       if (match) hints.onepieceId = match[0];
     }
     const lookup = await lookupCandidates(kind, hints, query);
-    candidates = lookup.candidates;
-    renderCandidates();
+    if (run !== recognitionRun) return;
+    let foundCandidates = lookup.candidates;
+    const frontFile = $('#front').files[0];
+    if (frontFile && foundCandidates.some(candidate => candidate.imageSmall || candidate.imageLarge)) {
+      const dataUrl = await visualComparisonDataUrl(frontFile);
+      foundCandidates = await enrichWithVisualSimilarity(foundCandidates, dataUrl);
+      if (run !== recognitionRun) return;
+    }
+    candidates = foundCandidates;
+    renderCandidates(!candidates.length);
     const recovery = !candidates.length && recoveryMessage(lookup.status);
     setRecState(
       candidates.length || recovery ? 'warn' : 'bad',
       candidates.length ? 'Treffer gefunden' : recovery ? 'Kartendienst nicht erreichbar' : 'Keine Treffer',
       candidates.length
-        ? 'Bitte die passende Karte übernehmen.'
+        ? 'Bitte Bilder und Kartendaten vergleichen und die passende Karte wählen.'
         : recovery || 'Versuche Name, Setcode oder Kartennummer anders einzugeben.'
     );
   } catch (error) {
@@ -837,7 +1033,8 @@ function reset() {
   });
   ['name', 'set', 'number'].forEach(id => $('#' + id).value = '');
   $('#result').innerHTML = '';
-  $('#candidateList').innerHTML = '';
+  $('#comparisonScanImg').removeAttribute('src');
+  renderCandidates(false);
   setRecState(
     'neutral',
     'Noch kein Scan',

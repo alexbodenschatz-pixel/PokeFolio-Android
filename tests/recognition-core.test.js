@@ -138,6 +138,29 @@ test('bevorzugt bei deutscher Kamera-OCR den mehrfach gelesenen Namen in der Kar
   assert.equal(hints.collectorNumbers[0].number, '199');
 });
 
+test('erkennt die Kopfzeile einer englischen Pokémon-Karte', () => {
+  const hints = recognition.extractHints({passes: [
+    {
+      variant: 'vollbild-0',
+      text: 'BASIC Mew ex HP 180\nGenome Hacking\n151/165',
+      lines: [
+        {text: 'BASIC Mew ex HP 180', y: 0.08},
+        {text: 'Genome Hacking', y: 0.56},
+        {text: '151/165', y: 0.93}
+      ]
+    },
+    {
+      variant: 'kopfzeile-0',
+      text: 'Mew ex\nHP 180',
+      lines: [{text: 'Mew ex', y: 0.18}, {text: 'HP 180', y: 0.25}]
+    }
+  ]});
+
+  assert.equal(hints.nameHint, 'Mew ex');
+  assert.equal(hints.hp, '180');
+  assert.equal(hints.collectorNumbers[0].number, '151');
+});
+
 test('verwendet bei Galerie-OCR die Position über mehrere Perspektiv- und Kontrastdurchläufe', () => {
   const hints = recognition.extractHints({passes: [
     {
@@ -154,4 +177,40 @@ test('verwendet bei Galerie-OCR die Position über mehrere Perspektiv- und Kontr
 
   assert.equal(hints.nameHint, 'Pikachu');
   assert.equal(hints.collectorNumbers[0].number, '25');
+});
+
+test('kombiniert Artwork-Ähnlichkeit nachvollziehbar mit dem OCR-Score', () => {
+  const base = {
+    id: 'charizard',
+    name: 'Glurak ex',
+    confidence: 0.74,
+    textConfidence: 0.74,
+    evidence: ['Name', 'Kartennummer']
+  };
+  const enriched = recognition.combineVisualSimilarity(base, 0.9);
+
+  assert.ok(enriched.confidence > base.confidence);
+  assert.ok(enriched.confidence < 0.9);
+  assert.equal(enriched.visualSimilarity, 0.9);
+  assert.ok(enriched.evidence.includes('Artwork ähnlich'));
+});
+
+test('lässt Bildähnlichkeit nie allein einen starken Nummerntreffer überholen', () => {
+  const exactNumber = recognition.combineVisualSimilarity({
+    id: 'exact', confidence: 0.94, textConfidence: 0.94, evidence: ['Kartennummer', 'Setnummer']
+  }, 0.35);
+  const similarArtworkOnly = recognition.combineVisualSimilarity({
+    id: 'art', confidence: 0.52, textConfidence: 0.52, evidence: []
+  }, 1);
+
+  assert.ok(exactNumber.confidence > similarArtworkOnly.confidence);
+  assert.ok(similarArtworkOnly.confidence <= 0.64);
+});
+
+test('behält den Textscore bei fehlendem Kartenbild unverändert', () => {
+  const candidate = {id: 'without-image', confidence: 0.67, evidence: ['Name']};
+  const result = recognition.combineVisualSimilarity(candidate, undefined);
+
+  assert.equal(result.confidence, 0.67);
+  assert.equal(result.visualSimilarity, undefined);
 });

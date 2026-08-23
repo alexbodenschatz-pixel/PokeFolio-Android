@@ -346,7 +346,38 @@
       score += 0.025;
       evidence.push('Illustrator');
     }
-    return {...candidate, confidence: clamp(score, 0, 0.99), evidence};
+    const confidence = clamp(score, 0, 0.99);
+    return {...candidate, confidence, textConfidence: confidence, evidence};
+  }
+
+  function combineVisualSimilarity(candidate, visualSimilarity) {
+    const visual = Number(visualSimilarity);
+    if (!Number.isFinite(visual)) return {...candidate};
+    const normalizedVisual = clamp(visual, 0, 1);
+    const textConfidence = clamp(
+      Number.isFinite(Number(candidate.textConfidence))
+        ? Number(candidate.textConfidence)
+        : Number(candidate.confidence) || 0,
+      0,
+      0.99
+    );
+    // Der Bildvergleich korrigiert den textbasierten Score nur moderat. Dadurch
+    // kann ein ähnliches Artwork eine gute OCR stützen, aber nie allein eine
+    // widersprechende Collector Number überstimmen.
+    const reliability = textConfidence >= 0.9 ? 0.65 : 1;
+    const adjustment = (normalizedVisual - 0.5) * 0.24 * reliability;
+    const confidence = clamp(textConfidence + adjustment, 0, 0.99);
+    const evidence = Array.from(new Set(candidate.evidence || []));
+    if (normalizedVisual >= 0.68 && !evidence.includes('Artwork ähnlich')) {
+      evidence.push('Artwork ähnlich');
+    }
+    return {
+      ...candidate,
+      confidence,
+      textConfidence,
+      visualSimilarity: normalizedVisual,
+      evidence
+    };
   }
 
   function rankPokemonCandidates(candidates, hints, manual) {
@@ -373,6 +404,7 @@
     classifyTcg,
     scorePokemonCandidate,
     rankPokemonCandidates,
+    combineVisualSimilarity,
     isConfident
   };
 });

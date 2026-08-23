@@ -9,7 +9,7 @@
 <body>
 <header>
   <div><b>PokéFolio</b><small>Android Standalone</small></div>
-  <span class="pill">v0.7.1</span>
+  <span class="pill">v0.8.0</span>
 </header>
 <main>
   <section id="scan" class="page active">
@@ -38,7 +38,31 @@
     <div id="recognitionBox" class="recognition card">
       <div class="recognition-head"><b>Kartenerkennung</b><span id="recognitionState" class="status neutral">Noch kein Scan</span></div>
       <p id="recognitionText" class="muted">Nach der Vorderseitenaufnahme werden Name, Set und Kartennummer automatisch gesucht.</p>
-      <div id="candidateList"></div>
+      <div id="matchComparison" class="match-comparison" hidden>
+        <aside id="scanReference" class="scan-reference">
+          <span class="section-kicker">Gescanntes Bild</span>
+          <button class="scan-preview-button" type="button" onclick="openScanPreview()" aria-label="Gescanntes Bild vergrößern">
+            <img id="comparisonScanImg" alt="Gescanntes oder hochgeladenes Kartenbild">
+          </button>
+          <small>Antippen zum Vergrößern</small>
+        </aside>
+        <section class="matches-panel" aria-labelledby="matchesTitle">
+          <div class="matches-heading">
+            <div><span class="section-kicker">Kartenvergleich</span><h2 id="matchesTitle">Mögliche Treffer</h2></div>
+            <small id="matchesSubtitle"></small>
+          </div>
+          <div id="candidateList" class="candidate-list"></div>
+        </section>
+      </div>
+      <div id="emptyMatches" class="empty-matches" hidden>
+        <b>Keine eindeutige Karte gefunden</b>
+        <span>Versuche ein neues Bild oder suche die Karte manuell.</span>
+        <div class="empty-actions">
+          <button type="button" class="secondary compact" onclick="runRecognition(false)">Erkennung erneut starten</button>
+          <button type="button" class="secondary compact" onclick="takeNewPhoto()">Neues Bild aufnehmen</button>
+          <button type="button" class="secondary compact" onclick="openManualSearch()">Manuell suchen</button>
+        </div>
+      </div>
       <button id="recognize" class="secondary compact">Erkennung erneut starten</button>
       <details id="manualDetails">
         <summary>Manuell suchen</summary>
@@ -63,7 +87,7 @@
 
   <section id="settings" class="page">
     <h1>System</h1>
-    <div class="card"><b>Erkennung v0.7.1</b><p>OCR läuft lokal auf dem Gerät und prüft mehrere Rotationen, Skalierungen, Kopfzeilen und Kontraststufen. Name, Collector Number, Set, KP/HP, Seltenheit und weitere lesbare Merkmale fließen gemeinsam in den Treffer ein.</p></div>
+    <div class="card"><b>Erkennung v0.8.0</b><p>OCR läuft lokal auf dem Gerät und prüft mehrere Rotationen, Skalierungen, Kopfzeilen und Kontraststufen. Name, Collector Number, Set, KP/HP, Seltenheit, Artwork und weitere lesbare Merkmale fließen gemeinsam in den Treffer ein.</p></div>
     <div class="card"><b>Datenabgleich</b><p>Der Kartenabgleich nutzt Pokémon TCG API, die deutschsprachige TCGdex-Ausweichsuche, YGOPRODeck und OPTCG API. Einzelne Serverfehler brechen die Erkennung nicht ab; die manuelle Eingabe bleibt immer verfügbar.</p></div>
     <div class="card"><b>Vorgrading</b><p>Der Score ist eine grobe Smartphone-Vorprüfung und kein offizielles PSA-, CGC- oder TAG-Grading. Echtheit und Zustand werden getrennt behandelt.</p></div>
   </section>
@@ -73,6 +97,11 @@
   <button data-page="collection">▦<span>Sammlung</span></button>
   <button data-page="settings">⚙<span>System</span></button>
 </nav>
+<div id="imageLightbox" class="image-lightbox" hidden role="dialog" aria-modal="true" aria-label="Kartenbild vergrößert">
+  <button type="button" class="lightbox-close" onclick="closeImageLightbox()" aria-label="Bildansicht schließen">×</button>
+  <img id="lightboxImage" alt="Vergrößertes Kartenbild">
+  <p id="lightboxCaption"></p>
+</div>
 <canvas id="work" hidden></canvas>
 <script src="recognition-core.js"></script>
 <script src="api-core.js"></script>

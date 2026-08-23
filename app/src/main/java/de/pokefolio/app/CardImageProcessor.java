@@ -189,6 +189,48 @@ public final class CardImageProcessor {
         return variants;
     }
 
+    /**
+     * Normalizes a photographed or downloaded card for the local visual matcher.
+     * Perspective correction is attempted first; the fallback deliberately keeps
+     * the same card ratio used by the camera overlay.
+     */
+    public static Bitmap prepareForVisualComparison(Bitmap source) {
+        return prepareForVisualComparison(source, true);
+    }
+
+    /** Reference database images are already rectified and skip edge detection. */
+    public static Bitmap prepareForVisualComparison(Bitmap source, boolean attemptPerspectiveCorrection) {
+        Bitmap scaled = scaleDown(source, 1200);
+        Bitmap rectified = attemptPerspectiveCorrection ? rectifyCard(scaled) : null;
+        Bitmap base = rectified != null ? rectified : scaled;
+
+        float currentRatio = base.getWidth() / (float) base.getHeight();
+        int left = 0;
+        int top = 0;
+        int width = base.getWidth();
+        int height = base.getHeight();
+        if (currentRatio > CARD_RATIO) {
+            width = Math.max(2, Math.round(height * CARD_RATIO));
+            left = (base.getWidth() - width) / 2;
+        } else {
+            height = Math.max(2, Math.round(width / CARD_RATIO));
+            top = (base.getHeight() - height) / 2;
+        }
+        Bitmap crop = Bitmap.createBitmap(base, left, top, width, height);
+        Bitmap normalized = Bitmap.createScaledBitmap(crop, 126, 176, true);
+
+        if (crop != base && crop != normalized) {
+            crop.recycle();
+        }
+        if (rectified != null && !rectified.isRecycled() && rectified != normalized) {
+            rectified.recycle();
+        }
+        if (scaled != source && !scaled.isRecycled() && scaled != normalized) {
+            scaled.recycle();
+        }
+        return normalized;
+    }
+
     /** Attempts a four-point document transform. Returns null when the edge evidence is weak. */
     public static Bitmap rectifyCard(Bitmap source) {
         Bitmap analysis = scaleDown(source, 520);
