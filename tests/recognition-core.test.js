@@ -1,6 +1,15 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const recognition = require('../app/src/main/assets/recognition-core.js');
+const pokemonNames = require('../app/src/main/assets/pokemon-names.js');
+
+test('enthält die vollständige kompakte Deutsch-/Englisch-Artenzuordnung', () => {
+  assert.equal(pokemonNames.entries.length, 1025);
+  assert.deepEqual(
+    pokemonNames.entries.find(entry => entry.id === 197),
+    {id: 197, en: 'Umbreon', de: 'Nachtara'}
+  );
+});
 
 test('führt OCR-Durchläufe aus Rotation und Kontrast zu gemeinsamen Merkmalen zusammen', () => {
   const hints = recognition.extractHints({
@@ -375,4 +384,71 @@ test('kann für die breite Variantenprüfung mehr als sieben Kandidaten behalten
   }));
 
   assert.equal(recognition.rankPokemonCandidates(candidates, hints, '', 60).length, 15);
+});
+
+test('validiert deutsche Pokémon-Namen und verwirft Angriffswörter', () => {
+  assert.equal(recognition.bestKnownPokemonName('Nachtara', true).id, 197);
+  assert.equal(recognition.bestKnownPokemonName('Nachtaro', true).id, 197);
+  assert.equal(recognition.bestKnownPokemonName('Umbreon', true).id, 197);
+  assert.equal(recognition.bestKnownPokemonName('Mondscheinklinge', true), null);
+  assert.equal(recognition.bestKnownPokemonName('Horrorblick', true), null);
+});
+
+test('stuft einen einzelnen unsicheren Fuzzy-Kopfzeilentreffer nicht als verlässliche Identität ein', () => {
+  const hints = recognition.extractHints({passes: [{
+    variant: 'kopfzeile-original-0',
+    text: 'Nachtaro V\nKP 200',
+    lines: [{text: 'Nachtaro V', y: 0.18}, {text: 'KP 200', y: 0.42}]
+  }]});
+
+  assert.equal(hints.pokemonIdentity.baseName, 'Nachtara');
+  assert.equal(hints.pokemonIdentity.variant, 'V');
+  assert.equal(hints.pokemonIdentity.reliable, false);
+  assert.ok(hints.pokemonIdentity.nameConfidence < 0.88);
+});
+
+test('filtert Nachtara V mit 200 KP vor dem Bildvergleich hart nach Identität', () => {
+  const hints = recognition.extractHints({passes: [
+    {
+      variant: 'vollbild-0',
+      text: 'BASIS Nachtara V KP 200\nHorrorblick\nMondscheinklinge',
+      lines: [
+        {text: 'BASIS Nachtara V KP 200', y: 0.07},
+        {text: 'Horrorblick', y: 0.48},
+        {text: 'Mondscheinklinge', y: 0.61}
+      ]
+    },
+    {
+      variant: 'kopfzeile-original-0',
+      text: 'Nachtara V\nKP 200',
+      lines: [{text: 'Nachtara V', y: 0.18}, {text: 'KP 200', y: 0.42}]
+    },
+    {
+      variant: 'kopfzeile-scharf-0',
+      text: 'Nachtaro V\nKP 200',
+      lines: [{text: 'Nachtaro V', y: 0.18}, {text: 'KP 200', y: 0.42}]
+    }
+  ]});
+  const rawCandidates = [
+    {id: 'umbreon-v-a', name: 'Umbreon V', number: '94', hp: '200'},
+    {id: 'nachtara-v-b', name: 'Nachtara V', number: '189', hp: '200'},
+    {id: 'umbreon-vmax', name: 'Umbreon VMAX', number: '95', hp: '310'},
+    {id: 'nachtara-normal', name: 'Nachtara', number: '93', hp: '110'},
+    {id: 'basculin', name: 'Basculin', number: '41', hp: '80'},
+    {id: 'bastiodon', name: 'Bastiodon', number: '110', hp: '160'}
+  ];
+  const filtered = recognition.prefilterPokemonCandidates(rawCandidates, hints, '');
+  const ranked = recognition.rankPokemonCandidates(filtered, hints, '', 20);
+
+  assert.equal(hints.pokemonIdentity.baseName, 'Nachtara');
+  assert.equal(hints.pokemonIdentity.englishName, 'Umbreon');
+  assert.equal(hints.pokemonIdentity.variant, 'V');
+  assert.equal(hints.pokemonIdentity.hp, '200');
+  assert.ok(hints.pokemonIdentity.nameConfidence >= 0.88);
+  assert.equal(hints.pokemonIdentity.reliable, true);
+  assert.deepEqual(filtered.map(candidate => candidate.id), ['umbreon-v-a', 'nachtara-v-b']);
+  assert.ok(ranked.every(candidate => candidate.matchDetails.name === 1));
+  assert.ok(ranked.every(candidate => candidate.matchDetails.variant === 'match'));
+  assert.ok(ranked.every(candidate => candidate.matchDetails.hp === 'match'));
+  assert.ok(!ranked.some(candidate => ['basculin', 'bastiodon', 'umbreon-vmax'].includes(candidate.id)));
 });

@@ -5,6 +5,10 @@ const api = require('../app/src/main/assets/api-core.js');
 test('erzeugt nur robuste Pokémon-TCG-Abfragen ohne problematische Phrasen oder führende Wildcards', () => {
   const urls = api.buildPokemonTcgUrls({
     collectorNumbers: [{number: '025', total: '185'}],
+    pokemonIdentity: {
+      speciesId: 25, englishName: 'Pikachu', germanName: 'Pikachu',
+      variant: 'V', nameConfidence: 0.98
+    },
     nameHints: [{value: 'Pikachu V'}, {value: 'Donnerschock'}]
   }, '');
 
@@ -84,10 +88,64 @@ test('markiert den Dienst erst als nicht erreichbar, wenn alle Varianten scheite
 test('erzeugt einen deutschsprachigen TCGdex-Ausweichweg für Name und Collector Number', () => {
   const urls = api.buildTcgdexUrls({
     collectorNumbers: [{number: '25', total: '185'}],
+    pokemonIdentity: {
+      speciesId: 6, englishName: 'Charizard', germanName: 'Glurak',
+      variant: 'ex', nameConfidence: 0.98
+    },
     nameHints: [{value: 'Glurak ex'}]
   }, '', 'de');
   assert.ok(urls.some(url => url.startsWith('https://api.tcgdex.net/v2/de/cards?')));
   assert.ok(urls.some(url => url.includes('name=Glurak+ex')));
   assert.ok(urls.some(url => url.includes('localId=25')));
   assert.ok(urls.every(url => url.includes('pagination%3AitemsPerPage=100')));
+});
+
+test('behält Variantenmerkmale für TCGdex, sucht die Primär-API aber über die validierte Art', () => {
+  const hints = {
+    collectorNumbers: [],
+    pokemonIdentity: {
+      speciesId: 151, englishName: 'Mew', germanName: 'Mew',
+      variant: 'VMAX', nameConfidence: 0.97
+    },
+    validatedNameHints: [{value: 'Mew VMAX', baseName: 'Mew', variant: 'VMAX'}],
+    nameHints: [{value: 'Mew VMAX'}, {value: 'Genome Hacking'}]
+  };
+  const primary = api.buildPokemonTcgUrls(hints, '');
+  const localized = api.buildTcgdexUrls(hints, '', 'de');
+
+  assert.ok(primary.some(url => url.includes('name%3Amew*')));
+  assert.ok(primary.every(url => !url.includes('name%3Avmax*')));
+  assert.ok(localized.some(url => url.includes('name=Mew+VMAX')));
+});
+
+test('verwendet unvalidierte Angriffswörter nicht als automatische Pokémon-Suchnamen', () => {
+  const urls = api.buildPokemonTcgUrls({
+    collectorNumbers: [],
+    nameHints: [{value: 'Mondscheinklinge'}, {value: 'Horrorblick'}],
+    validatedNameHints: []
+  }, '');
+
+  assert.deepEqual(urls, []);
+});
+
+test('startet bei einem unsicheren Fuzzy-Namen keine automatische Namenssuche', () => {
+  const urls = api.buildPokemonTcgUrls({
+    collectorNumbers: [],
+    pokemonIdentity: {
+      speciesId: 197,
+      englishName: 'Umbreon',
+      germanName: 'Nachtara',
+      variant: 'V',
+      nameConfidence: 0.79,
+      reliable: false
+    },
+    validatedNameHints: [{
+      value: 'Nachtaro V',
+      baseName: 'Nachtara',
+      variant: 'V',
+      confidence: 0.79
+    }]
+  }, '');
+
+  assert.deepEqual(urls, []);
 });

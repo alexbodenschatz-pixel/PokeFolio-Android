@@ -41,3 +41,21 @@ test('zeigt die getrennte Begründung für Name, Nummer, Artwork, KP und Set', (
   assert.match(app, /<span>Set<\/span>/);
   assert.match(app, /% Gesamt/);
 });
+
+test('zeigt die validierten OCR-Identitätsmerkmale aufklappbar an', () => {
+  assert.match(index, /id="recognitionFeatures"/);
+  assert.match(index, />Erkannte Merkmale</);
+  assert.match(app, /OCR-Sicherheit Name/);
+  assert.match(app, /Namensquelle/);
+  assert.match(app, /pokemonIdentity/);
+  assert.match(index, /Keine passenden Kartenkandidaten gefunden/);
+});
+
+test('filtert die Pokémon-Identität zwingend vor dem visuellen Vergleich', () => {
+  const prefilter = app.indexOf('Recognition.prefilterPokemonCandidates');
+  const visual = app.indexOf('async function enrichWithVisualSimilarity');
+  assert.ok(prefilter >= 0);
+  assert.ok(visual > prefilter);
+  assert.doesNotMatch(app, /details\.name\s*>=\s*0\.58/);
+  assert.match(app, /details\.name\s*>=\s*0\.88/);
+});

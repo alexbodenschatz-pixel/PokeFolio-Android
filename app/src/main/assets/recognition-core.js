@@ -1,8 +1,11 @@
 (function (root, factory) {
-  const api = factory();
+  const names = typeof module === 'object' && module.exports
+    ? require('./pokemon-names.js')
+    : root.PokeNames;
+  const api = factory(names || {entries: []});
   if (typeof module === 'object' && module.exports) module.exports = api;
   root.PokeRecognition = api;
-})(typeof globalThis !== 'undefined' ? globalThis : this, function () {
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (PokemonNames) {
   'use strict';
 
   const bannedNameTerms = [
@@ -18,6 +21,11 @@
     'TG', 'GG', 'SV', 'RC', 'SH', 'H',
     'SWSH', 'SVP', 'SM', 'XY', 'BW', 'DP', 'HGSS', 'PR'
   ]);
+  const pokemonNameEntries = Array.isArray(PokemonNames && PokemonNames.entries)
+    ? PokemonNames.entries
+    : [];
+  const pokemonVariantOrder = ['VMAX', 'VSTAR', 'GX', 'EX', 'ex', 'V'];
+  let pokemonNameIndex;
 
   function clamp(value, minimum, maximum) {
     return Math.max(minimum, Math.min(maximum, value));
@@ -30,6 +38,10 @@
       .replace(/[\u0300-\u036f]/g, '')
       .replace(/[^a-z0-9]+/g, ' ')
       .trim();
+  }
+
+  function pokemonNameKey(value) {
+    return norm(String(value || '').replace(/♀/g, ' female ').replace(/♂/g, ' male '));
   }
 
   function similarity(left, right) {
@@ -60,6 +72,96 @@
       }
     }
     return clamp(Math.max(tokenScore, 1 - previous[b.length] / Math.max(a.length, b.length)), 0, 1);
+  }
+
+  function pokemonNames() {
+    if (pokemonNameIndex) return pokemonNameIndex;
+    const aliases = [];
+    const byId = new Map();
+    pokemonNameEntries.forEach(entry => {
+      const normalized = {
+        id: Number(entry.id),
+        en: String(entry.en || ''),
+        de: String(entry.de || '')
+      };
+      if (!normalized.id || !normalized.en || !normalized.de) return;
+      byId.set(normalized.id, normalized);
+      [['en', normalized.en], ['de', normalized.de]].forEach(([language, display]) => {
+        const key = pokemonNameKey(display);
+        if (key) aliases.push({id: normalized.id, language, display, key, entry: normalized});
+      });
+    });
+    aliases.sort((left, right) => right.key.length - left.key.length);
+    pokemonNameIndex = {aliases, byId};
+    return pokemonNameIndex;
+  }
+
+  function normalizePokemonVariant(value) {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+    if (raw === 'ex') return 'ex';
+    const upper = raw.toUpperCase();
+    return pokemonVariantOrder.includes(upper) ? upper : '';
+  }
+
+  function extractPokemonVariant(value) {
+    const source = String(value || '');
+    const matches = source.match(/(?:^|\s)(VMAX|VSTAR|GX|EX|ex|V)(?=\s|$|[^\p{L}\p{N}])/gu) || [];
+    for (const match of matches) {
+      const token = match.trim().match(/VMAX|VSTAR|GX|EX|ex|V/u);
+      const normalized = normalizePokemonVariant(token && token[0]);
+      if (normalized) return normalized;
+    }
+    return '';
+  }
+
+  function cleanPokemonIdentityText(value) {
+    return String(value || '')
+      .replace(/\b(?:KP|HP)\s*[0-9OIL|]{2,3}\b/ig, ' ')
+      .replace(/^(?:BASIS|BASIC|PHASE|STAGE)\s*\d*\s*/i, '')
+      .replace(/\b(?:VMAX|VSTAR|GX|EX|ex|V)\b/g, ' ')
+      .replace(/[^\p{L}\p{N}.'’♀♂ -]+/gu, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  function bestKnownPokemonName(value, allowFuzzy) {
+    const cleaned = cleanPokemonIdentityText(value);
+    const normalized = pokemonNameKey(cleaned);
+    if (!normalized) return null;
+    const index = pokemonNames();
+    const padded = ` ${normalized} `;
+    const exact = index.aliases.find(alias => padded.includes(` ${alias.key} `));
+    if (exact) return {...exact, confidence: 1, exact: true};
+    if (!allowFuzzy) return null;
+
+    const words = normalized.split(' ').filter(Boolean);
+    let best = null;
+    index.aliases.forEach(alias => {
+      const aliasWords = alias.key.split(' ');
+      if (aliasWords.length > words.length) return;
+      for (let start = 0; start <= words.length - aliasWords.length; start++) {
+        const phrase = words.slice(start, start + aliasWords.length).join(' ');
+        if (Math.abs(phrase.length - alias.key.length) > (alias.key.length >= 9 ? 2 : 1)) continue;
+        if (phrase[0] !== alias.key[0]) continue;
+        const score = similarity(phrase, alias.key);
+        const threshold = alias.key.length >= 8 ? 0.84 : alias.key.length >= 5 ? 0.86 : 0.9;
+        if (score >= threshold && (!best || score > best.confidence)) {
+          best = {...alias, confidence: score, exact: false};
+        }
+      }
+    });
+    return best;
+  }
+
+  function candidatePokemonIdentity(name) {
+    const match = bestKnownPokemonName(name, false);
+    return match ? {
+      speciesId: match.id,
+      englishName: match.entry.en,
+      germanName: match.entry.de,
+      variant: extractPokemonVariant(name)
+    } : null;
   }
 
   function cleanOcrDigits(value) {
@@ -124,6 +226,85 @@
     map.set(key, current);
   }
 
+  function derivePokemonIdentity(lines, hpVotes) {
+    const speciesVotes = new Map();
+    (lines || []).forEach(line => {
+      const dedicatedHeader = /^kopfzeile-/.test(line.variant);
+      if (!dedicatedHeader && line.y > 0.26) return;
+      const match = bestKnownPokemonName(line.text, true);
+      if (!match) return;
+      const weight = dedicatedHeader
+        ? match.exact ? 3.4 : 2.5
+        : match.exact ? 2.25 : 1.35;
+      const current = speciesVotes.get(match.id) || {
+        match,
+        votes: 0,
+        exactVotes: 0,
+        headerVotes: 0,
+        variants: new Map(),
+        source: line.variant
+      };
+      current.votes += weight * match.confidence;
+      if (match.exact) current.exactVotes += weight;
+      if (dedicatedHeader) current.headerVotes += weight;
+      if (weight * match.confidence > (current.bestWeight || 0)) {
+        current.match = match;
+        current.bestWeight = weight * match.confidence;
+        current.source = line.variant;
+      }
+      const variant = extractPokemonVariant(line.text);
+      if (variant) current.variants.set(variant, (current.variants.get(variant) || 0) + weight);
+      speciesVotes.set(match.id, current);
+    });
+
+    const ranked = [...speciesVotes.values()].sort((left, right) => right.votes - left.votes);
+    if (!ranked.length) return {
+      speciesId: 0,
+      baseName: '',
+      englishName: '',
+      germanName: '',
+      variant: '',
+      hp: '',
+      nameConfidence: 0,
+      variantConfidence: 0,
+      hpConfidence: 0,
+      reliable: false,
+      source: ''
+    };
+    const best = ranked[0];
+    const secondVotes = ranked[1] ? ranked[1].votes : 0;
+    const variantRanked = [...best.variants.entries()].sort((left, right) => right[1] - left[1]);
+    const variant = variantRanked[0] ? variantRanked[0][0] : '';
+    const variantVotes = variantRanked[0] ? variantRanked[0][1] : 0;
+    const hpRanked = [...hpVotes.values()].sort((left, right) => right.votes - left.votes);
+    const hp = hpRanked[0] ? hpRanked[0].value : '';
+    const hpVoteCount = hpRanked[0] ? hpRanked[0].votes : 0;
+    const margin = best.votes - secondVotes;
+    const nameConfidence = clamp(
+      (best.match.exact ? 0.84 : 0.72)
+        + Math.min(0.13, best.votes * 0.018)
+        + Math.min(0.05, Math.max(0, margin) * 0.012),
+      0,
+      0.99
+    );
+    const reliable = nameConfidence >= 0.88
+      && (best.headerVotes >= 2.4 || best.exactVotes >= 2.2)
+      && margin >= 0.8;
+    return {
+      speciesId: best.match.id,
+      baseName: best.match.display,
+      englishName: best.match.entry.en,
+      germanName: best.match.entry.de,
+      variant,
+      hp,
+      nameConfidence,
+      variantConfidence: variant ? clamp(0.72 + variantVotes * 0.06, 0, 0.99) : 0,
+      hpConfidence: hp ? clamp(0.62 + hpVoteCount * 0.07, 0, 0.99) : 0,
+      reliable,
+      source: best.source
+    };
+  }
+
   function extractHints(input) {
     const passes = collectPasses(input);
     const textPasses = [];
@@ -154,9 +335,9 @@
         const entry = {
           text: value,
           y: /^kopfzeile-/.test(variant)
-            ? rawY * 0.32
+            ? rawY * 0.24
             : /^unterkante-/.test(variant)
-              ? 0.70 + rawY * 0.30
+              ? 0.80 + rawY * 0.20
               : rawY,
           pass: passIndex,
           variant
@@ -208,6 +389,19 @@
         }
       });
 
+      normalizedLines.forEach(line => {
+        const hpPattern = /\b(?:KP|HP)\s*([0-9OIL|]{2,3})\b/gi;
+        let hpMatch;
+        while ((hpMatch = hpPattern.exec(line.text)) !== null) {
+          const hp = cleanOcrDigits(hpMatch[1]).replace(/\D/g, '');
+          if (!hp || Number(hp) < 10 || Number(hp) > 500) continue;
+          const weight = /^kopfzeile-/.test(line.variant)
+            ? 2.4
+            : line.y <= 0.26 ? 1.5 : 0.45;
+          addVote(hpVotes, hp, hp, weight);
+        }
+      });
+
       const upper = text.toUpperCase();
       const setPattern = /\b((?:SV|SWSH|SM|XY|BW|HGSS|DP|PL|EX)[A-Z0-9-]{1,8})\b/g;
       let setMatch;
@@ -220,12 +414,6 @@
         let value = onePieceMatch[1].replace(/\s+/g, '');
         value = value.replace(/^((?:OP|ST|EB|PRB|EX|DON))(\d)-/, (_, prefix, number) => prefix + '0' + number + '-');
         addVote(onePieceVotes, value, value, 1);
-      }
-      const hpPattern = /\b(?:KP|HP)\s*([0-9OIL|]{2,3})\b/gi;
-      let hpMatch;
-      while ((hpMatch = hpPattern.exec(text)) !== null) {
-        const hp = cleanOcrDigits(hpMatch[1]).replace(/\D/g, '');
-        if (hp) addVote(hpVotes, hp, hp, 1);
       }
     });
 
@@ -250,7 +438,7 @@
       if (weight > 0.2) addVote(lineVotes, normalized, value, weight);
     });
 
-    const nameHints = [...lineVotes.values()]
+    const genericNameHints = [...lineVotes.values()]
       .sort((a, b) => b.votes - a.votes || a.value.length - b.value.length)
       .slice(0, 6)
       .map(entry => ({value: entry.value, votes: entry.votes}));
@@ -271,19 +459,36 @@
     const stageTerms = ['basic', 'basis', 'stage 1', 'stage 2', 'phase 1', 'phase 2']
       .filter(term => lower.includes(term));
     const artistMatch = completeText.match(/(?:illus(?:trator)?\.?|illustration)\s*[:.]?\s*([\p{L} .'-]{3,38})/iu);
+    const pokemonIdentity = derivePokemonIdentity(lineEntries, hpVotes);
+    const identityName = [pokemonIdentity.baseName, pokemonIdentity.variant].filter(Boolean).join(' ');
+    const validatedNameHints = identityName ? [{
+      value: identityName,
+      baseName: pokemonIdentity.baseName,
+      variant: pokemonIdentity.variant,
+      speciesId: pokemonIdentity.speciesId,
+      confidence: pokemonIdentity.nameConfidence,
+      votes: pokemonIdentity.nameConfidence * 10,
+      validated: true
+    }] : [];
+    const nameHints = validatedNameHints.concat(genericNameHints.filter(entry => {
+      return !identityName || norm(entry.value) !== norm(identityName);
+    })).slice(0, 6);
 
     return {
       rawText: completeText,
       lines: lineEntries,
       nameHint: nameHints[0] ? nameHints[0].value : '',
       nameHints,
+      validatedNameHints,
+      pokemonIdentity,
       collectorNumbers,
       pokemonNumber: collectorNumbers[0] ? collectorNumbers[0].number : '',
       pokemonTotal: collectorNumbers[0] ? collectorNumbers[0].total : '',
       pokemonSetCodes: setCodes,
       yugiohSetCode: findYuGiOhSetCode(completeText),
       onepieceId: onePieceVotes.size ? [...onePieceVotes.values()].sort((a, b) => b.votes - a.votes)[0].value : '',
-      hp: hpVotes.size ? [...hpVotes.values()].sort((a, b) => b.votes - a.votes)[0].value : '',
+      hp: pokemonIdentity.hp || (hpVotes.size ? [...hpVotes.values()].sort((a, b) => b.votes - a.votes)[0].value : ''),
+      hpConfidence: pokemonIdentity.hpConfidence,
       rarityHints: rarityTerms,
       stageHints: stageTerms,
       artistHint: artistMatch ? artistMatch[1].trim() : ''
@@ -313,6 +518,17 @@
   }
 
   function bestNameSimilarity(hints, candidateName, manual) {
+    const candidateIdentity = candidatePokemonIdentity(candidateName);
+    const detectedIdentity = hints && hints.pokemonIdentity;
+    const reliableDetectedName = detectedIdentity && detectedIdentity.speciesId
+      && (detectedIdentity.reliable || Number(detectedIdentity.nameConfidence) >= 0.88);
+    if (!manual && reliableDetectedName && candidateIdentity) {
+      return detectedIdentity.speciesId === candidateIdentity.speciesId ? 1 : 0;
+    }
+    const manualMatch = manual ? bestKnownPokemonName(manual, true) : null;
+    if (manualMatch && candidateIdentity) {
+      return manualMatch.id === candidateIdentity.speciesId ? 1 : 0;
+    }
     const values = manual
       ? [{value: manual, votes: 4}]
       : (hints.nameHints || []).length
@@ -337,6 +553,18 @@
     const nameScore = clamp(bestNameSimilarity(hints, candidate.name, manual), 0, 1);
     let score = nameScore * 0.46;
     if (nameScore >= 0.78) evidence.push('Name');
+    const detectedVariant = normalizePokemonVariant(hints && hints.pokemonIdentity && hints.pokemonIdentity.variant);
+    const candidateVariant = normalizePokemonVariant(extractPokemonVariant(candidate.name));
+    const variantStatus = detectedVariant
+      ? candidateVariant === detectedVariant ? 'match' : 'mismatch'
+      : 'unknown';
+    if (variantStatus === 'match') {
+      score += 0.08;
+      evidence.push('Variante');
+    } else if (variantStatus === 'mismatch') {
+      score -= 0.18;
+      evidence.push('Variante abweichend');
+    }
 
     const candidateTotals = [candidate.printedTotal, candidate.total, candidate.setTotal]
       .filter(Boolean)
@@ -418,6 +646,7 @@
     } else {
       score = Math.min(score, 0.91);
     }
+    if (variantStatus === 'mismatch') score = Math.min(score, 0.48);
     const confidence = clamp(score, 0, 0.99);
     return {
       ...candidate,
@@ -426,6 +655,7 @@
       evidence: Array.from(new Set(evidence)),
       matchDetails: {
         name: nameScore,
+        variant: variantStatus,
         collector: collectorStatus,
         collectorDetected: collectors.map(item => item.number).filter(Boolean),
         set: setStatus,
@@ -565,6 +795,64 @@
     return ranked.slice(0, maximum);
   }
 
+  /**
+   * Stage A has already established identity. Stage B may only pass plausible
+   * cards of that species/variant to the comparatively expensive image matcher.
+   */
+  function prefilterPokemonCandidates(candidates, hints, manual) {
+    const input = Array.isArray(candidates) ? candidates : [];
+    const detected = hints && hints.pokemonIdentity || {};
+    const manualMatch = manual ? bestKnownPokemonName(manual, true) : null;
+    const identity = manualMatch ? {
+      speciesId: manualMatch.id,
+      variant: extractPokemonVariant(manual),
+      hp: hints && hints.hp || '',
+      nameConfidence: manualMatch.confidence,
+      variantConfidence: extractPokemonVariant(manual) ? 0.99 : 0,
+      hpConfidence: hints && hints.hpConfidence || 0,
+      reliable: manualMatch.confidence >= 0.86
+    } : detected;
+    let filtered = input.slice();
+    const reliableName = Boolean(identity.speciesId)
+      && (identity.reliable || Number(identity.nameConfidence) >= 0.88);
+
+    if (reliableName) {
+      filtered = filtered.filter(candidate => {
+        const candidateIdentity = candidatePokemonIdentity(candidate.name);
+        return candidateIdentity && candidateIdentity.speciesId === Number(identity.speciesId);
+      });
+      if (!filtered.length) return [];
+
+      const detectedVariant = normalizePokemonVariant(identity.variant);
+      if (detectedVariant && Number(identity.variantConfidence) >= 0.82) {
+        const exactVariant = filtered.filter(candidate => {
+          return normalizePokemonVariant(extractPokemonVariant(candidate.name)) === detectedVariant;
+        });
+        // A reliable V/VMAX/VSTAR/ex/GX marker is part of the card identity.
+        if (!exactVariant.length) return [];
+        filtered = exactVariant;
+      }
+
+      const detectedHp = numberKey(identity.hp || hints && hints.hp || '');
+      if (detectedHp && Number(identity.hpConfidence || hints && hints.hpConfidence) >= 0.8) {
+        const exactHp = filtered.filter(candidate => candidate.hp && numberKey(candidate.hp) === detectedHp);
+        const unknownHp = filtered.filter(candidate => !candidate.hp);
+        if (exactHp.length) filtered = exactHp.concat(unknownHp);
+        else if (filtered.every(candidate => candidate.hp)) return [];
+        else filtered = unknownHp;
+      }
+    }
+
+    const collectors = hints && hints.collectorNumbers || [];
+    const strongCollector = collectors.find(item => Number(item.votes) >= 1.5) || collectors[0];
+    if (strongCollector) {
+      const key = numberKey(strongCollector.number);
+      const exactNumber = filtered.filter(candidate => numberKey(candidate.number) === key);
+      if (exactNumber.length) filtered = exactNumber;
+    }
+    return filtered;
+  }
+
   function isConfident(candidates) {
     if (!candidates || !candidates.length) return false;
     const best = candidates[0].confidence || 0;
@@ -587,12 +875,16 @@
     clamp,
     norm,
     similarity,
+    bestKnownPokemonName,
+    extractPokemonVariant,
+    candidatePokemonIdentity,
     numberKey,
     parsePokemonCollector,
     extractHints,
     classifyTcg,
     scorePokemonCandidate,
     rankPokemonCandidates,
+    prefilterPokemonCandidates,
     combineVisualSimilarity,
     isConfident,
     hasPlausibleCandidate

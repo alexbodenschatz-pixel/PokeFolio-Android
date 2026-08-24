@@ -67,6 +67,7 @@ function bindPhoto(id) {
       recognition = null;
       candidates = [];
       recognizedRotation = 0;
+      renderRecognitionFeatures(null);
       $('#comparisonScanImg').src = previewUrl;
       renderCandidates(false);
       scheduleRecognition(180);
@@ -86,6 +87,33 @@ function setRecState(kind, title, text) {
   $('#recognitionState').className = 'status ' + kind;
   $('#recognitionState').textContent = title;
   $('#recognitionText').textContent = text || '';
+}
+
+function renderRecognitionFeatures(hints) {
+  const details = $('#recognitionFeatures');
+  const list = $('#recognitionFeatureList');
+  if (!hints) {
+    details.hidden = true;
+    list.innerHTML = '';
+    return;
+  }
+  const identity = hints.pokemonIdentity || {};
+  const collector = hints.collectorNumbers && hints.collectorNumbers[0];
+  const setCode = hints.pokemonSetCodes && hints.pokemonSetCodes[0];
+  const confidence = Number(identity.nameConfidence);
+  const rows = [
+    ['Name', identity.baseName || 'nicht zuverlässig erkannt'],
+    ['Variante', identity.variant || 'nicht erkannt'],
+    ['KP/HP', identity.hp || hints.hp || 'nicht erkannt'],
+    ['Collector Number', collector
+      ? [collector.number, collector.total].filter(Boolean).join('/')
+      : 'nicht erkannt'],
+    ['Set', setCode && setCode.value || 'nicht erkannt'],
+    ['OCR-Sicherheit Name', Number.isFinite(confidence) ? Math.round(confidence * 100) + ' %' : '0 %'],
+    ['Namensquelle', identity.source || 'keine validierte Kopfzeile']
+  ];
+  list.innerHTML = rows.map(([name, value]) => `<dt>${esc(name)}</dt><dd>${esc(value)}</dd>`).join('');
+  details.hidden = false;
 }
 
 function clamp(value, minimum, maximum) {
@@ -600,11 +628,21 @@ async function pokemonSearch(hints, manual = '', runToken) {
     const key = pokemonVariantKey(candidate);
     variants.set(key, mergePokemonCandidate(variants.get(key), candidate, language));
   });
+  const identityFiltered = Recognition.prefilterPokemonCandidates(
+    [...variants.values()], hints, manual
+  );
   const broadlyRanked = Recognition.rankPokemonCandidates(
-    [...variants.values()], hints, manual, 80
+    identityFiltered, hints, manual, 80
   ).filter(candidate => {
     const details = candidate.matchDetails || {};
-    return details.collector === 'match' || details.name >= 0.58;
+    if (manual) return details.collector === 'match' || details.name >= 0.84;
+    const identity = hints.pokemonIdentity || {};
+    if (identity.speciesId && (identity.reliable || identity.nameConfidence >= 0.88)) {
+      return details.name >= 0.88
+        && (identity.variantConfidence < 0.82 || details.variant !== 'mismatch')
+        && (identity.hpConfidence < 0.8 || details.hp !== 'mismatch');
+    }
+    return details.collector === 'match';
   });
 
   return {
@@ -765,6 +803,8 @@ function evidenceLabel(value) {
     'Kartennummer': 'Kartennummer stimmt',
     'Setnummer': 'Set stimmt',
     'Setcode': 'Set stimmt',
+    'Variante': 'Variante stimmt',
+    'Variante abweichend': 'Variante weicht ab',
     'Artwork ähnlich': 'Artwork ähnlich',
     'Artwork abweichend': 'Artwork weicht ab',
     'KP/HP': 'KP/HP stimmt',
@@ -788,12 +828,14 @@ function candidateBreakdown(candidate) {
   const collector = matchStatus(details.collector, 'nicht erkannt');
   const hp = matchStatus(details.hp, 'unbekannt');
   const set = matchStatus(details.set, 'unbekannt');
+  const variant = matchStatus(details.variant, 'nicht erkannt');
   const artwork = Number.isFinite(Number(details.artwork))
     ? Math.round(Number(details.artwork) * 100) + ' %'
       + (details.visualReliable === false ? ' (Kontur unsicher)' : '')
     : 'nicht verfügbar';
   return `<div class="match-breakdown">
     <div><span>Name</span><b>${esc(name)}</b></div>
+    <div><span>Variante</span><b class="${esc(details.variant || 'unknown')}">${esc(variant)}</b></div>
     <div><span>Kartennummer</span><b class="${esc(details.collector || 'unknown')}">${esc(collector)}</b></div>
     <div><span>Artwork</span><b>${esc(artwork)}</b></div>
     <div><span>KP/HP</span><b class="${esc(details.hp || 'unknown')}">${esc(hp)}</b></div>
@@ -936,6 +978,7 @@ async function runRecognition(manual = false) {
   );
   recognition = null;
   candidates = [];
+  renderRecognitionFeatures(null);
   renderCandidates(false);
   try {
     const dataUrl = await ocrDataUrl(file);
@@ -943,6 +986,7 @@ async function runRecognition(manual = false) {
     if (run !== recognitionRun) return null;
     recognizedRotation = chooseRecognitionRotation(ocrResult);
     const hints = Recognition.extractHints(ocrResult);
+    renderRecognitionFeatures(hints);
     const kind = Recognition.classifyTcg(hints, manual ? selectedTcg : selectedTcg);
     recognizedTcg = kind;
     const lookup = await lookupCandidates(kind, hints, '', run);
@@ -971,8 +1015,8 @@ async function runRecognition(manual = false) {
         || 'keine eindeutigen Merkmale';
       setRecState(
         'warn',
-        'Keine eindeutige Karte gefunden',
-        `Gelesen: ${hint}. Bitte TCG auswählen oder Name bzw. Kartencode manuell suchen.`
+        'Keine passenden Kartenkandidaten gefunden',
+        `Gelesen: ${hint}. Starte die Erkennung erneut, nimm ein neues Bild auf oder gib den Namen manuell ein.`
       );
       return null;
     }

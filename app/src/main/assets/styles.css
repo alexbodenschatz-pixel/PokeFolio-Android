@@ -52,6 +52,10 @@ main{max-width:1180px}
 .match-breakdown span{color:#8290a3}
 .match-breakdown b{color:#d7dee8;text-align:right;font-size:10px}
 .match-breakdown b.match{color:#75e4bc}.match-breakdown b.mismatch{color:#ff9ea9}.match-breakdown b.unknown{color:#9ca7b7}
+.recognition-features{margin:10px 0;padding:10px 12px;border:1px solid #303947;border-radius:12px;background:#111720;color:#dce3ed}
+.recognition-features summary{font-size:12px;font-weight:700;color:#aeb9c8}
+.recognition-features dl{display:grid;grid-template-columns:1fr auto;gap:6px 12px;margin:10px 0 0;font-size:11px}
+.recognition-features dt{color:#8491a4}.recognition-features dd{margin:0;text-align:right;color:#eef3fa;font-weight:700;overflow-wrap:anywhere}
 .candidate-reasons{display:flex;flex-wrap:wrap;gap:5px}
 .candidate-reasons span{padding:5px 7px;border-radius:999px;background:#242d39;color:#c5ceda;font-size:10px}
 .high-confidence .candidate-reasons span{background:#17382e;color:#aaf3d5}

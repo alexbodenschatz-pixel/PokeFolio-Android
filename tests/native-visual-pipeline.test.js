@@ -40,4 +40,15 @@ test('liefert gezielte Collector-Number-OCR in mehreren Bildvarianten', () => {
   assert.match(processor, /unterkante-kontrast-/);
   assert.match(processor, /unterkante-scharf-/);
   assert.match(processor, /sharpenForOcr/);
+  assert.match(processor, /card\.getHeight\(\) \* 0\.80f/);
+});
+
+test('liefert eine enge Kopfzeilen-OCR mit Original, Grau, Kontrast, Schärfe und Skalierungen', () => {
+  assert.match(processor, /card\.getHeight\(\) \* 0\.23f/);
+  assert.match(processor, /kopfzeile-original-/);
+  assert.match(processor, /kopfzeile-grau-/);
+  assert.match(processor, /kopfzeile-kontrast-/);
+  assert.match(processor, /kopfzeile-scharf-/);
+  assert.match(processor, /kopfzeile-2x-/);
+  assert.match(processor, /kopfzeile-3x-/);
 });

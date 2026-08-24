@@ -169,20 +169,7 @@ public final class CardImageProcessor {
             if (ratio >= 0.42f && ratio <= 1.08f) {
                 Bitmap card = centerCropToCard(normal);
                 variants.add(new OcrVariant("karte-kontrast-" + rotation, enhanceForOcr(card)));
-                int headerHeight = Math.max(2, Math.round(card.getHeight() * 0.30f));
-                Bitmap header = Bitmap.createBitmap(card, 0, 0, card.getWidth(), headerHeight);
-                int targetWidth = Math.max(1200, header.getWidth());
-                Bitmap largeHeader = Bitmap.createScaledBitmap(
-                        header,
-                        targetWidth,
-                        Math.max(2, Math.round(header.getHeight() * targetWidth / (float) header.getWidth())),
-                        true
-                );
-                variants.add(new OcrVariant("kopfzeile-" + rotation, enhanceForOcr(largeHeader)));
-                if (largeHeader != header) {
-                    largeHeader.recycle();
-                }
-                header.recycle();
+                addHeaderOcrVariants(variants, card, rotation);
                 addCollectorOcrVariants(variants, card, rotation);
                 if (card != normal) {
                     card.recycle();
@@ -601,7 +588,7 @@ public final class CardImageProcessor {
     }
 
     private static void addCollectorOcrVariants(List<OcrVariant> variants, Bitmap card, int rotation) {
-        int top = Math.max(0, Math.round(card.getHeight() * 0.68f));
+        int top = Math.max(0, Math.round(card.getHeight() * 0.80f));
         Bitmap bottom = Bitmap.createBitmap(card, 0, top, card.getWidth(), card.getHeight() - top);
         int normalWidth = 1100;
         Bitmap normal = Bitmap.createScaledBitmap(
@@ -626,6 +613,38 @@ public final class CardImageProcessor {
         sharpGray.recycle();
         if (sharpLarge != bottom) sharpLarge.recycle();
         if (bottom != card) bottom.recycle();
+    }
+
+    /** Dedicated 23%-header OCR for species name, V/ex/GX marker and KP/HP. */
+    private static void addHeaderOcrVariants(List<OcrVariant> variants, Bitmap card, int rotation) {
+        int height = Math.max(2, Math.round(card.getHeight() * 0.23f));
+        Bitmap header = Bitmap.createBitmap(card, 0, 0, card.getWidth(), height);
+        Bitmap base = scaleDown(header, 700);
+        variants.add(new OcrVariant("kopfzeile-original-" + rotation, base));
+        variants.add(new OcrVariant("kopfzeile-grau-" + rotation, grayscaleForOcr(base)));
+
+        int twoXWidth = Math.min(2200, Math.max(1100, base.getWidth() * 2));
+        Bitmap twoX = Bitmap.createScaledBitmap(
+                base,
+                twoXWidth,
+                Math.max(2, Math.round(base.getHeight() * twoXWidth / (float) base.getWidth())),
+                true
+        );
+        variants.add(new OcrVariant("kopfzeile-2x-" + rotation, twoX));
+        variants.add(new OcrVariant("kopfzeile-kontrast-" + rotation, enhanceForOcr(twoX)));
+
+        int threeXWidth = Math.min(3000, Math.max(1600, base.getWidth() * 3));
+        Bitmap threeX = Bitmap.createScaledBitmap(
+                base,
+                threeXWidth,
+                Math.max(2, Math.round(base.getHeight() * threeXWidth / (float) base.getWidth())),
+                true
+        );
+        variants.add(new OcrVariant("kopfzeile-3x-" + rotation, threeX));
+        Bitmap sharpGray = grayscaleForOcr(threeX);
+        variants.add(new OcrVariant("kopfzeile-scharf-" + rotation, sharpenForOcr(sharpGray)));
+        sharpGray.recycle();
+        if (base != header) header.recycle();
     }
 
     private static Bitmap grayscaleForOcr(Bitmap source) {

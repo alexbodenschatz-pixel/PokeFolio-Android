@@ -10,8 +10,9 @@
   const TCGDEX_ENDPOINT = 'https://api.tcgdex.net/v2';
   const ignoredNameTokens = new Set([
     'basis', 'basic', 'stage', 'phase', 'pokemon', 'pokémon', 'karte', 'card',
-    'kp', 'hp', 'ex', 'gx', 'v', 'vmax', 'vstar', 'break', 'level', 'lv'
+    'kp', 'hp', 'break', 'level', 'lv'
   ]);
+  const pokemonVariantTokens = new Set(['ex', 'gx', 'v', 'vmax', 'vstar']);
 
   class HttpRequestError extends Error {
     constructor(message, details) {
@@ -106,7 +107,7 @@
 
   /** Uses the documented trailing wildcard form; exact name queries currently produce API 500s. */
   function safePokemonNameQuery(value) {
-    const token = nameTokens(value)[0];
+    const token = nameTokens(value).find(value => !pokemonVariantTokens.has(value));
     if (!token) return '';
     return 'name:' + token.slice(0, Math.min(9, token.length)) + '*';
   }
@@ -126,9 +127,15 @@
       const normalized = normalizedCollectorNumber(raw);
       if (normalized && normalized !== raw) queries.push('number:' + normalized);
     });
+    const identity = hints && hints.pokemonIdentity || {};
     const names = manual
       ? [manual]
-      : (hints && hints.nameHints || []).slice(0, 3).map(item => item.value);
+      : identity.speciesId && (identity.reliable || Number(identity.nameConfidence) >= 0.88)
+        ? [identity.englishName]
+        : (hints && hints.validatedNameHints || [])
+          .filter(item => Number(item.confidence) >= 0.88)
+          .slice(0, 2)
+          .map(item => item.baseName || item.value);
     names.forEach(value => {
       const query = safePokemonNameQuery(value);
       if (query) queries.push(query);
@@ -143,16 +150,25 @@
     );
   }
 
-  function tcgdexNames(hints, manual) {
+  function tcgdexNames(hints, manual, language) {
+    const identity = hints && hints.pokemonIdentity || {};
+    const localizedBase = String(language || '').toLowerCase() === 'de'
+      ? identity.germanName
+      : identity.englishName;
+    const localizedIdentity = [localizedBase, identity.variant].filter(Boolean).join(' ');
     const values = manual
-      ? [manual, ...(hints && hints.nameHints || []).map(item => item.value)]
-      : (hints && hints.nameHints || []).map(item => item.value);
+      ? [manual]
+      : identity.speciesId && (identity.reliable || Number(identity.nameConfidence) >= 0.88)
+        ? [localizedIdentity, localizedBase]
+        : (hints && hints.validatedNameHints || [])
+          .filter(item => Number(item.confidence) >= 0.88)
+          .map(item => item.value);
     return [...new Set(values.map(cleanNameCandidate).filter(value => nameTokens(value).length))].slice(0, 3);
   }
 
   function buildTcgdexUrls(hints, manual, language) {
     const lang = /^[a-z]{2}(?:-[a-z]{2})?$/i.test(language || '') ? language.toLowerCase() : 'de';
-    const names = tcgdexNames(hints, manual);
+    const names = tcgdexNames(hints, manual, lang);
     const numbers = [...new Set((hints && hints.collectorNumbers || []).slice(0, 2)
       .map(item => String(item.number || '').toUpperCase().replace(/[^A-Z0-9]/g, ''))
       .filter(Boolean))];
