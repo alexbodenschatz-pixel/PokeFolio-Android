@@ -4,15 +4,19 @@ import android.Manifest;
 import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.content.Intent;
+import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Rect;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.VibrationEffect;
+import android.os.Vibrator;
 import android.util.Base64;
 import android.util.Log;
 import android.webkit.JavascriptInterface;
+import android.webkit.ConsoleMessage;
 import android.webkit.PermissionRequest;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
@@ -21,11 +25,18 @@ import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 
+import androidx.core.graphics.Insets;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowCompat;
+import androidx.core.view.WindowInsetsCompat;
+
 import com.google.mlkit.vision.common.InputImage;
 import com.google.mlkit.vision.text.Text;
 import com.google.mlkit.vision.text.TextRecognition;
 import com.google.mlkit.vision.text.TextRecognizer;
+import com.google.mlkit.vision.text.chinese.ChineseTextRecognizerOptions;
 import com.google.mlkit.vision.text.japanese.JapaneseTextRecognizerOptions;
+import com.google.mlkit.vision.text.korean.KoreanTextRecognizerOptions;
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions;
 
 import org.json.JSONArray;
@@ -37,6 +48,8 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
+import java.net.MalformedURLException;
+import java.net.SocketTimeoutException;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
@@ -51,16 +64,23 @@ import java.util.concurrent.Executors;
 /** Hosts the local application UI and exposes narrow OCR/network bridges. */
 public final class MainActivity extends Activity {
     private static final String TAG = "PokeFolio";
+    private static final String HTTP_TAG = "PokeFolioHttp";
     private static final int FILE_CHOOSER = 1001;
+    private static final int BULK_SCANNER = 1002;
     private static final int CAMERA_PERMISSION = 2001;
     private static final int MAX_BRIDGE_IMAGE_BYTES = 14_000_000;
     private static final int MAX_REFERENCE_IMAGE_BYTES = 8_000_000;
 
     private WebView webView;
     private ValueCallback<Uri[]> fileCallback;
+    private String bulkScannerRequestId;
     private ExecutorService bridgeExecutor;
     private ExecutorService networkExecutor;
     private ExecutorService comparisonExecutor;
+    private int webSafeTop;
+    private int webSafeRight;
+    private int webSafeBottom;
+    private int webSafeLeft;
     private final Set<String> allowedHosts = new HashSet<>(Arrays.asList(
             "api.pokemontcg.io",
             "api.tcgdex.net",
@@ -69,6 +89,7 @@ public final class MainActivity extends Activity {
     ));
     private final Set<String> allowedImageHosts = new HashSet<>(Arrays.asList(
             "images.pokemontcg.io",
+            "images.scrydex.com",
             "assets.tcgdex.net",
             "images.ygoprodeck.com",
             "optcgapi.com"
@@ -78,11 +99,13 @@ public final class MainActivity extends Activity {
     @Override
     public void onCreate(Bundle state) {
         super.onCreate(state);
+        WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
         bridgeExecutor = Executors.newSingleThreadExecutor();
         networkExecutor = Executors.newFixedThreadPool(4);
         comparisonExecutor = Executors.newFixedThreadPool(3);
         webView = new WebView(this);
         setContentView(webView);
+        installWebViewSafeArea();
 
         WebSettings settings = webView.getSettings();
         settings.setJavaScriptEnabled(true);
@@ -92,10 +115,16 @@ public final class MainActivity extends Activity {
         settings.setAllowContentAccess(true);
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
         settings.setMediaPlaybackRequiresUserGesture(false);
-        settings.setUserAgentString(settings.getUserAgentString() + " PokeFolio/0.9.1");
+        settings.setUserAgentString(settings.getUserAgentString() + " PokeFolio/0.13.0");
 
         webView.addJavascriptInterface(new NativeBridge(), "PokeNative");
         webView.setWebViewClient(new WebViewClient() {
+            @Override
+            public void onPageFinished(WebView view, String url) {
+                super.onPageFinished(view, url);
+                applyWebViewSafeArea();
+            }
+
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
                 Uri uri = request.getUrl();
@@ -105,6 +134,14 @@ public final class MainActivity extends Activity {
             }
         });
         webView.setWebChromeClient(new WebChromeClient() {
+            @Override
+            public boolean onConsoleMessage(ConsoleMessage message) {
+                if (isDebugBuild() && message != null) {
+                    Log.d("PokeFolioWeb", sanitizeLogText(message.message(), 1800));
+                }
+                return true;
+            }
+
             @Override
             public void onPermissionRequest(PermissionRequest request) {
                 runOnUiThread(() -> {
@@ -150,6 +187,43 @@ public final class MainActivity extends Activity {
             requestPermissions(new String[]{Manifest.permission.CAMERA}, CAMERA_PERMISSION);
         }
         webView.loadUrl("file:///android_asset/index.html");
+    }
+
+    /** Passes native system-bar/cutout insets to the bundled CSS in density-independent pixels. */
+    private void installWebViewSafeArea() {
+        ViewCompat.setOnApplyWindowInsetsListener(webView, (view, windowInsets) -> {
+            Insets safe = windowInsets.getInsets(
+                    WindowInsetsCompat.Type.systemBars()
+                            | WindowInsetsCompat.Type.displayCutout()
+            );
+            Insets navigation = windowInsets.getInsets(WindowInsetsCompat.Type.navigationBars());
+            float density = Math.max(1f, getResources().getDisplayMetrics().density);
+            webSafeTop = Math.round(safe.top / density);
+            webSafeRight = Math.round(safe.right / density);
+            webSafeBottom = Math.round(navigation.bottom / density);
+            webSafeLeft = Math.round(safe.left / density);
+            applyWebViewSafeArea();
+            if (isDebugBuild()) {
+                Log.d(TAG, "Web safe area cssTop=" + webSafeTop
+                        + " cssBottom=" + webSafeBottom
+                        + " cssLeft=" + webSafeLeft
+                        + " cssRight=" + webSafeRight);
+            }
+            return windowInsets;
+        });
+        ViewCompat.requestApplyInsets(webView);
+    }
+
+    private void applyWebViewSafeArea() {
+        if (webView == null) return;
+        String script = "(function(){var s=document.documentElement&&document.documentElement.style;"
+                + "if(!s)return;"
+                + "s.setProperty('--android-status-inset-top','" + webSafeTop + "px');"
+                + "s.setProperty('--android-safe-inset-right','" + webSafeRight + "px');"
+                + "s.setProperty('--android-nav-inset-bottom','" + webSafeBottom + "px');"
+                + "s.setProperty('--android-safe-inset-left','" + webSafeLeft + "px');"
+                + "})();";
+        webView.post(() -> webView.evaluateJavascript(script, null));
     }
 
     private void sendJs(String function, JSONObject payload) {
@@ -200,6 +274,51 @@ public final class MainActivity extends Activity {
             comparisonExecutor.execute(() -> performVisualComparison(
                     dataUrl, imageUrl, requestId, true, reliable, method
             ));
+        }
+
+        @JavascriptInterface
+        public void openBulkScanner(String requestId) {
+            runOnUiThread(() -> launchBulkScanner(requestId));
+        }
+
+        @JavascriptInterface
+        public void vibrateBulkSuccess() {
+            runOnUiThread(() -> {
+                Vibrator vibrator = (Vibrator) getSystemService(VIBRATOR_SERVICE);
+                if (vibrator != null && vibrator.hasVibrator()) {
+                    vibrator.vibrate(VibrationEffect.createOneShot(
+                            45L,
+                            VibrationEffect.DEFAULT_AMPLITUDE
+                    ));
+                }
+            });
+        }
+    }
+
+    private void launchBulkScanner(String requestId) {
+        JSONObject output = new JSONObject();
+        try {
+            if (requestId == null || requestId.trim().isEmpty()) {
+                throw new IllegalArgumentException("Ungültige Scanner-Anfrage.");
+            }
+            if (bulkScannerRequestId != null) {
+                throw new IllegalStateException("Der Scanner ist bereits geöffnet.");
+            }
+            bulkScannerRequestId = requestId;
+            Intent scanner = new Intent(MainActivity.this, CameraActivity.class);
+            scanner.putExtra(CameraActivity.EXTRA_BULK_MODE, true);
+            startActivityForResult(scanner, BULK_SCANNER);
+            if (isDebugBuild()) Log.d(TAG, "Bulk scanner opened requestId=" + sanitizeLogText(requestId, 80));
+        } catch (Exception error) {
+            bulkScannerRequestId = null;
+            try {
+                output.put("requestId", requestId);
+                output.put("ok", false);
+                output.put("error", safeMessage(error, "Der Bulk-Scanner konnte nicht geöffnet werden."));
+            } catch (Exception ignored) {
+                // Keep response best-effort.
+            }
+            sendJs("onNativeBulkScannerResult", output);
         }
     }
 
@@ -268,6 +387,7 @@ public final class MainActivity extends Activity {
             output.put("whole", result.whole);
             output.put("header", result.header);
             output.put("artwork", result.artwork);
+            output.put("text", result.text);
             output.put("footer", result.footer);
             output.put("reliable", result.reliable);
             output.put("method", result.method);
@@ -318,7 +438,7 @@ public final class MainActivity extends Activity {
             connection.setReadTimeout(8000);
             connection.setInstanceFollowRedirects(false);
             connection.setRequestProperty("Accept", "image/avif,image/webp,image/*");
-            connection.setRequestProperty("User-Agent", "PokeFolio/0.9.1 Android");
+            connection.setRequestProperty("User-Agent", "PokeFolio/0.13.0 Android");
             int status = connection.getResponseCode();
             if (status < 200 || status >= 300) {
                 throw new IOException("Kartenbild HTTP " + status);
@@ -375,6 +495,8 @@ public final class MainActivity extends Activity {
         JSONObject output = new JSONObject();
         try {
             output.put("requestId", requestId);
+            String ocrLanguage = normalizeOcrLanguage(language);
+            output.put("language", ocrLanguage);
             int comma = dataUrl.indexOf(',');
             String encoded = comma >= 0 ? dataUrl.substring(comma + 1) : dataUrl;
             byte[] bytes = Base64.decode(encoded, Base64.DEFAULT);
@@ -402,9 +524,10 @@ public final class MainActivity extends Activity {
 
             List<CardImageProcessor.OcrVariant> variants = CardImageProcessor.createOcrVariants(bitmap);
             bitmap.recycle();
-            TextRecognizer recognizer = "ja".equals(language)
-                    ? TextRecognition.getClient(new JapaneseTextRecognizerOptions.Builder().build())
-                    : TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS);
+            TextRecognizer recognizer = createTextRecognizer(ocrLanguage);
+            if (isDebugBuild()) {
+                Log.d(TAG, "OCR language=" + ocrLanguage + " variants=" + variants.size());
+            }
             recognizeVariant(
                     requestId,
                     output,
@@ -425,6 +548,30 @@ public final class MainActivity extends Activity {
             }
             sendJs("onNativeOcrResult", output);
         }
+    }
+
+    private static String normalizeOcrLanguage(String language) {
+        String value = String.valueOf(language == null ? "" : language)
+                .trim()
+                .toLowerCase(Locale.ROOT);
+        if ("ja".equals(value) || "ko".equals(value)) return value;
+        if (value.startsWith("zh")) return value.contains("tw") || value.contains("hant")
+                ? "zh-TW"
+                : "zh-CN";
+        return "de".equals(value) ? "de" : "en";
+    }
+
+    private static TextRecognizer createTextRecognizer(String language) {
+        if ("ja".equals(language)) {
+            return TextRecognition.getClient(new JapaneseTextRecognizerOptions.Builder().build());
+        }
+        if ("ko".equals(language)) {
+            return TextRecognition.getClient(new KoreanTextRecognizerOptions.Builder().build());
+        }
+        if (language.startsWith("zh")) {
+            return TextRecognition.getClient(new ChineseTextRecognizerOptions.Builder().build());
+        }
+        return TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS);
     }
 
     private void recognizeVariant(
@@ -502,6 +649,7 @@ public final class MainActivity extends Activity {
         HttpURLConnection connection = null;
         int status = 0;
         String responseBody = "";
+        String errorType = "none";
         try {
             output.put("requestId", requestId);
             output.put("url", urlString);
@@ -511,12 +659,14 @@ public final class MainActivity extends Activity {
                 throw new SecurityException("Nicht erlaubte Datenquelle.");
             }
             connection = (HttpURLConnection) url.openConnection();
-            connection.setConnectTimeout(6500);
-            connection.setReadTimeout(9500);
+            // Keep the native deadline below the JavaScript bridge watchdog so
+            // timeouts arrive with their real error type instead of as orphaned callbacks.
+            connection.setConnectTimeout(5000);
+            connection.setReadTimeout(8000);
             connection.setRequestMethod("GET");
             connection.setRequestProperty("Accept", "application/json");
             connection.setRequestProperty("Cache-Control", "no-cache");
-            connection.setRequestProperty("User-Agent", "PokeFolio/0.9.1 Android");
+            connection.setRequestProperty("User-Agent", "PokeFolio/0.13.0 Android");
             status = connection.getResponseCode();
             InputStream stream = status >= 200 && status < 400
                     ? connection.getInputStream()
@@ -544,16 +694,23 @@ public final class MainActivity extends Activity {
                 }
             }
             if (status < 200 || status >= 300) {
+                errorType = "http";
+                output.put("errorType", errorType);
                 output.put("error", "HTTP " + status);
-                logHttpFailure(urlString, status, responseBody, null);
+                logHttpFailure(urlString, status, responseBody, errorType, null);
+            } else if (isDebugBuild()) {
+                Log.d(HTTP_TAG, "Art=success URL=" + sanitizeUrlForLog(urlString)
+                        + " Status=" + status + " Bytes=" + responseBody.length());
             }
         } catch (Exception error) {
-            logHttpFailure(urlString, status, responseBody, error);
+            errorType = classifyHttpError(error, status);
+            logHttpFailure(urlString, status, responseBody, errorType, error);
             try {
                 output.put("ok", false);
                 output.put("url", urlString);
                 output.put("status", status);
                 output.put("body", responseBody);
+                output.put("errorType", errorType);
                 output.put("error", safeMessage(error, "Netzwerkanfrage fehlgeschlagen."));
             } catch (Exception ignored) {
                 // Keep best-effort response.
@@ -566,21 +723,51 @@ public final class MainActivity extends Activity {
         sendJs("onNativeHttpResult", output);
     }
 
-    private static void logHttpFailure(String url, int status, String body, Exception error) {
+    private void logHttpFailure(
+            String url,
+            int status,
+            String body,
+            String errorType,
+            Exception error
+    ) {
+        if (!isDebugBuild()) {
+            return;
+        }
         String compactBody = body == null || body.trim().isEmpty()
                 ? "<leer>"
-                : body.replaceAll("\\s+", " ").trim();
-        if (compactBody.length() > 6000) {
-            compactBody = compactBody.substring(0, 6000) + "…";
-        }
-        String message = "HTTP request failed URL=" + url
+                : sanitizeLogText(body.replaceAll("\\s+", " ").trim(), 2000);
+        String message = "Art=" + errorType
+                + " URL=" + sanitizeUrlForLog(url)
                 + " Status=" + status
                 + " Body=" + compactBody;
         if (error == null) {
-            Log.w(TAG, message);
+            Log.w(HTTP_TAG, message);
         } else {
-            Log.w(TAG, message, error);
+            Log.w(HTTP_TAG, message, error);
         }
+    }
+
+    private static String classifyHttpError(Exception error, int status) {
+        if (status > 0) return "http";
+        if (error instanceof SecurityException) return "allowlist";
+        if (error instanceof SocketTimeoutException) return "timeout";
+        if (error instanceof MalformedURLException || error instanceof IllegalArgumentException) return "request";
+        if (error instanceof IOException) return "network";
+        return "bridge";
+    }
+
+    private boolean isDebugBuild() {
+        return (getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0;
+    }
+
+    private static String sanitizeUrlForLog(String url) {
+        return sanitizeLogText(url, 1800);
+    }
+
+    private static String sanitizeLogText(String value, int maximum) {
+        String sanitized = String.valueOf(value == null ? "" : value)
+                .replaceAll("(?i)(api[_-]?key|token|authorization)(=|:|%3[dD])([^&\\s]+)", "$1$2<redacted>");
+        return sanitized.length() > maximum ? sanitized.substring(0, maximum) + "…" : sanitized;
     }
 
     private static String safeMessage(Exception error, String fallback) {
@@ -589,9 +776,86 @@ public final class MainActivity extends Activity {
                 : fallback;
     }
 
+    private void deliverBulkScannerResult(int resultCode, Intent data) {
+        final String requestId = bulkScannerRequestId;
+        bulkScannerRequestId = null;
+        if (requestId == null) return;
+        if (resultCode != RESULT_OK || data == null || data.getData() == null) {
+            JSONObject cancelled = new JSONObject();
+            try {
+                cancelled.put("requestId", requestId);
+                cancelled.put("ok", false);
+                cancelled.put("cancelled", true);
+            } catch (Exception ignored) {
+                // Keep response best-effort.
+            }
+            sendJs("onNativeBulkScannerResult", cancelled);
+            return;
+        }
+        final Uri uri = data.getData();
+        bridgeExecutor.execute(() -> {
+            JSONObject output = new JSONObject();
+            Bitmap bitmap = null;
+            try {
+                output.put("requestId", requestId);
+                byte[] source = readContentBytes(uri, MAX_BRIDGE_IMAGE_BYTES);
+                bitmap = decodeSampledBitmap(source, 1500);
+                if (bitmap == null) throw new IOException("Das Scanbild konnte nicht dekodiert werden.");
+                ByteArrayOutputStream encoded = new ByteArrayOutputStream(220_000);
+                if (!bitmap.compress(Bitmap.CompressFormat.JPEG, 89, encoded)) {
+                    throw new IOException("Das Scanbild konnte nicht für die Erkennung vorbereitet werden.");
+                }
+                output.put("ok", true);
+                output.put("dataUrl", "data:image/jpeg;base64," + Base64.encodeToString(
+                        encoded.toByteArray(),
+                        Base64.NO_WRAP
+                ));
+                if (isDebugBuild()) {
+                    Log.d(TAG, "Bulk scanner image delivered requestId="
+                            + sanitizeLogText(requestId, 80)
+                            + " bytes=" + encoded.size()
+                            + " width=" + bitmap.getWidth()
+                            + " height=" + bitmap.getHeight());
+                }
+            } catch (Exception error) {
+                Log.e(TAG, "Unable to deliver bulk scanner image", error);
+                try {
+                    output.put("requestId", requestId);
+                    output.put("ok", false);
+                    output.put("error", safeMessage(error, "Die Kameraaufnahme konnte nicht übernommen werden."));
+                } catch (Exception ignored) {
+                    // Keep response best-effort.
+                }
+            } finally {
+                if (bitmap != null && !bitmap.isRecycled()) bitmap.recycle();
+            }
+            sendJs("onNativeBulkScannerResult", output);
+        });
+    }
+
+    private byte[] readContentBytes(Uri uri, int maximum) throws IOException {
+        try (InputStream input = getContentResolver().openInputStream(uri);
+             ByteArrayOutputStream output = new ByteArrayOutputStream(256_000)) {
+            if (input == null) throw new IOException("Das Scanbild ist nicht mehr lesbar.");
+            byte[] buffer = new byte[16_384];
+            int count;
+            int total = 0;
+            while ((count = input.read(buffer)) != -1) {
+                total += count;
+                if (total > maximum) throw new IOException("Das Scanbild ist für die Übergabe zu groß.");
+                output.write(buffer, 0, count);
+            }
+            return output.toByteArray();
+        }
+    }
+
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == BULK_SCANNER) {
+            deliverBulkScannerResult(resultCode, data);
+            return;
+        }
         if (requestCode != FILE_CHOOSER || fileCallback == null) {
             return;
         }

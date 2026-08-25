@@ -11,7 +11,6 @@ import android.net.Uri;
 import android.os.Bundle;
 import android.provider.MediaStore;
 import android.util.Log;
-import android.util.Rational;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
@@ -24,6 +23,7 @@ import android.widget.Toast;
 
 import androidx.activity.ComponentActivity;
 import androidx.camera.core.Camera;
+import androidx.camera.core.CameraControl;
 import androidx.camera.core.CameraSelector;
 import androidx.camera.core.FocusMeteringAction;
 import androidx.camera.core.FocusMeteringResult;
@@ -31,11 +31,16 @@ import androidx.camera.core.ImageCapture;
 import androidx.camera.core.ImageCaptureException;
 import androidx.camera.core.MeteringPoint;
 import androidx.camera.core.Preview;
+import androidx.camera.core.TorchState;
 import androidx.camera.core.UseCaseGroup;
 import androidx.camera.core.ViewPort;
 import androidx.camera.lifecycle.ProcessCameraProvider;
 import androidx.camera.view.PreviewView;
 import androidx.core.content.ContextCompat;
+import androidx.core.graphics.Insets;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowCompat;
+import androidx.core.view.WindowInsetsCompat;
 
 import com.google.common.util.concurrent.ListenableFuture;
 
@@ -49,6 +54,7 @@ import java.util.concurrent.TimeUnit;
 
 /** Native CameraX scanner with a card-sized region of interest. */
 public final class CameraActivity extends ComponentActivity {
+    public static final String EXTRA_BULK_MODE = "de.pokefolio.app.extra.BULK_MODE";
     private static final String TAG = "PokeFolioCamera";
     private static final int CAMERA_PERMISSION_REQUEST = 44;
 
@@ -62,8 +68,12 @@ public final class CameraActivity extends ComponentActivity {
     private ProcessCameraProvider cameraProvider;
     private ExecutorService cameraExecutor;
     private boolean torchEnabled;
+    private boolean bulkMode;
     private boolean previewStreaming;
     private int startAttempts;
+    private LinearLayout cameraControls;
+    private FrameLayout.LayoutParams hintLayoutParams;
+    private final Runnable focusCenterRunnable = this::focusFrameCenter;
 
     private int dp(int value) {
         return Math.round(value * getResources().getDisplayMetrics().density);
@@ -72,6 +82,8 @@ public final class CameraActivity extends ComponentActivity {
     @Override
     protected void onCreate(Bundle state) {
         super.onCreate(state);
+        WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
+        bulkMode = getIntent().getBooleanExtra(EXTRA_BULK_MODE, false);
         cameraExecutor = Executors.newSingleThreadExecutor();
         buildUi();
 
@@ -109,19 +121,19 @@ public final class CameraActivity extends ComponentActivity {
         hint.setGravity(Gravity.CENTER);
         hint.setPadding(dp(12), dp(7), dp(12), dp(7));
         hint.setBackgroundColor(Color.argb(178, 0, 0, 0));
-        FrameLayout.LayoutParams hintLayout = new FrameLayout.LayoutParams(
+        hintLayoutParams = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 dp(66)
         );
-        hintLayout.gravity = Gravity.TOP;
-        hintLayout.setMargins(dp(16), dp(16), dp(16), 0);
-        root.addView(hint, hintLayout);
+        hintLayoutParams.gravity = Gravity.TOP;
+        hintLayoutParams.setMargins(dp(16), dp(12), dp(16), 0);
+        root.addView(hint, hintLayoutParams);
 
-        LinearLayout controls = new LinearLayout(this);
-        controls.setOrientation(LinearLayout.HORIZONTAL);
-        controls.setGravity(Gravity.CENTER);
-        controls.setPadding(dp(14), dp(10), dp(14), dp(20));
-        controls.setBackgroundColor(Color.argb(166, 0, 0, 0));
+        cameraControls = new LinearLayout(this);
+        cameraControls.setOrientation(LinearLayout.HORIZONTAL);
+        cameraControls.setGravity(Gravity.CENTER);
+        cameraControls.setPadding(dp(14), dp(10), dp(14), dp(16));
+        cameraControls.setBackgroundColor(Color.argb(166, 0, 0, 0));
 
         Button cancelButton = new Button(this);
         cancelButton.setText(R.string.scanner_cancel);
@@ -141,17 +153,18 @@ public final class CameraActivity extends ComponentActivity {
         LinearLayout.LayoutParams light = new LinearLayout.LayoutParams(0, dp(58), 0.72f);
         light.setMargins(0, 0, dp(8), 0);
         LinearLayout.LayoutParams primary = new LinearLayout.LayoutParams(0, dp(58), 1.45f);
-        controls.addView(cancelButton, compact);
-        controls.addView(torchButton, light);
-        controls.addView(shootButton, primary);
+        cameraControls.addView(cancelButton, compact);
+        cameraControls.addView(torchButton, light);
+        cameraControls.addView(shootButton, primary);
 
         FrameLayout.LayoutParams controlsLayout = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
         );
         controlsLayout.gravity = Gravity.BOTTOM;
-        root.addView(controls, controlsLayout);
+        root.addView(cameraControls, controlsLayout);
         setContentView(root);
+        installSafeAreaHandling(root);
 
         cancelButton.setOnClickListener(view -> {
             setResult(RESULT_CANCELED);
@@ -160,6 +173,47 @@ public final class CameraActivity extends ComponentActivity {
         torchButton.setOnClickListener(view -> toggleTorch());
         shootButton.setOnClickListener(view -> takePhoto());
         previewView.setOnTouchListener(this::handlePreviewTouch);
+    }
+
+    /** Keeps every interactive camera element above real system bars on all navigation modes. */
+    private void installSafeAreaHandling(View root) {
+        ViewCompat.setOnApplyWindowInsetsListener(root, (view, windowInsets) -> {
+            Insets safe = windowInsets.getInsets(
+                    WindowInsetsCompat.Type.systemBars()
+                            | WindowInsetsCompat.Type.displayCutout()
+            );
+            Insets navigation = windowInsets.getInsets(WindowInsetsCompat.Type.navigationBars());
+
+            hintLayoutParams.setMargins(
+                    dp(16) + safe.left,
+                    safe.top + dp(12),
+                    dp(16) + safe.right,
+                    0
+            );
+            hint.setLayoutParams(hintLayoutParams);
+            cameraControls.setPadding(
+                    dp(14) + safe.left,
+                    dp(10),
+                    dp(14) + safe.right,
+                    navigation.bottom + dp(16)
+            );
+            cameraControls.post(this::updateOverlayReservedAreas);
+            Log.d(TAG, "Safe area statusTop=" + safe.top
+                    + " navigationBottom=" + navigation.bottom
+                    + " controlsHeight=" + cameraControls.getHeight());
+            return windowInsets;
+        });
+        root.addOnLayoutChangeListener((view, left, top, right, bottom,
+                                        oldLeft, oldTop, oldRight, oldBottom) ->
+                updateOverlayReservedAreas());
+        ViewCompat.requestApplyInsets(root);
+    }
+
+    private void updateOverlayReservedAreas() {
+        if (overlay == null || cameraControls == null || hint == null) return;
+        int reservedTop = Math.max(hint.getBottom() + dp(12), dp(92));
+        int reservedBottom = Math.max(cameraControls.getHeight() + dp(12), dp(96));
+        overlay.setReservedAreas(reservedTop, reservedBottom);
     }
 
     @Override
@@ -181,6 +235,7 @@ public final class CameraActivity extends ComponentActivity {
         }
         startAttempts++;
         previewStreaming = false;
+        overlay.removeCallbacks(focusCenterRunnable);
         hint.setText(R.string.camera_starting);
         shootButton.setEnabled(false);
         ListenableFuture<ProcessCameraProvider> providerFuture = ProcessCameraProvider.getInstance(this);
@@ -209,12 +264,13 @@ public final class CameraActivity extends ComponentActivity {
             preview.setSurfaceProvider(previewView.getSurfaceProvider());
 
             imageCapture = new ImageCapture.Builder()
-                    .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
-                    .setFlashMode(ImageCapture.FLASH_MODE_AUTO)
+                    .setCaptureMode(bulkMode
+                            ? ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY
+                            : ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
+                    .setFlashMode(ImageCapture.FLASH_MODE_OFF)
                     .setTargetRotation(rotation)
                     .setJpegQuality(95)
                     .build();
-            imageCapture.setCropAspectRatio(new Rational(63, 88));
 
             CameraSelector selector;
             if (cameraProvider.hasCamera(CameraSelector.DEFAULT_BACK_CAMERA)) {
@@ -237,13 +293,23 @@ public final class CameraActivity extends ComponentActivity {
             camera = cameraProvider.bindToLifecycle(this, selector, useCases.build());
             boolean hasFlash = camera.getCameraInfo().hasFlashUnit();
             torchButton.setVisibility(hasFlash ? View.VISIBLE : View.GONE);
+            camera.getCameraInfo().getTorchState().removeObservers(this);
+            camera.getCameraInfo().getTorchState().observe(this, state -> {
+                torchEnabled = state != null && state == TorchState.ON;
+                updateTorchButton();
+            });
+            forceTorchOff("camera-bound");
 
+            previewView.getPreviewStreamState().removeObservers(this);
             previewView.getPreviewStreamState().observe(this, state -> {
                 if (state == PreviewView.StreamState.STREAMING) {
                     previewStreaming = true;
-                    hint.setText(R.string.camera_frame_instructions);
+                    hint.setText(bulkMode
+                            ? R.string.bulk_camera_frame_instructions
+                            : R.string.camera_frame_instructions);
                     shootButton.setEnabled(true);
-                    overlay.postDelayed(this::focusFrameCenter, 350L);
+                    overlay.removeCallbacks(focusCenterRunnable);
+                    overlay.postDelayed(focusCenterRunnable, 350L);
                 }
             });
         } catch (Exception error) {
@@ -293,7 +359,12 @@ public final class CameraActivity extends ComponentActivity {
             try {
                 successful = focusFuture.get().isFocusSuccessful();
             } catch (Exception error) {
-                Log.d(TAG, "Focus metering was cancelled", error);
+                Throwable cause = error.getCause();
+                if (cause instanceof CameraControl.OperationCanceledException) {
+                    Log.d(TAG, "Focus metering was superseded by a newer request");
+                } else {
+                    Log.w(TAG, "Focus metering failed", error);
+                }
             }
             overlay.showFocusResult(successful);
         }, ContextCompat.getMainExecutor(this));
@@ -303,12 +374,30 @@ public final class CameraActivity extends ComponentActivity {
         if (camera == null || !camera.getCameraInfo().hasFlashUnit()) {
             return;
         }
-        torchEnabled = !torchEnabled;
-        camera.getCameraControl().enableTorch(torchEnabled);
+        boolean requested = !torchEnabled;
+        camera.getCameraControl().enableTorch(requested).addListener(() -> {
+            Log.d(TAG, "Torch request completed requested=" + requested);
+        }, ContextCompat.getMainExecutor(this));
+    }
+
+    private void updateTorchButton() {
         torchButton.setText(torchEnabled ? R.string.camera_light_off : R.string.camera_light);
         torchButton.setContentDescription(getString(torchEnabled
                 ? R.string.camera_light_off_description
                 : R.string.camera_light_on_description));
+    }
+
+    /** Scanner sessions always start dark; only an explicit button press may enable the torch. */
+    private void forceTorchOff(String reason) {
+        torchEnabled = false;
+        if (imageCapture != null) {
+            imageCapture.setFlashMode(ImageCapture.FLASH_MODE_OFF);
+        }
+        if (camera != null && camera.getCameraInfo().hasFlashUnit()) {
+            camera.getCameraControl().enableTorch(false);
+        }
+        updateTorchButton();
+        Log.i(TAG, "Torch forced OFF reason=" + reason);
     }
 
     private void takePhoto() {
@@ -347,10 +436,12 @@ public final class CameraActivity extends ComponentActivity {
                     if (rectified != null && rectified != region) {
                         region.recycle();
                     }
-                    if (result != oriented) {
+                    if (oriented != region && oriented != result && !oriented.isRecycled()) {
                         oriented.recycle();
                     }
-                    result.recycle();
+                    if (!result.isRecycled()) {
+                        result.recycle();
+                    }
 
                     Intent resultIntent = new Intent();
                     resultIntent.setData(uri);
@@ -413,7 +504,14 @@ public final class CameraActivity extends ComponentActivity {
     }
 
     @Override
+    protected void onStop() {
+        forceTorchOff("activity-stopped");
+        super.onStop();
+    }
+
+    @Override
     protected void onDestroy() {
+        forceTorchOff("activity-destroyed");
         super.onDestroy();
         if (cameraProvider != null) {
             cameraProvider.unbindAll();

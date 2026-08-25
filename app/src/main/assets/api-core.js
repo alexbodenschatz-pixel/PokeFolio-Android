@@ -22,7 +22,15 @@
       this.status = Number(details && details.status) || 0;
       this.body = String(details && details.body || '');
       this.retryAfterMs = Number(details && details.retryAfterMs) || 0;
+      this.kind = String(details && (details.kind || details.errorType) || inferErrorKind(details));
     }
+  }
+
+  function inferErrorKind(details) {
+    const explicit = String(details && (details.kind || details.errorType) || '').toLowerCase();
+    if (explicit) return explicit;
+    if (Number(details && details.status) > 0) return 'http';
+    return 'network';
   }
 
   function createHttpError(details) {
@@ -37,6 +45,7 @@
       status: Number(error && error.status) || 0,
       body: String(error && error.body || ''),
       retryAfterMs: Number(error && error.retryAfterMs) || 0,
+      kind: String(error && error.kind || inferErrorKind(error)),
       message: String(error && error.message || 'Netzwerkanfrage fehlgeschlagen.')
     };
   }
@@ -44,6 +53,11 @@
   function isRetryableStatus(status) {
     const value = Number(status) || 0;
     return value === 429 || value >= 500 && value <= 599;
+  }
+
+  function isRetryableError(details) {
+    const kind = String(details && details.kind || '');
+    return isRetryableStatus(details && details.status) || kind === 'network' || kind === 'timeout';
   }
 
   function compactBody(body, maximum = 1200) {
@@ -54,7 +68,7 @@
 
   function formatHttpFailure(details, attempt) {
     const suffix = attempt ? ` Versuch=${attempt}` : '';
-    return `[PokeFolio HTTP] URL=${details.url || '<unbekannt>'} Status=${details.status || 0}`
+    return `[PokeFolio HTTP] Art=${details.kind || 'network'} URL=${details.url || '<unbekannt>'} Status=${details.status || 0}`
       + `${suffix} Body=${compactBody(details.body)}`;
   }
 
@@ -77,7 +91,7 @@
         const details = errorDetails(error, url);
         logger(formatHttpFailure(details, attempt), details);
         lastError = error instanceof Error ? error : createHttpError(details);
-        if (!isRetryableStatus(details.status) || attempt >= attempts) break;
+        if (!isRetryableError(details) || attempt >= attempts) break;
         const configured = Number(backoff[Math.min(attempt - 1, backoff.length - 1)]) || 0;
         const retryAfter = Math.min(3000, Math.max(0, details.retryAfterMs));
         await pause(Math.max(configured, retryAfter));
@@ -100,16 +114,16 @@
       .normalize('NFD')
       .replace(/[\u0300-\u036f]/g, '')
       .toLocaleLowerCase();
-    return cleaned.split(/[^a-z0-9]+/)
+    return cleaned.split(/[^\p{L}\p{N}]+/u)
       .filter(token => token.length >= 3 && !ignoredNameTokens.has(token))
       .sort((left, right) => right.length - left.length);
   }
 
-  /** Uses the documented trailing wildcard form; exact name queries currently produce API 500s. */
+  /** Uses a single validated name token; wildcard/quoted variants currently trigger API 500s. */
   function safePokemonNameQuery(value) {
     const token = nameTokens(value).find(value => !pokemonVariantTokens.has(value));
     if (!token) return '';
-    return 'name:' + token.slice(0, Math.min(9, token.length)) + '*';
+    return 'name:' + token;
   }
 
   function normalizedCollectorNumber(value) {
@@ -128,8 +142,13 @@
       if (normalized && normalized !== raw) queries.push('number:' + normalized);
     });
     const identity = hints && hints.pokemonIdentity || {};
+    const cardType = String(hints && hints.cardType || 'unknown');
     const names = manual
       ? [manual]
+      : (cardType === 'trainer' || cardType === 'energy')
+        ? hints && hints.language === 'en' && Number(hints.titleConfidence) >= 0.76
+          ? [hints.mainTitle]
+          : []
       : identity.speciesId && (identity.reliable || Number(identity.nameConfidence) >= 0.88)
         ? [identity.englishName]
         : (hints && hints.validatedNameHints || [])
@@ -146,18 +165,23 @@
   function buildPokemonTcgUrls(hints, manual) {
     return buildPokemonTcgQueries(hints, manual).map(query =>
       POKEMON_TCG_ENDPOINT + '?q=' + encodeURIComponent(query)
-        + '&pageSize=100&select=id,name,number,images,set,rarity,hp,subtypes,artist,cardmarket,tcgplayer'
+        + '&pageSize=100&select=id,name,number,images,set,rarity,hp,supertype,subtypes,artist,attacks,abilities,rules,cardmarket,tcgplayer'
     );
   }
 
   function tcgdexNames(hints, manual, language) {
     const identity = hints && hints.pokemonIdentity || {};
+    const cardType = String(hints && hints.cardType || 'unknown');
     const localizedBase = String(language || '').toLowerCase() === 'de'
       ? identity.germanName
       : identity.englishName;
     const localizedIdentity = [localizedBase, identity.variant].filter(Boolean).join(' ');
     const values = manual
       ? [manual]
+      : (cardType === 'trainer' || cardType === 'energy')
+        ? Number(hints && hints.titleConfidence) >= 0.76 && hints.mainTitle
+          ? [hints.mainTitle]
+          : []
       : identity.speciesId && (identity.reliable || Number(identity.nameConfidence) >= 0.88)
         ? [localizedIdentity, localizedBase]
         : (hints && hints.validatedNameHints || [])
@@ -173,9 +197,21 @@
       .map(item => String(item.number || '').toUpperCase().replace(/[^A-Z0-9]/g, ''))
       .filter(Boolean))];
     const variants = [];
-    names.forEach(name => variants.push({name}));
-    numbers.forEach(localId => variants.push({localId}));
-    if (names[0] && numbers[0]) variants.unshift({name: names[0], localId: numbers[0]});
+    const cardType = String(hints && hints.cardType || 'unknown');
+    if ((cardType === 'trainer' || cardType === 'energy') && numbers.length) {
+      // Trainer/energy identity starts with the footer number. The localized
+      // title then confirms the otherwise non-unique localId across sets.
+      numbers.forEach(localId => variants.push({localId}));
+      if (names[0]) variants.push({name: names[0], localId: numbers[0]});
+      names.forEach(name => variants.push({name}));
+    } else {
+      names.forEach(name => variants.push({name}));
+      // A localId such as 48 occurs in many unrelated sets. It is useful only as
+      // a fallback when OCR found no reliable Pokemon name; otherwise the combined
+      // query is both more precise and dramatically cheaper to hydrate.
+      if (!names.length) numbers.forEach(localId => variants.push({localId}));
+      if (names[0] && numbers[0]) variants.unshift({name: names[0], localId: numbers[0]});
+    }
     return [...new Set(variants.map(parameters => {
       const query = new URLSearchParams({
         ...parameters,
@@ -194,16 +230,49 @@
     ));
     const values = [];
     const errors = [];
+    let resultCount = 0;
+    let emptyCount = 0;
     settled.forEach((result, index) => {
-      if (result.status === 'fulfilled') values.push({url: uniqueUrls[index], value: result.value});
+      if (result.status === 'fulfilled') {
+        const value = result.value;
+        const count = Array.isArray(value)
+          ? value.length
+          : Array.isArray(value && value.data) ? value.data.length : value ? 1 : 0;
+        resultCount += count;
+        if (count === 0) emptyCount++;
+        values.push({url: uniqueUrls[index], value, resultCount: count});
+      }
       else errors.push({...errorDetails(result.reason, uniqueUrls[index]), error: result.reason});
     });
+    const allFailed = uniqueUrls.length > 0 && values.length === 0 && errors.length === uniqueUrls.length;
     return {
       values,
       errors,
+      requestedCount: uniqueUrls.length,
       successCount: values.length,
-      unavailable: uniqueUrls.length > 0 && values.length === 0 && errors.length === uniqueUrls.length
+      emptyCount,
+      resultCount,
+      unavailable: allFailed && errors.every(error => ['network', 'timeout', 'http'].includes(error.kind))
     };
+  }
+
+  /** Distinguishes no matches from transport, HTTP, parsing and bridge configuration failures. */
+  function summarizeSearchFailure(results) {
+    const sources = (results || []).filter(Boolean);
+    const requestedCount = sources.reduce((sum, source) => sum + Number(source.requestedCount || 0), 0);
+    const successCount = sources.reduce((sum, source) => sum + Number(source.successCount || 0), 0);
+    const resultCount = sources.reduce((sum, source) => sum + Number(source.resultCount || 0), 0);
+    const errors = sources.flatMap(source => source.errors || []);
+    const statuses = [...new Set(errors.map(error => Number(error.status) || 0).filter(Boolean))];
+    if (!requestedCount || successCount > 0) {
+      return {kind: resultCount > 0 ? 'results' : 'empty', requestedCount, successCount, resultCount, statuses};
+    }
+    const kinds = [...new Set(errors.map(error => error.kind || inferErrorKind(error)))];
+    let kind = 'mixed';
+    if (kinds.includes('allowlist') || kinds.includes('request')) kind = 'configuration';
+    else if (kinds.length === 1) kind = kinds[0];
+    else if (kinds.every(value => value === 'network' || value === 'timeout')) kind = 'network';
+    return {kind, requestedCount, successCount, resultCount, statuses};
   }
 
   return {
@@ -211,6 +280,7 @@
     createHttpError,
     errorDetails,
     isRetryableStatus,
+    isRetryableError,
     formatHttpFailure,
     requestJsonWithRetry,
     cleanNameCandidate,
@@ -219,6 +289,7 @@
     buildPokemonTcgQueries,
     buildPokemonTcgUrls,
     buildTcgdexUrls,
-    settleSearchVariants
+    settleSearchVariants,
+    summarizeSearchFailure
   };
 });

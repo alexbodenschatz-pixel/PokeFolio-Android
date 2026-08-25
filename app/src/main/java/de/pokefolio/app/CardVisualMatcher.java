@@ -9,6 +9,7 @@ public final class CardVisualMatcher {
     private static final Region WHOLE = new Region(0.025f, 0.025f, 0.975f, 0.975f);
     private static final Region HEADER = new Region(0.045f, 0.025f, 0.955f, 0.19f);
     private static final Region ARTWORK = new Region(0.045f, 0.14f, 0.955f, 0.66f);
+    private static final Region TEXT = new Region(0.045f, 0.54f, 0.955f, 0.86f);
     private static final Region FOOTER = new Region(0.035f, 0.73f, 0.965f, 0.985f);
 
     private CardVisualMatcher() {
@@ -19,6 +20,7 @@ public final class CardVisualMatcher {
         public final double whole;
         public final double header;
         public final double artwork;
+        public final double text;
         public final double footer;
         public final boolean reliable;
         public final String method;
@@ -28,6 +30,7 @@ public final class CardVisualMatcher {
                 double whole,
                 double header,
                 double artwork,
+                double text,
                 double footer,
                 boolean reliable,
                 String method
@@ -36,6 +39,7 @@ public final class CardVisualMatcher {
             this.whole = whole;
             this.header = header;
             this.artwork = artwork;
+            this.text = text;
             this.footer = footer;
             this.reliable = reliable;
             this.method = method;
@@ -79,18 +83,20 @@ public final class CardVisualMatcher {
         double whole = compareRegion(scan, reference, WHOLE);
         double header = compareRegion(scan, reference, HEADER);
         double artwork = compareRegion(scan, reference, ARTWORK);
+        double text = compareRegion(scan, reference, TEXT);
         double footer = compareRegion(scan, reference, FOOTER);
         // Artwork separates print variants most strongly. Header/footer preserve
         // layout generation, HP, set and collector-number structure.
         double combined = clamp(
-                whole * 0.16d
-                        + header * 0.12d
-                        + artwork * 0.54d
-                        + footer * 0.18d,
+                whole * 0.14d
+                        + header * 0.11d
+                        + artwork * 0.47d
+                        + text * 0.14d
+                        + footer * 0.14d,
                 0d,
                 1d
         );
-        return new Result(combined, whole, header, artwork, footer, reliable, method);
+        return new Result(combined, whole, header, artwork, text, footer, reliable, method);
     }
 
     private static double compareRegion(Bitmap left, Bitmap right, Region region) {

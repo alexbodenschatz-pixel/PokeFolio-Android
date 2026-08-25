@@ -14,12 +14,14 @@ test('erzeugt nur robuste Pokémon-TCG-Abfragen ohne problematische Phrasen oder
 
   assert.ok(urls.some(url => url.includes('number%3A025')));
   assert.ok(urls.some(url => url.includes('number%3A25')));
-  assert.ok(urls.some(url => url.includes('name%3Apikachu*')));
+  assert.ok(urls.some(url => url.includes('name%3Apikachu')));
+  assert.ok(urls.every(url => !url.includes('*')));
   assert.ok(urls.every(url => !url.includes('%22')));
   assert.ok(urls.every(url => !decodeURIComponent(url).includes('name:*')));
   assert.ok(urls.every(url => url.startsWith('https://api.pokemontcg.io/v2/cards?')));
   assert.ok(urls.every(url => url.includes('pageSize=100')));
   assert.ok(urls.every(url => url.includes('select=id,name,number,images,set,rarity,hp')));
+  assert.ok(urls.every(url => url.includes('attacks,abilities')));
 });
 
 test('wiederholt HTTP 500 und 429 mit kurzem Backoff bis eine Variante erfolgreich ist', async () => {
@@ -59,6 +61,26 @@ test('wiederholt nicht bei fachlichen HTTP-4xx-Fehlern', async () => {
   assert.equal(calls, 1);
 });
 
+test('wiederholt transiente Netzwerk- und Timeoutfehler, aber keine Parsingfehler', async () => {
+  let networkCalls = 0;
+  const result = await api.requestJsonWithRetry('https://example.test/cards', async url => {
+    networkCalls++;
+    if (networkCalls === 1) {
+      throw api.createHttpError({url, status: 0, kind: 'network', error: 'DNS fehlgeschlagen'});
+    }
+    return [];
+  }, {attempts: 3, backoffMs: [10, 20], wait: async () => {}, logger: () => {}});
+  assert.deepEqual(result, []);
+  assert.equal(networkCalls, 2);
+
+  let parseCalls = 0;
+  await assert.rejects(api.requestJsonWithRetry('https://example.test/cards', async url => {
+    parseCalls++;
+    throw api.createHttpError({url, status: 200, kind: 'parse', body: '<html>', error: 'Ungültiges JSON'});
+  }, {attempts: 3, wait: async () => {}, logger: () => {}}), error => error.kind === 'parse');
+  assert.equal(parseCalls, 1);
+});
+
 test('wertet erfolgreiche Suchvarianten trotz eines einzelnen HTTP-Fehlers weiter aus', async () => {
   const result = await api.settleSearchVariants(
     ['https://example.test/fail', 'https://example.test/good'],
@@ -85,6 +107,28 @@ test('markiert den Dienst erst als nicht erreichbar, wenn alle Varianten scheite
   assert.equal(result.errors.length, 2);
 });
 
+test('unterscheidet 0 Treffer von Netzwerk-, HTTP-, Parsing- und Konfigurationsfehlern', async () => {
+  const empty = await api.settleSearchVariants(
+    ['https://example.test/empty'], async () => [], {attempts: 1, logger: () => {}}
+  );
+  assert.equal(empty.unavailable, false);
+  assert.equal(empty.successCount, 1);
+  assert.equal(empty.resultCount, 0);
+  assert.equal(api.summarizeSearchFailure([empty]).kind, 'empty');
+
+  const failure = kind => ({
+    requestedCount: 1,
+    successCount: 0,
+    resultCount: 0,
+    errors: [{kind, status: kind === 'http' ? 503 : kind === 'parse' ? 200 : 0}]
+  });
+  assert.equal(api.summarizeSearchFailure([failure('network')]).kind, 'network');
+  assert.equal(api.summarizeSearchFailure([failure('timeout')]).kind, 'timeout');
+  assert.equal(api.summarizeSearchFailure([failure('http')]).kind, 'http');
+  assert.equal(api.summarizeSearchFailure([failure('parse')]).kind, 'parse');
+  assert.equal(api.summarizeSearchFailure([failure('allowlist')]).kind, 'configuration');
+});
+
 test('erzeugt einen deutschsprachigen TCGdex-Ausweichweg für Name und Collector Number', () => {
   const urls = api.buildTcgdexUrls({
     collectorNumbers: [{number: '25', total: '185'}],
@@ -97,7 +141,26 @@ test('erzeugt einen deutschsprachigen TCGdex-Ausweichweg für Name und Collector
   assert.ok(urls.some(url => url.startsWith('https://api.tcgdex.net/v2/de/cards?')));
   assert.ok(urls.some(url => url.includes('name=Glurak+ex')));
   assert.ok(urls.some(url => url.includes('localId=25')));
+  assert.ok(urls.every(url => !/cards\?localId=/.test(url)));
   assert.ok(urls.every(url => url.includes('pagination%3AitemsPerPage=100')));
+});
+
+test('erzeugt regionale TCGdex-Abfragen für japanische und traditionelle chinesische Karten', () => {
+  const hints = {
+    cardType: 'pokemon',
+    collectorNumbers: [{number: '025', total: '165'}],
+    pokemonIdentity: {}
+  };
+  const japanese = api.buildTcgdexUrls(hints, 'ピカチュウ', 'ja');
+  const traditional = api.buildTcgdexUrls(hints, '皮卡丘', 'zh-TW');
+  assert.ok(japanese.some(url => url.startsWith('https://api.tcgdex.net/v2/ja/cards?')));
+  assert.ok(japanese.some(url => url.includes('name=%E3%83%94%E3%82%AB%E3%83%81%E3%83%A5%E3%82%A6')));
+  assert.ok(traditional.some(url => url.startsWith('https://api.tcgdex.net/v2/zh-tw/cards?')));
+});
+
+test('nutzt eine reine TCGdex-Collector-Suche nur ohne verlässlichen Namen', () => {
+  const urls = api.buildTcgdexUrls({collectorNumbers: [{number: '48', total: '72'}]}, '', 'de');
+  assert.ok(urls.some(url => url.includes('/de/cards?localId=48')));
 });
 
 test('behält Variantenmerkmale für TCGdex, sucht die Primär-API aber über die validierte Art', () => {
@@ -113,8 +176,8 @@ test('behält Variantenmerkmale für TCGdex, sucht die Primär-API aber über di
   const primary = api.buildPokemonTcgUrls(hints, '');
   const localized = api.buildTcgdexUrls(hints, '', 'de');
 
-  assert.ok(primary.some(url => url.includes('name%3Amew*')));
-  assert.ok(primary.every(url => !url.includes('name%3Avmax*')));
+  assert.ok(primary.some(url => url.includes('name%3Amew')));
+  assert.ok(primary.every(url => !url.includes('name%3Avmax')));
   assert.ok(localized.some(url => url.includes('name=Mew+VMAX')));
 });
 
@@ -148,4 +211,25 @@ test('startet bei einem unsicheren Fuzzy-Namen keine automatische Namenssuche', 
   }, '');
 
   assert.deepEqual(urls, []);
+});
+
+test('sucht deutsche Trainerkarten zuerst per exakter Footer-Nummer und bestätigt mit Haupttitel', () => {
+  const hints = {
+    cardType: 'trainer',
+    mainTitle: 'Befehl vom Boss',
+    titleConfidence: 0.97,
+    language: 'de',
+    collectorNumbers: [{number: '132', total: '172', votes: 3.5}],
+    pokemonIdentity: {},
+    validatedNameHints: []
+  };
+  const tcgdex = api.buildTcgdexUrls(hints, '', 'de');
+  const fallback = api.buildPokemonTcgUrls(hints, '');
+
+  assert.match(tcgdex[0], /\/v2\/de\/cards\?localId=132&/);
+  assert.ok(tcgdex.some(url => url.includes('name=Befehl+vom+Boss') && url.includes('localId=132')));
+  assert.ok(tcgdex.some(url => url.includes('name=Befehl+vom+Boss')));
+  assert.deepEqual(fallback.map(url => new URL(url).searchParams.get('q')), ['number:132']);
+  assert.ok(fallback.every(url => url.includes('supertype')));
+  assert.ok(fallback.every(url => !url.toLocaleLowerCase().includes('zyrus')));
 });

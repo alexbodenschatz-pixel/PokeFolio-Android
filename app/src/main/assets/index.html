@@ -9,13 +9,19 @@
 <body>
 <header>
   <div><b>PokéFolio</b><small>Android Standalone</small></div>
-  <span class="pill">v0.9.1</span>
+  <span class="pill">v0.13.0</span>
 </header>
 <main>
   <section id="scan" class="page active">
-    <h1>Messe-Schnellcheck</h1>
-    <p class="muted">Karte scannen, automatisch erkennen und erst danach entscheiden, ob sie gespeichert wird.</p>
-    <div class="tcgs">
+    <div class="scan-modes" role="tablist" aria-label="Scanmodus">
+      <button type="button" data-scan-mode="single" class="active" role="tab" aria-selected="true">Einzelscan</button>
+      <button type="button" data-scan-mode="bulk" role="tab" aria-selected="false">Bulk-Scan</button>
+    </div>
+
+    <div id="singleScanPanel">
+      <h1>Messe-Schnellcheck</h1>
+      <p class="muted">Karte scannen, automatisch erkennen und erst danach entscheiden, ob sie gespeichert wird.</p>
+    <div class="tcgs single-tcgs">
       <button data-tcg="auto" class="active">Automatisch</button>
       <button data-tcg="pokemon">Pokémon</button>
       <button data-tcg="yugioh">Yu-Gi-Oh!</button>
@@ -77,22 +83,149 @@
     <div class="card">
       <label>Name<input id="name" placeholder="wird möglichst automatisch erkannt"></label>
       <div class="row"><label>Set<input id="set"></label><label>Nummer<input id="number"></label></div>
-      <label>Sprache<select id="lang"><option value="de">Deutsch</option><option value="en">Englisch</option><option value="ja">Japanisch</option></select></label>
+      <label>Sprache<select id="lang"><option value="de">Deutsch</option><option value="en">Englisch</option><option value="ja">Japanisch</option><option value="ko">Koreanisch</option><option value="zh-CN">Chinesisch (vereinfacht)</option><option value="zh-TW">Chinesisch (traditionell)</option></select></label>
     </div>
     <button id="analyze" class="primary">Vorgrading starten</button>
     <div id="result"></div>
+    </div>
+
+    <div id="bulkScanPanel" hidden>
+      <div class="bulk-heading">
+        <div><span class="section-kicker">Schnellerfassung</span><h1>Bulk-Scan</h1></div>
+        <button id="bulkEndSession" type="button" class="secondary compact">Sitzung beenden</button>
+      </div>
+      <p class="muted">Karten schnell hintereinander scannen. Gleiche Karten werden automatisch hochgezählt.</p>
+
+      <div class="tcgs bulk-tcgs" aria-label="Kartenspiel auswählen">
+        <button type="button" data-bulk-tcg="auto" class="active">Automatisch</button>
+        <button type="button" data-bulk-tcg="pokemon">Pokémon</button>
+        <button type="button" data-bulk-tcg="yugioh">Yu-Gi-Oh!</button>
+        <button type="button" data-bulk-tcg="onepiece">One Piece</button>
+      </div>
+
+      <div class="bulk-options card">
+        <label>Sprache<select id="bulkLang"><option value="de">Deutsch</option><option value="en">Englisch</option><option value="ja">Japanisch</option><option value="ko">Koreanisch</option><option value="zh-CN">Chinesisch (vereinfacht)</option><option value="zh-TW">Chinesisch (traditionell)</option></select></label>
+        <label>Druckvariante<select id="bulkVariant"><option value="normal">Normal</option><option value="holo">Holo</option><option value="reverse-holo">Reverse Holo</option><option value="full-art">Full Art</option><option value="alternate-art">Alternate Art</option><option value="illustration-rare">Illustration Rare</option><option value="special-illustration-rare">Special Illustration Rare</option><option value="secret-rare">Secret Rare</option><option value="promo">Promo</option><option value="reprint">Reprint</option></select></label>
+      </div>
+
+      <div class="bulk-session" aria-label="Bulk-Scan-Sitzungsstatistik">
+        <div><b id="bulkScanned">0</b><span>Heute gescannt</span></div>
+        <div><b id="bulkNew">0</b><span>Neue Karten</span></div>
+        <div><b id="bulkDuplicates">0</b><span>Duplikate</span></div>
+      </div>
+
+      <div id="bulkStatusBox" class="bulk-status card">
+        <span id="bulkStatusDot" class="bulk-status-dot ready"></span>
+        <div><b id="bulkStatusTitle">Bereit zum Scannen</b><small id="bulkStatusText">Vorderseite vollständig in den Kartenrahmen halten.</small></div>
+      </div>
+
+      <button id="bulkCameraButton" class="bulk-camera-stage" type="button">
+        <img id="bulkPreview" alt="Zuletzt gescannte Kartenvorderseite" hidden>
+        <span class="bulk-camera-shade" aria-hidden="true"></span>
+        <span class="bulk-card-frame" aria-hidden="true"></span>
+        <span class="bulk-camera-call"><b>Live-Kamera öffnen</b><small>Torch startet immer ausgeschaltet</small></span>
+      </button>
+      <input id="bulkFile" type="file" accept="image/*" hidden>
+
+      <div class="bulk-actions">
+        <button id="bulkGalleryButton" type="button" class="secondary">Bild auswählen</button>
+        <button id="bulkNextButton" type="button" class="primary">Nächste Karte scannen</button>
+      </div>
+
+      <div id="bulkFeedback" class="bulk-feedback" hidden role="status" aria-live="polite"></div>
+
+      <section id="bulkCandidatePanel" class="bulk-candidates card" hidden aria-labelledby="bulkCandidateTitle">
+        <div class="recognition-head"><div><span class="section-kicker">Manuelle Bestätigung</span><h2 id="bulkCandidateTitle">Unsichere Erkennung</h2></div></div>
+        <p id="bulkCandidateText" class="muted">Bitte die passende Karte auswählen. Es wird vorher nichts gespeichert.</p>
+        <div id="bulkCandidateList" class="bulk-candidate-list"></div>
+      </section>
+
+      <div id="bulkNoMatch" class="empty-matches" hidden>
+        <b>Keine eindeutige Karte erkannt</b>
+        <span>Die Karte wurde nicht gespeichert. Bitte erneut scannen oder manuell suchen.</span>
+        <div class="empty-actions">
+          <button type="button" class="secondary compact" onclick="bulkMarkRemovedAndScan()">Erneut scannen</button>
+          <button type="button" class="secondary compact" onclick="openBulkManualSearch()">Manuell suchen</button>
+        </div>
+      </div>
+
+      <details id="bulkDebugFeatures" class="recognition-features" hidden>
+        <summary>Erkannte Merkmale und Debug-Details</summary>
+        <dl id="bulkFeatureList"></dl>
+      </details>
+
+      <details id="bulkManualDetails">
+        <summary>Manuell suchen</summary>
+        <div class="manual-search"><input id="bulkManualQuery" placeholder="Name oder Kartencode"><button id="bulkManualSearch" type="button" class="secondary">Suchen</button></div>
+      </details>
+    </div>
   </section>
 
   <section id="collection" class="page">
-    <h1>Sammlung</h1>
-    <div class="filters"><button data-filter="all" class="active">Alle</button><button data-filter="pokemon">Pokémon</button><button data-filter="yugioh">Yu-Gi-Oh!</button><button data-filter="onepiece">One Piece</button></div>
-    <div id="collectionList"></div>
+    <div class="collection-heading"><div><span class="section-kicker">Portfolio</span><h1>Meine Sammlung</h1></div></div>
+    <section class="portfolio-summary" aria-label="Portfolio-Zusammenfassung">
+      <div><b id="portfolioTotal">0</b><span>Karten</span></div>
+      <div><b id="portfolioDistinct">0</b><span>verschiedene Karten</span></div>
+      <div><b id="portfolioValue">0,00 €</b><span>geschätzter Wert</span></div>
+      <div><b id="portfolioDuplicates">0</b><span>Duplikate</span></div>
+    </section>
+    <div class="filters collection-tcg-chips" aria-label="TCG-Filter"><button type="button" data-collection-tcg="all" class="active">Alle</button><button type="button" data-collection-tcg="pokemon">Pokémon</button><button type="button" data-collection-tcg="yugioh">Yu-Gi-Oh!</button><button type="button" data-collection-tcg="onepiece">One Piece</button></div>
+    <div class="collection-toolbar card">
+      <label class="collection-search"><span>Sammlung durchsuchen</span><input id="collectionSearch" type="search" autocomplete="off" placeholder="Name, Nummer, Set, Sprache …"></label>
+      <div class="collection-view-switch" role="tablist" aria-label="Sammlungsansicht">
+        <button type="button" data-collection-view="grid" class="active">Raster</button>
+        <button type="button" data-collection-view="list">Liste</button>
+        <button type="button" data-collection-view="sets">Sets</button>
+      </div>
+      <details class="collection-advanced">
+        <summary>Filter und Sortierung</summary>
+        <div class="collection-select-filters">
+          <label>TCG<select id="collectionTcgFilter"><option value="all">Alle</option><option value="pokemon">Pokémon</option><option value="yugioh">Yu-Gi-Oh!</option><option value="onepiece">One Piece</option></select></label>
+          <label>Sprache<select id="collectionLanguageFilter"><option value="all">Alle</option><option value="de">Deutsch</option><option value="en">Englisch</option><option value="ja">Japanisch</option><option value="ko">Koreanisch</option><option value="zh-CN">Chinesisch (vereinfacht)</option><option value="zh-TW">Chinesisch (traditionell)</option></select></label>
+          <label>Set<select id="collectionSetFilter"><option value="all">Alle Sets</option></select></label>
+          <label>Kartentyp<select id="collectionCardTypeFilter"><option value="all">Alle Typen</option><option value="pokemon">Pokémon</option><option value="trainer">Trainer</option><option value="energy">Energie</option></select></label>
+          <label>Variante<select id="collectionVariantFilter"><option value="all">Alle Varianten</option><option value="normal">Normal</option><option value="holo">Holo</option><option value="reverse-holo">Reverse Holo</option><option value="full-art">Full Art</option><option value="alternate-art">Alternate Art</option><option value="illustration-rare">Illustration Rare</option><option value="special-illustration-rare">Special Illustration Rare</option><option value="secret-rare">Secret Rare</option><option value="promo">Promo</option><option value="reprint">Reprint</option></select></label>
+          <label>Status<select id="collectionGradedFilter"><option value="all">Graded & Raw</option><option value="graded">mit Grading</option><option value="raw">Raw</option></select></label>
+          <label>Favorit<select id="collectionFavoriteFilter"><option value="all">Alle</option><option value="favorite">nur Favoriten</option></select></label>
+          <label>Mindestwert<input id="collectionMinValue" inputmode="decimal" placeholder="0,00"></label>
+          <label>Höchstwert<input id="collectionMaxValue" inputmode="decimal" placeholder="beliebig"></label>
+          <label>Sortierung<select id="collectionSort"><option value="newest">Neu hinzugefügt</option><option value="collector">Setnummer</option><option value="name-asc">Name A–Z</option><option value="name-desc">Name Z–A</option><option value="value-high">Höchster Wert</option><option value="value-low">Niedrigster Wert</option><option value="quantity-high">Höchste Stückzahl</option></select></label>
+        </div>
+      </details>
+    </div>
+    <div class="filters quantity-filters"><button data-quantity-filter="all" class="active">Alle</button><button data-quantity-filter="duplicates">Doppelte</button><button data-quantity-filter="single">nur 1×</button><button data-quantity-filter="two">2×</button><button data-quantity-filter="threeplus">3× oder mehr</button></div>
+    <section id="setOverview" class="set-overview" aria-label="Set-Übersicht" hidden></section>
+    <div class="collection-result-heading"><h2 id="collectionListTitle">Karten</h2><span id="collectionResultCount">0 Ergebnisse</span></div>
+    <div id="collectionList" class="collection-grid"></div>
+    <button id="collectionLoadMore" type="button" class="secondary" hidden>Mehr Karten laden</button>
   </section>
 
   <section id="settings" class="page">
     <h1>System</h1>
-    <div class="card"><b>Erkennung v0.9.1</b><p>OCR validiert den Namen lokal gegen deutsche und englische Pokémon-Arten, trennt V/VMAX/VSTAR/ex/GX und filtert Name sowie KP bereits vor dem Bildvergleich. Der Bildvergleich unterscheidet danach nur noch plausible Druckvarianten.</p></div>
-    <div class="card"><b>Datenabgleich</b><p>Der Kartenabgleich nutzt Pokémon TCG API, die deutschsprachige TCGdex-Ausweichsuche, YGOPRODeck und OPTCG API. Einzelne Serverfehler brechen die Erkennung nicht ab; die manuelle Eingabe bleibt immer verfügbar.</p></div>
+    <div class="card"><b>Erkennung v0.13.0</b><p>Identität, visuelle Druckvariante, Datensicherheit und finale Confidence werden getrennt bewertet. Einzel- und Bulk-Scan nutzen weiterhin dieselbe positionsbezogene OCR und Kandidatensuche.</p></div>
+    <section class="card learning-settings" aria-labelledby="learningTitle">
+      <span class="section-kicker">KI &amp; Erkennung</span>
+      <div class="learning-title"><div><h2 id="learningTitle">PokéFolio Lernsystem</h2><p>Bestätigte Scans und eindeutige Korrekturen verbessern die Erkennung ausschließlich lokal auf diesem Gerät.</p></div><span id="learningStatus" class="status good">Lokales Lernen aktiv</span></div>
+      <div class="learning-summary" aria-label="Lernstatistik">
+        <div><b id="learningConfirmed">0</b><span>Bestätigte Scans</span></div>
+        <div><b id="learningCorrected">0</b><span>Manuelle Korrekturen</span></div>
+        <div><b id="learningCards">0</b><span>Gelernte Karten</span></div>
+        <div><b id="learningReferences">0</b><span>Lokale Referenzen</span></div>
+      </div>
+      <div class="learning-switches">
+        <label><input id="learningEnabled" type="checkbox"> <span>Neue bestätigte Scans zum Lernen verwenden</span></label>
+        <label><input id="learningUseReferences" type="checkbox"> <span>Gelernte Daten für die Erkennung verwenden</span></label>
+      </div>
+      <p class="learning-storage">Lernspeicher: <b id="learningStorage">0 KB</b> · Keine Cloud-Übertragung</p>
+      <div class="learning-actions">
+        <button id="learningShowData" type="button" class="secondary compact">Gelernte Daten anzeigen</button>
+        <button id="learningShowStats" type="button" class="secondary compact">Lernstatistik</button>
+        <button id="learningReset" type="button" class="danger compact">Lokales Lernwissen zurücksetzen</button>
+      </div>
+      <div id="learningDataPanel" class="learning-panel" hidden></div>
+      <div id="learningStatsPanel" class="learning-panel" hidden></div>
+    </section>
+    <div class="card"><b>Datenabgleich</b><p>Deutsche Pokémon-Karten werden primär über TCGdex gesucht; die Pokémon TCG API dient als unabhängiger Fallback. YGOPRODeck und OPTCG API bleiben für die anderen Kartenspiele erhalten. Einzelne Serverfehler brechen die Erkennung nicht ab; OCR-Merkmale und manuelle Eingabe bleiben verfügbar.</p></div>
     <div class="card"><b>Vorgrading</b><p>Der Score ist eine grobe Smartphone-Vorprüfung und kein offizielles PSA-, CGC- oder TAG-Grading. Echtheit und Zustand werden getrennt behandelt.</p></div>
   </section>
 </main>
@@ -101,6 +234,12 @@
   <button data-page="collection">▦<span>Sammlung</span></button>
   <button data-page="settings">⚙<span>System</span></button>
 </nav>
+<div id="collectionDetail" class="collection-detail" hidden role="dialog" aria-modal="true" aria-labelledby="collectionDetailTitle">
+  <div class="collection-detail-sheet">
+    <button type="button" class="detail-close" onclick="closeCollectionDetail()" aria-label="Kartendetails schließen">×</button>
+    <div id="collectionDetailBody"></div>
+  </div>
+</div>
 <div id="imageLightbox" class="image-lightbox" hidden role="dialog" aria-modal="true" aria-label="Kartenbild vergrößert">
   <button type="button" class="lightbox-close" onclick="closeImageLightbox()" aria-label="Bildansicht schließen">×</button>
   <img id="lightboxImage" alt="Vergrößertes Kartenbild">
@@ -110,6 +249,8 @@
 <script src="pokemon-names.js"></script>
 <script src="recognition-core.js"></script>
 <script src="api-core.js"></script>
+<script src="collection-core.js"></script>
+<script src="learning-core.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

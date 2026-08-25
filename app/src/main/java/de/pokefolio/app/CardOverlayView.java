@@ -24,6 +24,8 @@ public final class CardOverlayView extends View {
     private float focusY;
     private boolean focusVisible;
     private boolean focusSucceeded;
+    private float reservedTop;
+    private float reservedBottom;
 
     public CardOverlayView(Context context) {
         super(context);
@@ -61,6 +63,16 @@ public final class CardOverlayView extends View {
         return cardRect.contains(x, y);
     }
 
+    /** Areas occupied by the inset-aware hint and camera controls. */
+    public void setReservedAreas(int top, int bottom) {
+        float nextTop = Math.max(0, top);
+        float nextBottom = Math.max(0, bottom);
+        if (reservedTop == nextTop && reservedBottom == nextBottom) return;
+        reservedTop = nextTop;
+        reservedBottom = nextBottom;
+        invalidate();
+    }
+
     public void showFocusPoint(float x, float y) {
         focusX = x;
         focusY = y;
@@ -86,10 +98,15 @@ public final class CardOverlayView extends View {
         super.onDraw(canvas);
         float width = getWidth();
         float height = getHeight();
-        float topInset = dp(92f);
-        float bottomInset = dp(116f);
-        float availableHeight = Math.max(dp(260f), height - topInset - bottomInset);
+        float topInset = Math.max(dp(92f), reservedTop);
+        float bottomInset = Math.max(dp(116f), reservedBottom);
+        float availableHeight = Math.max(0f, height - topInset - bottomInset);
         float frameWidth = Math.min(width * 0.82f, availableHeight * CARD_ASPECT_RATIO);
+        if (frameWidth <= 0f) {
+            cardRect.setEmpty();
+            canvas.drawColor(shade.getColor());
+            return;
+        }
         float frameHeight = frameWidth / CARD_ASPECT_RATIO;
         float left = (width - frameWidth) / 2f;
         float top = topInset + (availableHeight - frameHeight) / 2f;

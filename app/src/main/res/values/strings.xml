@@ -3,6 +3,7 @@
     <string name="camera_permission_required">Für den Kartenscanner wird der Kamerazugriff benötigt.</string>
     <string name="camera_start_failed">Die Kamera konnte nicht gestartet werden.</string>
     <string name="camera_frame_instructions">Karte vollständig in den Rahmen halten\nZum Fokussieren auf die Karte tippen</string>
+    <string name="bulk_camera_frame_instructions">Nur die Vorderseite vollständig in den Rahmen halten\nTorch bleibt aus · zum Fokussieren tippen</string>
     <string name="camera_starting">Kamera wird gestartet …</string>
     <string name="camera_preview_missing">Keine Kameravorschau. Bitte Scanner erneut öffnen.</string>
     <string name="camera_preview_description">Kameravorschau für die Pokémon-Karte</string>

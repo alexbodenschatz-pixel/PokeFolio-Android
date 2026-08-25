@@ -15,8 +15,8 @@ android {
         applicationId 'app.pokefolio.mobile'
         minSdk 29
         targetSdk 36
-        versionCode 16
-        versionName '0.9.1'
+        versionCode 21
+        versionName '0.13.0'
     }
 
     signingConfigs {
@@ -54,7 +54,9 @@ dependencies {
     implementation 'androidx.exifinterface:exifinterface:1.4.2'
     implementation 'com.google.guava:guava:33.6.0-android'
     implementation 'com.google.mlkit:text-recognition:16.0.1'
+    implementation 'com.google.mlkit:text-recognition-chinese:16.0.1'
     implementation 'com.google.mlkit:text-recognition-japanese:16.0.1'
+    implementation 'com.google.mlkit:text-recognition-korean:16.0.1'
 
     testImplementation 'junit:junit:4.13.2'
 }

@@ -19,8 +19,6 @@ import java.util.List;
 
 /** Image normalization shared by camera captures and gallery OCR. */
 public final class CardImageProcessor {
-    private static final float CARD_RATIO = CardOverlayView.CARD_ASPECT_RATIO;
-
     private CardImageProcessor() {
     }
 
@@ -118,7 +116,7 @@ public final class CardImageProcessor {
         return matrix;
     }
 
-    /** Maps the visible overlay into a FILL_CENTER preview image and keeps a small border. */
+    /** Maps the visible overlay into a FILL_CENTER preview image and keeps the full card border. */
     public static Bitmap cropPreviewRegion(
             Bitmap source,
             RectF frameInView,
@@ -126,7 +124,7 @@ public final class CardImageProcessor {
             int previewHeight
     ) {
         if (previewWidth <= 0 || previewHeight <= 0 || frameInView.isEmpty()) {
-            return centerCropToCard(source);
+            return scaleDown(source, 2200);
         }
         float scale = Math.max(
                 previewWidth / (float) source.getWidth(),
@@ -137,9 +135,10 @@ public final class CardImageProcessor {
         float hiddenX = (displayedWidth - previewWidth) / 2f;
         float hiddenY = (displayedHeight - previewHeight) / 2f;
 
-        float padding = Math.min(frameInView.width(), frameInView.height()) * 0.025f;
+        float paddingX = frameInView.width() * 0.045f;
+        float paddingY = frameInView.height() * 0.045f;
         RectF padded = new RectF(frameInView);
-        padded.inset(-padding, -padding);
+        padded.inset(-paddingX, -paddingY);
         int left = clamp(Math.round((padded.left + hiddenX) / scale), 0, source.getWidth() - 2);
         int top = clamp(Math.round((padded.top + hiddenY) / scale), 0, source.getHeight() - 2);
         int right = clamp(Math.round((padded.right + hiddenX) / scale), left + 2, source.getWidth());
@@ -155,8 +154,13 @@ public final class CardImageProcessor {
     /** Returns OCR passes covering rotation, scale, contrast, lighting and a rectified card area. */
     public static List<OcrVariant> createOcrVariants(Bitmap source) {
         Bitmap scaled = scaleDown(source, 1800);
-        Bitmap rectified = rectifyCard(scaled);
-        Bitmap base = rectified != null ? rectified : scaled;
+        // Gallery downloads and camera-frame crops can already contain the complete
+        // 63:88 card. Running edge detection again tends to lock onto the artwork or
+        // text boxes and removes the header/footer that OCR needs most.
+        boolean framedCard = isCardAspectFrame(scaled);
+        Bitmap rectified = framedCard ? null : rectifyCard(scaled);
+        Bitmap boundedFallback = !framedCard && rectified == null ? cropLikelyCardBounds(scaled) : null;
+        Bitmap base = rectified != null ? rectified : boundedFallback != null ? boundedFallback : scaled;
         List<OcrVariant> variants = new ArrayList<>();
 
         int[] rotations = {0, 90, 180, 270};
@@ -167,7 +171,7 @@ public final class CardImageProcessor {
 
             float ratio = normal.getWidth() / (float) normal.getHeight();
             if (ratio >= 0.42f && ratio <= 1.08f) {
-                Bitmap card = centerCropToCard(normal);
+                Bitmap card = fitCardToCanvas(normal, 900, 1257);
                 variants.add(new OcrVariant("karte-kontrast-" + rotation, enhanceForOcr(card)));
                 addHeaderOcrVariants(variants, card, rotation);
                 addCollectorOcrVariants(variants, card, rotation);
@@ -180,13 +184,24 @@ public final class CardImageProcessor {
             }
         }
 
-        if (rectified != null && scaled != source && !scaled.isRecycled()) {
+        if (scaled != source && scaled != base && !scaled.isRecycled()) {
             scaled.recycle();
         }
-        if (!base.isRecycled()) {
+        // A small source can itself be the 0-degree full-image OCR variant.
+        // Never recycle caller-owned or still-enqueued bitmaps here.
+        if (base != source && !isVariantBitmap(variants, base) && !base.isRecycled()) {
             base.recycle();
         }
         return variants;
+    }
+
+    private static boolean isVariantBitmap(List<OcrVariant> variants, Bitmap bitmap) {
+        for (OcrVariant variant : variants) {
+            if (variant.bitmap == bitmap) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -209,31 +224,15 @@ public final class CardImageProcessor {
             boolean attemptPerspectiveCorrection
     ) {
         Bitmap scaled = scaleDown(source, 1600);
-        Bitmap rectified = attemptPerspectiveCorrection ? rectifyCard(scaled) : null;
-        Bitmap boundedFallback = attemptPerspectiveCorrection && rectified == null
+        boolean framedCard = attemptPerspectiveCorrection && isCardAspectFrame(scaled);
+        Bitmap rectified = attemptPerspectiveCorrection && !framedCard ? rectifyCard(scaled) : null;
+        Bitmap boundedFallback = attemptPerspectiveCorrection && !framedCard && rectified == null
                 ? cropLikelyCardBounds(scaled)
                 : null;
         Bitmap base = rectified != null ? rectified : boundedFallback != null ? boundedFallback : scaled;
         Bitmap oriented = base.getWidth() > base.getHeight() ? rotate(base, 90) : base;
 
-        float currentRatio = oriented.getWidth() / (float) oriented.getHeight();
-        int left = 0;
-        int top = 0;
-        int width = oriented.getWidth();
-        int height = oriented.getHeight();
-        if (currentRatio > CARD_RATIO) {
-            width = Math.max(2, Math.round(height * CARD_RATIO));
-            left = (oriented.getWidth() - width) / 2;
-        } else {
-            height = Math.max(2, Math.round(width / CARD_RATIO));
-            top = (oriented.getHeight() - height) / 2;
-        }
-        Bitmap crop = Bitmap.createBitmap(oriented, left, top, width, height);
-        Bitmap normalized = Bitmap.createScaledBitmap(crop, 378, 528, true);
-
-        if (crop != oriented && crop != normalized) {
-            crop.recycle();
-        }
+        Bitmap normalized = fitCardToCanvas(oriented, 378, 528);
         if (oriented != base && !oriented.isRecycled() && oriented != normalized) {
             oriented.recycle();
         }
@@ -248,13 +247,23 @@ public final class CardImageProcessor {
         }
         return new VisualPreparation(
                 normalized,
-                !attemptPerspectiveCorrection || rectified != null,
+                !attemptPerspectiveCorrection || framedCard || rectified != null,
                 attemptPerspectiveCorrection
-                        ? rectified != null
+                        ? framedCard
+                            ? "framed-card"
+                            : rectified != null
                             ? "perspective"
                             : boundedFallback != null ? "edge-fallback" : "center-fallback"
                         : "reference"
         );
+    }
+
+    /** True when the pixels already form a portrait card frame close to 63:88. */
+    private static boolean isCardAspectFrame(Bitmap bitmap) {
+        int shortEdge = Math.min(bitmap.getWidth(), bitmap.getHeight());
+        int longEdge = Math.max(bitmap.getWidth(), bitmap.getHeight());
+        float ratio = shortEdge / (float) Math.max(1, longEdge);
+        return ratio >= 0.69f && ratio <= 0.745f;
     }
 
     /** Axis-aligned fallback that removes table/background even when four-point fitting is weak. */
@@ -304,8 +313,8 @@ public final class CardImageProcessor {
 
         float scaleX = source.getWidth() / (float) width;
         float scaleY = source.getHeight() / (float) height;
-        int paddingX = Math.max(1, Math.round(rectangleWidth * scaleX * 0.012f));
-        int paddingY = Math.max(1, Math.round(rectangleHeight * scaleY * 0.012f));
+        int paddingX = Math.max(1, Math.round(rectangleWidth * scaleX * 0.035f));
+        int paddingY = Math.max(1, Math.round(rectangleHeight * scaleY * 0.035f));
         int cropLeft = clamp(Math.round(left * scaleX) - paddingX, 0, source.getWidth() - 2);
         int cropTop = clamp(Math.round(top * scaleY) - paddingY, 0, source.getHeight() - 2);
         int cropRight = clamp(Math.round(right * scaleX) + paddingX, cropLeft + 2, source.getWidth());
@@ -337,6 +346,7 @@ public final class CardImageProcessor {
         for (int i = 0; i < 4; i++) {
             quad[i] = new PointF(smallQuad[i].x * scaleX, smallQuad[i].y * scaleY);
         }
+        expandQuad(quad, source.getWidth(), source.getHeight(), 0.018f);
         if (analysis != source) {
             analysis.recycle();
         }
@@ -566,25 +576,57 @@ public final class CardImageProcessor {
         }
     }
 
-    private static Bitmap centerCropToCard(Bitmap source) {
-        float currentRatio = source.getWidth() / (float) source.getHeight();
-        int left = 0;
-        int top = 0;
-        int width = source.getWidth();
-        int height = source.getHeight();
-        if (currentRatio > CARD_RATIO) {
-            width = Math.max(2, Math.round(height * CARD_RATIO));
-            left = (source.getWidth() - width) / 2;
-        } else {
-            height = Math.max(2, Math.round(width / CARD_RATIO));
-            top = (source.getHeight() - height) / 2;
+    /** Scales the whole detected card into 63:88 without discarding any edge pixels. */
+    private static Bitmap fitCardToCanvas(Bitmap source, int targetWidth, int targetHeight) {
+        float factor = Math.min(
+                targetWidth / (float) source.getWidth(),
+                targetHeight / (float) source.getHeight()
+        );
+        int width = Math.max(2, Math.min(targetWidth, Math.round(source.getWidth() * factor)));
+        int height = Math.max(2, Math.min(targetHeight, Math.round(source.getHeight() * factor)));
+        Bitmap scaled = Bitmap.createScaledBitmap(source, width, height, true);
+        Bitmap output = Bitmap.createBitmap(targetWidth, targetHeight, Bitmap.Config.ARGB_8888);
+        Canvas canvas = new Canvas(output);
+        canvas.drawColor(averageCornerColor(source));
+        canvas.drawBitmap(scaled, (targetWidth - width) / 2f, (targetHeight - height) / 2f, null);
+        if (scaled != source) scaled.recycle();
+        return output;
+    }
+
+    private static int averageCornerColor(Bitmap source) {
+        int insetX = Math.max(0, Math.min(source.getWidth() - 1, source.getWidth() / 80));
+        int insetY = Math.max(0, Math.min(source.getHeight() - 1, source.getHeight() / 80));
+        int[] colors = {
+                source.getPixel(insetX, insetY),
+                source.getPixel(source.getWidth() - 1 - insetX, insetY),
+                source.getPixel(source.getWidth() - 1 - insetX, source.getHeight() - 1 - insetY),
+                source.getPixel(insetX, source.getHeight() - 1 - insetY)
+        };
+        int red = 0;
+        int green = 0;
+        int blue = 0;
+        for (int color : colors) {
+            red += color >> 16 & 0xff;
+            green += color >> 8 & 0xff;
+            blue += color & 0xff;
         }
-        Bitmap crop = Bitmap.createBitmap(source, left, top, width, height);
-        Bitmap scaled = Bitmap.createScaledBitmap(crop, 900, 1257, true);
-        if (crop != source && crop != scaled) {
-            crop.recycle();
+        return 0xff000000 | red / colors.length << 16 | green / colors.length << 8 | blue / colors.length;
+    }
+
+    private static void expandQuad(PointF[] quad, int width, int height, float fraction) {
+        float centerX = 0f;
+        float centerY = 0f;
+        for (PointF point : quad) {
+            centerX += point.x;
+            centerY += point.y;
         }
-        return scaled;
+        centerX /= quad.length;
+        centerY /= quad.length;
+        float factor = 1f + fraction;
+        for (PointF point : quad) {
+            point.x = clamp(Math.round(centerX + (point.x - centerX) * factor), 0, width - 1);
+            point.y = clamp(Math.round(centerY + (point.y - centerY) * factor), 0, height - 1);
+        }
     }
 
     private static void addCollectorOcrVariants(List<OcrVariant> variants, Bitmap card, int rotation) {
