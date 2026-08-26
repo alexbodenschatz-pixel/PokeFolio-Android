@@ -9,7 +9,7 @@
 <body>
 <header>
   <div class="brand"><b>PokéFolio</b><small>Dein TCG-Portfolio</small></div>
-  <div class="header-actions"><span class="currency-pill">EUR</span><span class="pill">v0.14.0</span></div>
+  <div class="header-actions"><span class="currency-pill">EUR</span><span class="pill">v0.14.1</span></div>
 </header>
 <main>
   <section id="home" class="page active">
@@ -110,6 +110,10 @@
     <section id="identificationActions" class="card identification-actions" hidden aria-live="polite">
       <span class="section-kicker">Identifikation abgeschlossen</span>
       <div id="identifiedCardSummary"></div>
+      <section id="recognitionVariantPanel" class="variant-selector" hidden aria-labelledby="recognitionVariantTitle">
+        <div><h3 id="recognitionVariantTitle">Variante auswählen</h3><small id="recognitionVariantHint">Die Kartenidentität steht fest. Bitte nur die physische Druckvariante bestimmen.</small></div>
+        <div id="recognitionVariantOptions" class="variant-options"></div>
+      </section>
       <div class="identification-buttons">
         <button id="saveIdentifiedCard" type="button" class="primary">Zur Sammlung hinzufügen</button>
         <button id="inspectIdentifiedCard" type="button" class="secondary">Nur prüfen</button>
@@ -135,7 +139,7 @@
 
       <div class="bulk-options card">
         <label>Sprache<select id="bulkLang"><option value="de">Deutsch</option><option value="en">Englisch</option><option value="ja">Japanisch</option><option value="ko">Koreanisch</option><option value="zh-CN">Chinesisch (vereinfacht)</option><option value="zh-TW">Chinesisch (traditionell)</option></select></label>
-        <label>Druckvariante<select id="bulkVariant"><option value="normal">Normal</option><option value="holo">Holo</option><option value="reverse-holo">Reverse Holo</option><option value="full-art">Full Art</option><option value="alternate-art">Alternate Art</option><option value="illustration-rare">Illustration Rare</option><option value="special-illustration-rare">Special Illustration Rare</option><option value="secret-rare">Secret Rare</option><option value="promo">Promo</option><option value="reprint">Reprint</option></select></label>
+        <label>Druckvariante<select id="bulkVariant"><option value="unknown" selected>Automatisch bestimmen</option><option value="normal">Normal</option><option value="holo">Holo</option><option value="reverse-holo">Reverse Holo</option><option value="full-art">Full Art</option><option value="alternate-art">Alternate Art</option><option value="illustration-rare">Illustration Rare</option><option value="special-illustration-rare">Special Illustration Rare</option><option value="secret-rare">Secret Rare</option><option value="promo">Promo</option><option value="reprint">Reprint</option></select></label>
       </div>
 
       <div class="bulk-session" aria-label="Bulk-Scan-Sitzungsstatistik">
@@ -295,7 +299,7 @@
 
   <section id="settings" class="page">
     <h1>System</h1>
-    <div class="card"><b>Erkennung v0.14.0</b><p>Positionsbezogene OCR, sprachbewusste Referenzen, visuelle Top-K-Reduktion und harte Widerspruchsfilter ergänzen den vollständigen perspektivisch korrigierten Kartenvergleich.</p></div>
+    <div class="card"><b>Erkennung v0.14.1</b><p>Kartenidentität und physische Druckvariante werden getrennt entschieden. Sichere Treffer bleiben erkannt, während Holo, Reverse Holo oder andere plausible Varianten gezielt bestätigt werden.</p></div>
     <section class="card learning-settings" aria-labelledby="learningTitle">
       <span class="section-kicker">KI &amp; Erkennung</span>
       <div class="learning-title"><div><h2 id="learningTitle">PokéFolio Lernsystem</h2><p>Bestätigte Scans und eindeutige Korrekturen verbessern die Erkennung ausschließlich lokal auf diesem Gerät.</p></div><span id="learningStatus" class="status good">Lokales Lernen aktiv</span></div>
@@ -345,6 +349,7 @@
 <script src="recognition-core.js"></script>
 <script src="reference-core.js"></script>
 <script src="api-core.js"></script>
+<script src="variant-core.js"></script>
 <script src="collection-core.js"></script>
 <script src="learning-core.js"></script>
 <script src="grading-core.js"></script>

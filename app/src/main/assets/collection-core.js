@@ -5,7 +5,7 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
 
-  const SCHEMA_VERSION = 5;
+  const SCHEMA_VERSION = 6;
   const DEFAULT_VARIANT = 'normal';
 
   function text(value) {
@@ -73,15 +73,31 @@
     ));
     const value = keyPart(explicit);
     if (value) {
+      if (value.includes('masterball')) return 'master-ball-pattern';
+      if (value.includes('pokeball')) return 'poke-ball-pattern';
+      if (value.includes('cosmos')) return 'cosmos-holo';
+      if (value.includes('mangarare')) return 'manga-rare';
+      if (value.includes('leaderparallel')) return 'leader-parallel';
+      if (value.includes('donparallel')) return 'don-parallel';
       if (value.includes('specialillustration') || value === 'sir') return 'special-illustration-rare';
       if (value.includes('illustration') || value === 'ir') return 'illustration-rare';
       if (value.includes('alternate') || value.includes('alternativeart')) return 'alternate-art';
       if (value.includes('fullart')) return 'full-art';
+      if (value.includes('quartercentury')) return 'quarter-century-secret-rare';
+      if (value.includes('starlight')) return 'starlight-rare';
+      if (value.includes('collectorsrare') || value === 'cr') return 'collectors-rare';
+      if (value.includes('ultimate')) return 'ultimate-rare';
+      if (value.includes('ghost')) return 'ghost-rare';
       if (value.includes('secretrare') || value === 'secret') return 'secret-rare';
+      if (value.includes('ultrarare')) return 'ultra-rare';
+      if (value.includes('superrare')) return 'super-rare';
       if (value.includes('reprint')) return 'reprint';
       if (value.includes('reverse')) return 'reverse-holo';
       if (value.includes('promo')) return 'promo';
-      if (value.includes('holo') || value.includes('foil')) return 'holo';
+      if (value === 'foil') return 'foil';
+      if (value.includes('holo')) return 'holo';
+      if (value === 'common') return 'common';
+      if (value === 'rare') return 'rare';
       if (value === 'standard' || value === 'regular') return DEFAULT_VARIANT;
       return value;
     }
@@ -100,16 +116,34 @@
   function variantLabel(value) {
     return ({
       normal: 'Normal',
+      unknown: 'Nicht bestimmt',
       holo: 'Holo',
       'reverse-holo': 'Reverse Holo',
+      'cosmos-holo': 'Cosmos Holo',
       'full-art': 'Full Art',
       'alternate-art': 'Alternate Art',
       'illustration-rare': 'Illustration Rare',
       'special-illustration-rare': 'Special Illustration Rare',
       'secret-rare': 'Secret Rare',
+      'poke-ball-pattern': 'Poké Ball Pattern',
+      'master-ball-pattern': 'Master Ball Pattern',
       promo: 'Promo',
-      reprint: 'Reprint'
-    })[normalizedVariant({variant: value})] || text(value) || 'Normal';
+      reprint: 'Reprint',
+      common: 'Common',
+      rare: 'Rare',
+      'super-rare': 'Super Rare',
+      'ultra-rare': 'Ultra Rare',
+      'ultimate-rare': 'Ultimate Rare',
+      'ghost-rare': 'Ghost Rare',
+      'starlight-rare': 'Starlight Rare',
+      'collectors-rare': "Collector's Rare",
+      'quarter-century-secret-rare': 'Quarter Century Secret Rare',
+      foil: 'Foil',
+      parallel: 'Parallel',
+      'manga-rare': 'Manga Rare',
+      'leader-parallel': 'Leader Parallel',
+      'don-parallel': 'DON!! Parallel'
+    })[normalizedVariant({variant: value})] || text(value) || 'Nicht bestimmt';
   }
 
   function normalizedNumber(card) {
@@ -210,6 +244,10 @@
       quantity: current.quantity + incoming.quantity,
       specimens: [...specimenMap.values()],
       favorite: Boolean(current.favorite || incoming.favorite),
+      collectionNotes: preferred.collectionNotes || secondary.collectionNotes || '',
+      availableVariants: [...new Set([...(current.availableVariants || []), ...(incoming.availableVariants || [])])],
+      pricesByVariant: {...(secondary.pricesByVariant || {}), ...(preferred.pricesByVariant || {})},
+      genericPrice: preferred.genericPrice || secondary.genericPrice || null,
       estimatedUnitValue: Math.max(
         finiteNumber(current.estimatedUnitValue), finiteNumber(incoming.estimatedUnitValue)
       ),
@@ -279,6 +317,40 @@
     }
     collection[index] = {...collection[index], quantity: next};
     return {collection, removed: false, entry: collection[index]};
+  }
+
+  function changeVariant(rawCollection, id, value, price) {
+    const collection = migrateCollection(rawCollection).collection.slice();
+    const index = collection.findIndex(card => String(card.id) === String(id));
+    if (index < 0) return {collection, entry: null, action: 'NOT_FOUND'};
+    const variant = normalizedVariant({variant: value});
+    if (!variant || variant === 'unknown') return {collection, entry: collection[index], action: 'INVALID_VARIANT'};
+    const previous = collection[index];
+    const oldKey = previous.collectionKey;
+    const updated = normalizeEntry({
+      ...previous,
+      printingVariant: variant,
+      variantSelectionConfirmed: true,
+      price: price || previous.price,
+      estimatedUnitValue: price && Number.isFinite(Number(price.value))
+        ? Number(price.value) : previous.estimatedUnitValue,
+      identityVerified: true
+    }, index);
+    updated.collectionKey = collectionKey(updated);
+    const duplicateIndex = collection.findIndex((card, itemIndex) => itemIndex !== index
+      && card.collectionKey === updated.collectionKey);
+    if (duplicateIndex >= 0) {
+      const merged = chooseRicherEntry(collection[duplicateIndex], updated);
+      collection[duplicateIndex] = {...merged, id: collection[duplicateIndex].id,
+        collectionKey: updated.collectionKey, printingVariant: variant};
+      collection.splice(index, 1);
+      const finalIndex = index < duplicateIndex ? duplicateIndex - 1 : duplicateIndex;
+      return {collection, entry: collection[finalIndex], action: 'VARIANT_MERGED', oldKey,
+        newKey: updated.collectionKey, previousId: previous.id};
+    }
+    collection[index] = updated;
+    return {collection, entry: updated, action: 'VARIANT_UPDATED', oldKey,
+      newKey: updated.collectionKey, previousId: previous.id};
   }
 
   function collectorParts(value) {
@@ -483,6 +555,7 @@
     migrateCollection,
     upsertCollection,
     adjustQuantity,
+    changeVariant,
     compareCollector,
     matchesFilters,
     portfolioSummary,

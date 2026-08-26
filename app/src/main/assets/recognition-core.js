@@ -1657,7 +1657,7 @@
     const textImage = clamp(Number.isFinite(Number(visualInput.text))
       ? Number(visualInput.text) : (whole + footer) / 2, 0, 1);
     const visualReliable = visualInput.reliable !== false;
-    const identificationScore = clamp(Number.isFinite(Number(candidate.identificationScore))
+    let identificationScore = clamp(Number.isFinite(Number(candidate.identificationScore))
       ? Number(candidate.identificationScore) : Number(candidate.textConfidence) || Number(candidate.confidence) || 0, 0, 0.99);
     const dataConfidence = clamp(Number.isFinite(Number(candidate.dataConfidence))
       ? Number(candidate.dataConfidence) : identificationScore, 0, 1);
@@ -1692,9 +1692,24 @@
       && hpStatus === 'match'
       && (attackStatus === 'match' || damageStatus === 'match' || setStatus === 'match');
 
-    // Identity dominates. Visual evidence primarily answers the second question:
-    // whether the artwork/printing variant is the same. It cannot erase exact card data.
-    let confidence = identificationScore * 0.75 + visualVariantScore * 0.20 + dataConfidence * 0.05;
+    // Artwork confirms card identity, not a reflective finish. Holo/Reverse detection is
+    // resolved separately by variant-core; therefore it can never drag a proven identity down.
+    if (exactPrintedIdentity && strongVisual) identificationScore = Math.max(identificationScore, 0.985);
+    else if (exactPrintedIdentity) identificationScore = Math.max(identificationScore, 0.955);
+    else if (collectorStatus === 'match' && nameScore >= 0.94 && artwork >= 0.82) {
+      identificationScore = Math.max(identificationScore, 0.965);
+    } else if (corroboratedIdentity && strongVisual) {
+      identificationScore = Math.max(identificationScore, 0.88);
+    }
+    if (strongVisual && !exactPrintedIdentity) {
+      identificationScore = clamp(identificationScore + 0.05, 0, collectorStatus === 'match' ? 0.94 : 0.79);
+    }
+    if (severeArtworkMismatch && !exactPrintedIdentity) {
+      identificationScore = Math.min(identificationScore - 0.20, collectorStatus === 'match' ? 0.70 : 0.42);
+      identificationScore = clamp(identificationScore, 0, 0.99);
+    }
+
+    let confidence = identificationScore * 0.94 + dataConfidence * 0.06;
     if (exactPrintedIdentity) {
       confidence = Math.max(confidence, strongVisual ? 0.96 : 0.92);
     } else if (collectorStatus === 'match' && nameScore >= 0.90) {
@@ -1739,6 +1754,9 @@
       textConfidence: Number(candidate.textConfidence) || initialFinalConfidence(identificationScore, dataConfidence),
       identificationScore,
       visualVariantScore,
+      artworkScore: artwork,
+      printVariantScore: Number.isFinite(Number(candidate.printVariantScore))
+        ? clamp(Number(candidate.printVariantScore), 0, 1) : null,
       dataConfidence,
       finalConfidence: confidence,
       scoreModelVersion: 2,
@@ -1763,7 +1781,8 @@
         footerImage: footer,
         visualReliable,
         crossLanguageReference,
-        variantUncertain: exactPrintedIdentity && visualVariantScore < 0.72
+        variantUncertain: Boolean(candidate.variantResolution && !candidate.variantResolution.confirmed)
+          || exactPrintedIdentity && visualVariantScore < 0.72
       }
     };
   }
@@ -1942,15 +1961,24 @@
   function confidenceDecision(candidates) {
     if (!candidates || !candidates.length) {
       return {status: 'none', autoAccept: false, bestScore: 0, secondScore: 0, margin: 0,
-        level: confidenceLevel(0)};
+        level: confidenceLevel(0), state: 'NO_RELIABLE_MATCH', identityConfirmed: false,
+        variantConfirmed: false};
     }
     const bestCandidate = candidates[0];
-    const secondCandidate = candidates[1];
-    const bestScore = clamp(Number(bestCandidate.finalConfidence != null
-      ? bestCandidate.finalConfidence : bestCandidate.confidence) || 0, 0, 1);
+    const bestIdentityKey = printedIdentityKey(bestCandidate);
+    // A second finish of the same card is not a competing card identity. Margins are
+    // deliberately calculated against the next distinct set/number/name identity.
+    const secondCandidate = candidates.slice(1).find(candidate => {
+      const candidateKey = printedIdentityKey(candidate);
+      return !bestIdentityKey || !candidateKey || candidateKey !== bestIdentityKey;
+    });
+    const bestScore = clamp(Number(bestCandidate.identificationScore != null
+      ? bestCandidate.identificationScore
+      : bestCandidate.finalConfidence != null ? bestCandidate.finalConfidence : bestCandidate.confidence) || 0, 0, 1);
     const secondScore = secondCandidate
-      ? clamp(Number(secondCandidate.finalConfidence != null
-        ? secondCandidate.finalConfidence : secondCandidate.confidence) || 0, 0, 1)
+      ? clamp(Number(secondCandidate.identificationScore != null
+        ? secondCandidate.identificationScore
+        : secondCandidate.finalConfidence != null ? secondCandidate.finalConfidence : secondCandidate.confidence) || 0, 0, 1)
       : 0;
     const margin = secondCandidate ? bestScore - secondScore : 1;
     const details = bestCandidate.matchDetails || {};
@@ -1960,35 +1988,46 @@
       || details.language === 'mismatch'
       || details.name != null && Number(details.name) < 0.58
         && (Number(bestCandidate.dataConfidence) || 0) >= 0.35;
-    const samePrintedIdentity = Boolean(
-      secondCandidate
-      && printedIdentityKey(bestCandidate)
-      && printedIdentityKey(bestCandidate) === printedIdentityKey(secondCandidate)
+    const sameIdentityVariants = candidates.slice(1).some(candidate => bestIdentityKey
+      && printedIdentityKey(candidate) === bestIdentityKey);
+    const artwork = Number(details.artwork);
+    const exactNameNumberArtwork = Number(details.name) >= 0.92
+      && details.collector === 'match' && Number.isFinite(artwork) && artwork >= 0.80;
+    const strongStructuredIdentity = details.collector === 'match'
+      && (Number(details.name) >= 0.90 || details.set === 'match');
+    const identityClear = !hardContradiction && (
+      exactNameNumberArtwork
+      || identification >= 0.90 && strongStructuredIdentity
+      || identification >= 0.82 && margin >= 0.10 && (strongStructuredIdentity || Number(details.artwork) >= 0.82)
+      || identification >= 0.72 && margin >= 0.18 && strongStructuredIdentity
     );
-    const closeVariant = samePrintedIdentity && margin < 0.08;
-    const identityClear = identification >= 0.88
-      && (details.collector === 'match' || details.name >= 0.90 && details.set === 'match');
+    const variantResolution = bestCandidate.variantResolution || null;
+    const variantConfirmed = variantResolution
+      ? Boolean(variantResolution.confirmed)
+      : !details.variantUncertain && !sameIdentityVariants;
 
-    if (!hardContradiction && identityClear && (closeVariant || details.variantUncertain)) {
+    if (identityClear && !variantConfirmed) {
       return {status: 'variant-uncertain', autoAccept: false, bestScore, secondScore, margin,
-        level: confidenceLevel(bestScore), identityClear: true, variantUncertain: true};
+        level: confidenceLevel(bestScore), identityClear: true, identityConfirmed: true,
+        variantConfirmed: false, variantUncertain: true,
+        state: 'IDENTITY_CONFIRMED_VARIANT_UNCERTAIN'};
     }
 
-    const autoAccept = !hardContradiction && (
-      bestScore >= 0.90 && margin >= 0.05
-      || bestScore >= 0.80 && margin >= 0.10
-      || bestScore >= 0.65 && margin >= 0.18 && identification >= 0.72
-    );
+    const autoAccept = identityClear && variantConfirmed;
     if (autoAccept) {
       return {status: 'auto', autoAccept: true, bestScore, secondScore, margin,
-        level: confidenceLevel(bestScore), identityClear};
+        level: confidenceLevel(bestScore), identityClear: true, identityConfirmed: true,
+        variantConfirmed: true, variantUncertain: false,
+        state: 'IDENTITY_CONFIRMED_VARIANT_CONFIRMED'};
     }
     if (!hardContradiction && bestScore >= 0.45) {
       return {status: 'candidates', autoAccept: false, bestScore, secondScore, margin,
-        level: confidenceLevel(bestScore), identityClear};
+        level: confidenceLevel(bestScore), identityClear: false, identityConfirmed: false,
+        variantConfirmed: false, state: 'IDENTITY_UNCERTAIN'};
     }
     return {status: 'low', autoAccept: false, bestScore, secondScore, margin,
-      level: confidenceLevel(bestScore), identityClear: false};
+      level: confidenceLevel(bestScore), identityClear: false, identityConfirmed: false,
+      variantConfirmed: false, state: 'NO_RELIABLE_MATCH'};
   }
 
   function isConfident(candidates) {

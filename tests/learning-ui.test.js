@@ -26,8 +26,8 @@ test('prüft lokale Referenzen nach Crop und vor dem Onlineabruf', () => {
 });
 
 test('lernt niemals durch automatisches Anwenden oder automatische Bulk-Speicherung', () => {
-  assert.match(app, /if \(!automatic\) recordLearningSelection/);
-  assert.match(app, /if \(trigger === 'MANUAL_SELECTION'\)/);
+  assert.doesNotMatch(app, /window\.applyCandidate =[^]*?recordLearningSelection[^]*?window\.changeRecognizedCandidate/);
+  assert.match(app, /trigger === 'MANUAL_SELECTION' \|\| trigger === 'AUTO_VARIANT_SELECTION'/);
   assert.doesNotMatch(app, /trigger === 'AUTO'[^}]*recordLearningSelection/);
   assert.match(app, /recordLearningSelection\(learningScan, recognition, 'single-collection-save'\)/);
 });

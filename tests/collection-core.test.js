@@ -146,7 +146,7 @@ test('migriert normale Scans als Einzelexemplare ohne Bulk-Stückzahlen oder Sca
   const migrated = Collection.migrateCollection([legacy]);
   const entry = migrated.collection[0];
 
-  assert.equal(migrated.schemaVersion, 5);
+  assert.equal(migrated.schemaVersion, 6);
   assert.equal(entry.quantity, 3);
   assert.equal(entry.specimens.length, 1);
   assert.equal(entry.specimens[0].grade, 'NM');

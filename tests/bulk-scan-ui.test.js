@@ -32,14 +32,15 @@ test('öffnet für Bulk direkt die native CameraX-Liveansicht und übergibt ein 
   assert.match(camera, /CAPTURE_MODE_MINIMIZE_LATENCY/);
 });
 
-test('speichert im Bulk-Modus nur starke Treffer automatisch und zeigt sonst drei Kandidaten', () => {
+test('speichert im Bulk-Modus nur bestätigte Identität plus Variante automatisch', () => {
   assert.match(app, /Recognition\.confidenceDecision\(list\)/);
-  assert.match(app, /decision\.autoAccept && confidence >= 0\.80/);
+  assert.match(app, /IDENTITY_CONFIRMED_VARIANT_CONFIRMED && confidence >= 0\.80/);
   assert.match(app, /exactPrintedIdentity && noContradiction/);
   assert.match(app, /details\.collector === 'match'/);
   assert.match(app, /bulkCandidates\.slice\(0, 3\)/);
   assert.match(app, /REJECTED_LOW_CONFIDENCE/);
   assert.match(app, /MANUAL_SELECTION/);
+  assert.match(app, /renderBulkVariantSelector/);
   assert.match(index, /Keine eindeutige Karte erkannt/);
 });
 

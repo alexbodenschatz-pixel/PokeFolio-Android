@@ -4,6 +4,7 @@ const $ = selector => document.querySelector(selector);
 const $$ = selector => document.querySelectorAll(selector);
 const Recognition = window.PokeRecognition;
 const Api = window.PokeApi;
+const Variants = window.PokeVariants;
 const Collection = window.PokeCollection;
 const Learning = window.PokeLearning;
 const Grading = window.PokeGrading;
@@ -26,6 +27,8 @@ let recognition = null;
 let candidates = [];
 let candidateFocusIndex = 0;
 let bulkCandidates = [];
+let bulkVariantCandidate = null;
+let bulkVariantTrigger = 'MANUAL_SELECTION';
 let bulkHints = null;
 let bulkSourceDataUrl = '';
 let bulkPreviewUrl = '';
@@ -341,12 +344,14 @@ function debugRecognitionCandidates(stage, candidatesToLog) {
       + ` Rang=${index + 1} Kandidat=${candidate.name || '<ohne Titel>'}`
       + ` Nummer=${candidate.number || '<keine>'}`
       + ` Set=${candidate.set || '<unbekannt>'}`
-      + ` Gesamt=${Math.round((Number(candidate.confidence) || 0) * 100)}%`
+      + ` FinalIdentity=${Math.round((Number(candidate.identificationScore) || Number(candidate.confidence) || 0) * 100)}%`
       + ` Identifikation=${Math.round((Number(candidate.identificationScore) || 0) * 100)}%`
-      + ` VarianteVisuell=${Number.isFinite(Number(candidate.visualVariantScore)) ? Math.round(Number(candidate.visualVariantScore) * 100) + '%' : 'unknown'}`
+      + ` Artwork=${Number.isFinite(Number(candidate.artworkScore)) ? Math.round(Number(candidate.artworkScore) * 100) + '%' : 'unknown'}`
+      + ` Druckvariante=${candidate.variantResolution && candidate.variantResolution.variant || 'unknown'}`
+      + ` VariantScore=${Number.isFinite(Number(candidate.printVariantScore)) ? Math.round(Number(candidate.printVariantScore) * 100) + '%' : 'unknown'}`
       + ` Datensicherheit=${Math.round((Number(candidate.dataConfidence) || 0) * 100)}%`
       + ` Abstand=${Math.round((Number(decision.margin) || 0) * 100)}%`
-      + ` Entscheidung=${decision.status}`
+      + ` Entscheidung=${decision.state || decision.status}`
       + ` Typ=${details.cardType || 'unknown'}`
       + ` Titel=${Math.round((Number(details.title != null ? details.title : details.name) || 0) * 100)}%`
       + ` NummerScore=${details.collector || 'unknown'}`
@@ -1236,6 +1241,34 @@ function chooseRecognitionRotation(ocrResult) {
   return best.rotation;
 }
 
+function marketPrice(value, currency, source) {
+  if (!Number.isFinite(Number(value))) return null;
+  const amount = Number(value);
+  return {
+    value: amount,
+    currency,
+    label: currency === 'EUR' ? amount.toFixed(2).replace('.', ',') + ' €' : '$' + amount.toFixed(2),
+    source,
+    kind: 'raw-market'
+  };
+}
+
+function pokemonVariantPrices(tcgPrices) {
+  const mapped = {};
+  const aliases = {
+    normal: 'normal', holofoil: 'holo', reverseHolofoil: 'reverse-holo',
+    '1stEditionNormal': 'normal', '1stEditionHolofoil': 'holo',
+    unlimitedNormal: 'normal', unlimitedHolofoil: 'holo'
+  };
+  Object.entries(tcgPrices || {}).forEach(([name, values]) => {
+    const variant = aliases[name];
+    if (!variant || mapped[variant]) return;
+    const price = marketPrice(values && (values.market || values.mid || values.low), 'USD', 'TCGplayer');
+    if (price) mapped[variant] = price;
+  });
+  return mapped;
+}
+
 function pokemonCardFromApi(card) {
   const cardmarket = card.cardmarket && card.cardmarket.prices || {};
   const tcgPrices = card.tcgplayer && card.tcgplayer.prices || {};
@@ -1243,6 +1276,12 @@ function pokemonCardFromApi(card) {
     .map(entry => entry && (entry.market || entry.mid || entry.low))
     .find(value => Number.isFinite(Number(value)));
   const eurPrice = cardmarket.trendPrice || cardmarket.averageSellPrice || cardmarket.avg7 || cardmarket.lowPrice;
+  const pricesByVariant = pokemonVariantPrices(tcgPrices);
+  const reverseEur = cardmarket.reverseHoloTrend || cardmarket.reverseHoloSell
+    || cardmarket.reverseHoloAvg7 || cardmarket.reverseHoloLow;
+  const reverseCardmarketPrice = marketPrice(reverseEur, 'EUR', 'Cardmarket');
+  if (reverseCardmarketPrice) pricesByVariant['reverse-holo'] = reverseCardmarketPrice;
+  const genericPrice = marketPrice(eurPrice, 'EUR', 'Cardmarket') || marketPrice(usdPrice, 'USD', 'TCGplayer');
   const imageSmall = card.images && (card.images.small || card.images.large) || '';
   const imageLarge = card.images && (card.images.large || card.images.small) || '';
   return {
@@ -1274,12 +1313,12 @@ function pokemonCardFromApi(card) {
       image: 'POKEMON_TCG_API_EN', price: Number.isFinite(Number(eurPrice)) ? 'CARDMARKET' : 'TCGPLAYER'
     },
     officialValidationStatus: 'NOT_AVAILABLE',
+    sourceVariants: card.variants || null,
+    availableVariants: Object.keys(pricesByVariant),
+    pricesByVariant,
+    genericPrice,
     source: 'Pokémon TCG API',
-    price: Number.isFinite(Number(eurPrice))
-      ? {value: Number(eurPrice), currency: 'EUR', label: Number(eurPrice).toFixed(2).replace('.', ',') + ' €', source: 'Cardmarket', kind: 'raw-market'}
-      : Number.isFinite(Number(usdPrice))
-        ? {value: Number(usdPrice), currency: 'USD', label: '$' + Number(usdPrice).toFixed(2), source: 'TCGplayer', kind: 'raw-market'}
-        : null
+    price: genericPrice
   };
 }
 
@@ -1326,6 +1365,10 @@ function pokemonCardFromTcgdex(card, language = 'de') {
       set: `TCGDEX_${language}`, image: `TCGDEX_${language}`
     },
     officialValidationStatus: 'NOT_AVAILABLE',
+    sourceVariants: card.variants || null,
+    availableVariants: [],
+    pricesByVariant: {},
+    genericPrice: null,
     source: `TCGdex (${languageLabel(language)})`,
     price: null
   };
@@ -1412,6 +1455,10 @@ function mergePokemonCandidate(current, incoming, language) {
     language: preferIncomingText ? incoming.language || current.language : current.language || incoming.language,
     languages: [...new Set([...(current.languages || []), ...(incoming.languages || [])])],
     imagesByLanguage: {...(current.imagesByLanguage || {}), ...(incoming.imagesByLanguage || {})},
+    sourceVariants: {...(current.sourceVariants || {}), ...(incoming.sourceVariants || {})},
+    availableVariants: [...new Set([...(current.availableVariants || []), ...(incoming.availableVariants || [])])],
+    pricesByVariant: {...(incoming.pricesByVariant || {}), ...(current.pricesByVariant || {})},
+    genericPrice: current.genericPrice || incoming.genericPrice || null,
     imageSmall: preferIncomingText && incoming.imageSmall
       ? incoming.imageSmall : current.imageSmall || incoming.imageSmall,
     imageLarge: preferIncomingText && incoming.imageLarge
@@ -1707,6 +1754,28 @@ async function enrichWithVisualSimilarity(list, preparedCard, runToken) {
   return detailed.sort((left, right) => (right.confidence || 0) - (left.confidence || 0));
 }
 
+function resolveCandidateVariants(list, forcedVariant = '') {
+  const requested = Variants.normalize(forcedVariant);
+  return (list || []).map(candidate => {
+    const prepared = requested !== 'unknown'
+      ? Variants.selectVariant(candidate, requested, 'SCAN_PRESELECTED')
+      : candidate;
+    const variantResolution = Variants.resolve(prepared);
+    const printingVariant = variantResolution.confirmed ? variantResolution.variant : 'unknown';
+    const price = variantResolution.confirmed
+      ? Variants.priceForVariant(prepared, printingVariant)
+      : prepared.genericPrice || prepared.price || null;
+    return {
+      ...prepared,
+      printingVariant,
+      price,
+      variantResolution,
+      printVariantScore: variantResolution.confidence
+    };
+  }).sort((left, right) => (Number(right.identificationScore) || Number(right.confidence) || 0)
+    - (Number(left.identificationScore) || Number(left.confidence) || 0));
+}
+
 function evidenceLabel(value) {
   return ({
     'Name': 'Name stimmt',
@@ -1777,11 +1846,9 @@ function candidateBreakdown(candidate) {
     <div><span>KP/HP</span><b class="${esc(details.hp || 'unknown')}">${esc(hp)}</b></div>
     <div><span>Attacke</span><b class="${esc(details.attack || 'unknown')}">${esc(attack)}</b></div>
     <div><span>Schaden</span><b class="${esc(details.damage || 'unknown')}">${esc(damage)}</b></div>`;
-  const overall = Math.round(clamp(Number(candidate.finalConfidence != null
-    ? candidate.finalConfidence : candidate.confidence) || 0, 0, 1) * 100);
   const identification = Math.round(clamp(Number(candidate.identificationScore) || 0, 0, 1) * 100);
-  const visualVariant = Number.isFinite(Number(candidate.visualVariantScore))
-    ? Math.round(clamp(Number(candidate.visualVariantScore), 0, 1) * 100) + ' %'
+  const visualVariant = Number.isFinite(Number(candidate.printVariantScore))
+    ? Math.round(clamp(Number(candidate.printVariantScore), 0, 1) * 100) + ' %'
     : 'nicht verfügbar';
   const dataConfidence = Math.round(clamp(Number(candidate.dataConfidence) || 0, 0, 1) * 100);
   const learnedComponents = Number.isFinite(Number(candidate.learnedVisualScore))
@@ -1792,7 +1859,7 @@ function candidateBreakdown(candidate) {
   return `<details class="candidate-details">
     <summary>Score-Details</summary>
     <div class="score-components">
-      <div><span>Gesamt</span><b>${overall} %</b></div>
+      <div><span>Finale Identität</span><b>${identification} %</b></div>
       <div><span>Identität</span><b>${identification} %</b></div>
       <div><span>Druckvariante</span><b>${esc(visualVariant)}</b></div>
       <div><span>Datensicherheit</span><b>${dataConfidence} %</b></div>
@@ -1819,7 +1886,7 @@ function renderCandidates(showEmpty = false) {
   candidateFocusIndex = clamp(candidateFocusIndex, 0, shown.length - 1);
   const focused = shown[candidateFocusIndex];
   const decision = Recognition.confidenceDecision(candidates);
-  const confident = decision.autoAccept;
+  const confident = decision.identityConfirmed;
   const plausible = Recognition.hasPlausibleCandidate(candidates);
   empty.hidden = true;
   comparison.hidden = false;
@@ -1834,17 +1901,18 @@ function renderCandidates(showEmpty = false) {
   $('#bestReferenceLanguage').textContent = focused.referenceLanguageFallback
     ? `Referenzbild: ${focusedImageLanguage || 'andere Sprache'}`
     : focusedImageLanguage ? `Referenzbild: ${focusedImageLanguage}` : 'Kein Referenzbild verfügbar';
-  $('#matchesTitle').textContent = confident
-    ? 'Karte erkannt'
-    : decision.status === 'variant-uncertain' ? 'Karte erkannt – Variante noch nicht eindeutig'
+  $('#matchesTitle').textContent = decision.state === Variants.STATES.IDENTITY_CONFIRMED_VARIANT_UNCERTAIN
+    ? 'Karte erkannt – Variante noch nicht eindeutig'
+    : confident ? 'Karte erkannt'
     : plausible ? 'Mögliche Treffer' : 'Keine eindeutige Karte gefunden';
-  $('#matchesSubtitle').textContent = confident
-    ? `Platz 1 liegt ${Math.round(decision.margin * 100)} Punkte vor Platz 2`
-    : decision.status === 'variant-uncertain' ? 'Identität stimmt; bitte Druckvariante vergleichen'
+  $('#matchesSubtitle').textContent = decision.state === Variants.STATES.IDENTITY_CONFIRMED_VARIANT_UNCERTAIN
+    ? 'Identität stimmt; bitte nur noch die Druckvariante auswählen'
+    : confident ? `Platz 1 liegt ${Math.round(decision.margin * 100)} Punkte vor der nächsten Kartenidentität`
     : plausible ? 'Mehrere Karten könnten passen' : 'Varianten weichen in wichtigen Merkmalen ab';
 
-  const focusedConfidence = Math.round(clamp(Number(focused.confidence) || 0, 0, 1) * 100);
-  const focusedLevel = Recognition.confidenceLevel(focused.confidence);
+  const focusedIdentity = Number(focused.identificationScore) || Number(focused.confidence) || 0;
+  const focusedConfidence = Math.round(clamp(focusedIdentity, 0, 1) * 100);
+  const focusedLevel = Recognition.confidenceLevel(focusedIdentity);
   const focusedSelected = Boolean(recognition && recognition.accepted && recognition.id === focused.id);
   const reasons = (focused.evidence || []).slice(0, 5)
     .map(value => `<span>${esc(evidenceLabel(value))}</span>`).join('');
@@ -1857,7 +1925,7 @@ function renderCandidates(showEmpty = false) {
   const officialBadge = focused.officialValidationStatus === 'CONFIRMED'
     ? '<span class="official-validation">✓ Kartendaten offiziell bestätigt</span>' : '';
   const strip = shown.map((candidate, index) => {
-    const confidence = Math.round(clamp(Number(candidate.confidence) || 0, 0, 1) * 100);
+    const confidence = Math.round(clamp(Number(candidate.identificationScore) || Number(candidate.confidence) || 0, 0, 1) * 100);
     const imageUrl = candidate.imageSmall || candidate.imageLarge || '';
     const confidenceClass = confidence >= 80 ? 'strong' : confidence >= 65 ? 'possible' : 'uncertain';
     return `<button type="button" class="candidate-thumb ${confidenceClass}${index === candidateFocusIndex ? ' active' : ''}" onclick="focusCandidate(${index})" aria-label="${esc(candidate.name)} mit ${confidence} Prozent anzeigen">
@@ -1870,7 +1938,7 @@ function renderCandidates(showEmpty = false) {
       <div class="candidate-content">
         <div class="candidate-title"><span class="best-badge">${candidateFocusIndex === 0 ? 'Bester Treffer' : 'Alternative'}</span><b>${esc(focused.name || 'Unbekannte Karte')}</b><small>${esc(focused.set || 'Set unbekannt')}</small></div>
         <dl class="candidate-meta"><div><dt>Nummer</dt><dd>${esc(focused.number || '–')}</dd></div><div><dt>Sprache</dt><dd>${esc(languageLabel(focused.language))}</dd></div><div><dt>Variante</dt><dd>${esc(Collection.variantLabel(focused.printingVariant || 'unknown'))}</dd></div><div><dt>Raw-Preis</dt><dd>${price}</dd></div></dl>
-        <b class="confidence-label ${esc(focusedLevel.key)}">${focusedConfidence} % Gesamt · ${esc(focusedLevel.label)}</b>
+        <b class="confidence-label ${esc(focusedLevel.key)}">${focusedConfidence} % Kartenidentität · ${esc(focusedLevel.label)}</b>
         <div class="confidence-track" aria-label="Trefferwahrscheinlichkeit ${focusedConfidence} Prozent"><span style="width:${focusedConfidence}%"></span></div>
         ${focused.tcg === 'pokemon' ? candidateBreakdown(focused) : ''}
         <div class="candidate-reasons">${reasons || '<span>Bild und Kartendaten prüfen</span>'}</div>
@@ -1996,8 +2064,8 @@ function isBulkAutoAcceptable(list) {
   if (!list || !list.length) return false;
   const best = list[0];
   const second = list[1];
-  const confidence = Number(best.confidence) || 0;
-  const gap = second ? confidence - (Number(second.confidence) || 0) : 1;
+  const confidence = Number(best.identificationScore) || Number(best.confidence) || 0;
+  const gap = second ? confidence - (Number(second.identificationScore) || Number(second.confidence) || 0) : 1;
   if (best.tcg !== 'pokemon') {
     return confidence >= 0.95
       && (best.evidence || []).some(value => value === 'Setcode' || value === 'Kartencode')
@@ -2010,11 +2078,29 @@ function isBulkAutoAcceptable(list) {
     && (details.set === 'match' || Number(details.name) >= 0.93);
   const noContradiction = details.language !== 'mismatch'
     && details.cardType !== 'mismatch'
-    && details.variant !== 'mismatch'
     && !(details.visualReliable !== false && Number.isFinite(Number(details.artwork)) && Number(details.artwork) < 0.55);
-  return decision.autoAccept && confidence >= 0.80
+  return decision.state === Variants.STATES.IDENTITY_CONFIRMED_VARIANT_CONFIRMED && confidence >= 0.80
     && exactPrintedIdentity && noContradiction && gap >= 0.05;
 }
+
+function renderBulkVariantSelector(candidate, trigger = 'MANUAL_SELECTION') {
+  if (!candidate) return;
+  bulkVariantCandidate = candidate;
+  bulkVariantTrigger = trigger;
+  const resolution = candidate.variantResolution || Variants.resolve(candidate);
+  $('#bulkCandidatePanel').hidden = false;
+  $('#bulkCandidateTitle').textContent = `${candidate.name} erkannt`;
+  $('#bulkCandidateText').textContent = 'Die Kartenidentität steht fest. Welche physische Druckvariante liegt vor?';
+  $('#bulkCandidateList').innerHTML = `<section class="bulk-variant-selector"><h3>Variante auswählen</h3><p>${esc(candidate.set || 'Set unbekannt')} · ${esc(candidate.number || 'Nummer unbekannt')}</p><div class="variant-options">${resolution.options.map(value => `<button type="button" onclick="selectBulkVariant('${esc(value)}')">${esc(Variants.label(value))}</button>`).join('')}</div></section>`;
+  setBulkStatus('warn', 'Karte erkannt – Variante auswählen', `${candidate.name} wurde sicher identifiziert und noch nicht gespeichert.`);
+}
+
+window.selectBulkVariant = value => {
+  if (!bulkVariantCandidate) return;
+  const selected = Variants.selectVariant(bulkVariantCandidate, value, 'USER_SELECTED_BULK');
+  selected.variantResolution = Variants.resolve(selected);
+  commitBulkCandidate(selected, bulkVariantTrigger);
+};
 
 function renderBulkCandidates() {
   const panel = $('#bulkCandidatePanel');
@@ -2074,16 +2160,19 @@ function bulkCollectionEntry(candidate) {
     rarity: candidate.rarity || '',
     lang: candidate.language || activeRecognitionLanguage(),
     language: candidate.language || activeRecognitionLanguage(),
-    printingVariant: candidate.localRecognition && (candidate.printingVariant || candidate.variant)
-      ? candidate.printingVariant || candidate.variant
-      : $('#bulkVariant').value,
+    printingVariant: Variants.explicitVariant(candidate),
     entryMode: 'bulk',
     quantity: 1,
     image: candidate.imageSmall || candidate.imageLarge || '',
     imageSmall: candidate.imageSmall || '',
     imageLarge: candidate.imageLarge || '',
     price: candidate.price || null,
-    recognitionConfidence: Number(candidate.confidence) || 0,
+    genericPrice: candidate.genericPrice || null,
+    pricesByVariant: {...(candidate.pricesByVariant || {})},
+    availableVariants: [...(candidate.availableVariants || [])],
+    sourceVariants: candidate.sourceVariants ? {...candidate.sourceVariants} : null,
+    variantSelectionConfirmed: true,
+    recognitionConfidence: Number(candidate.identificationScore) || Number(candidate.confidence) || 0,
     recognitionSource: candidate.source || '',
     date: new Date().toISOString()
   };
@@ -2091,6 +2180,10 @@ function bulkCollectionEntry(candidate) {
 
 function commitBulkCandidate(candidate, trigger) {
   if (!candidate) return false;
+  if (Variants.explicitVariant(candidate) === 'unknown') {
+    renderBulkVariantSelector(candidate, trigger);
+    return false;
+  }
   const entry = bulkCollectionEntry(candidate);
   if (!Collection.hasMergeIdentity(entry)) {
     setBulkStatus('warn', 'Unsichere Erkennung', 'Set und Kartennummer fehlen. Die Karte wurde nicht gespeichert.');
@@ -2110,7 +2203,7 @@ function commitBulkCandidate(candidate, trigger) {
   bulkScanLock = gate.lock;
   const saved = Collection.upsertCollection(loadCollection(), entry);
   persistCollection(saved.collection);
-  if (trigger === 'MANUAL_SELECTION') {
+  if (trigger === 'MANUAL_SELECTION' || trigger === 'AUTO_VARIANT_SELECTION') {
     recordLearningSelection(bulkLearningScan, candidate, 'bulk-manual-selection');
   }
   bulkSession.scanned++;
@@ -2118,6 +2211,7 @@ function commitBulkCandidate(candidate, trigger) {
   else bulkSession.duplicates++;
   renderBulkSession();
   $('#bulkCandidatePanel').hidden = true;
+  bulkVariantCandidate = null;
   $('#bulkNoMatch').hidden = true;
   const quantity = saved.entry.quantity;
   const statusTitle = saved.action === 'NEW_CARD' ? 'Neue Karte hinzugefügt' : 'Karte bereits vorhanden – Stückzahl erhöht';
@@ -2125,7 +2219,8 @@ function commitBulkCandidate(candidate, trigger) {
   showBulkFeedback('✓ ' + saved.entry.name + ' hinzugefügt',
     (saved.entry.number ? saved.entry.number + ' · ' : '') + 'Bestand: ' + quantity);
   if (window.PokeNative && PokeNative.vibrateBulkSuccess) PokeNative.vibrateBulkSuccess();
-  const event = trigger === 'MANUAL_SELECTION' ? 'MANUAL_SELECTION' : saved.action;
+  const event = trigger === 'MANUAL_SELECTION' || trigger === 'AUTO_VARIANT_SELECTION'
+    ? 'MANUAL_SELECTION' : saved.action;
   console.debug('[PokeFolio Bulk] Aktion=' + event
     + (event === 'MANUAL_SELECTION' ? ' Speicheraktion=' + saved.action : '')
     + ' Name=' + saved.entry.name
@@ -2141,13 +2236,20 @@ function commitBulkCandidate(candidate, trigger) {
   return true;
 }
 
-window.selectBulkCandidate = index => commitBulkCandidate(bulkCandidates[index], 'MANUAL_SELECTION');
+window.selectBulkCandidate = index => {
+  const candidate = bulkCandidates[index];
+  if (!candidate) return;
+  const resolution = candidate.variantResolution || Variants.resolve(candidate);
+  if (!resolution.confirmed) return renderBulkVariantSelector(candidate, 'MANUAL_SELECTION');
+  commitBulkCandidate(candidate, 'MANUAL_SELECTION');
+};
 
 async function runBulkRecognition(dataUrl, previewUrl, normalizedCapture = null) {
   const run = ++recognitionRun;
   startBulkSession();
   bulkSourceDataUrl = dataUrl;
   bulkCandidates = [];
+  bulkVariantCandidate = null;
   bulkHints = null;
   bulkLearningScan = null;
   renderBulkCandidates();
@@ -2188,11 +2290,13 @@ async function runBulkRecognition(dataUrl, previewUrl, normalizedCapture = null)
       bulkCandidates = applyLocalLearning(
         Learning.offlineCandidates(bulkLearningScan.matchResult, bulkLearningScan.context),
         bulkLearningScan
-      ).slice(0, 5);
+      );
+      bulkCandidates = resolveCandidateVariants(bulkCandidates, $('#bulkVariant').value).slice(0, 5);
       if (bulkCandidates.length) {
         console.debug('[PokeFolio Bulk] Aktion=LOCAL_FAST_MATCH API_SKIPPED cardId='
           + Learning.cardId(bulkCandidates[0]));
-        commitBulkCandidate(bulkCandidates[0], 'LOCAL_FAST');
+        if (isBulkAutoAcceptable(bulkCandidates)) commitBulkCandidate(bulkCandidates[0], 'LOCAL_FAST');
+        else renderBulkVariantSelector(bulkCandidates[0], 'LOCAL_FAST');
         return;
       }
     }
@@ -2212,12 +2316,18 @@ async function runBulkRecognition(dataUrl, previewUrl, normalizedCapture = null)
     }
     if (run !== recognitionRun || scanMode !== 'bulk') return;
     found = applyLocalLearning(found, bulkLearningScan);
+    found = resolveCandidateVariants(found, $('#bulkVariant').value);
     if (kind === 'pokemon') found = Recognition.filterPlausibleCandidates(found);
     if (!found.length && serviceError) throw serviceError;
     bulkCandidates = found.slice(0, 5);
     debugRecognitionCandidates('BulkFinalRanking', bulkCandidates);
     if (isBulkAutoAcceptable(bulkCandidates)) {
       commitBulkCandidate(bulkCandidates[0], 'AUTO');
+      return;
+    }
+    const bulkDecision = Recognition.confidenceDecision(bulkCandidates);
+    if (bulkDecision.state === Variants.STATES.IDENTITY_CONFIRMED_VARIANT_UNCERTAIN) {
+      renderBulkVariantSelector(bulkCandidates[0], 'AUTO_VARIANT_SELECTION');
       return;
     }
     if (Recognition.hasPlausibleCandidate(bulkCandidates)) {
@@ -2267,6 +2377,7 @@ window.startBulkCamera = async () => {
 
 window.bulkMarkRemovedAndScan = () => {
   bulkScanLock = Collection.markCardRemoved(bulkScanLock);
+  bulkVariantCandidate = null;
   $('#bulkCandidatePanel').hidden = true;
   $('#bulkNoMatch').hidden = true;
   setBulkStatus('ready', 'Bereit zum Scannen', 'Die nächste Karte kann aufgenommen werden.');
@@ -2317,6 +2428,7 @@ $('#bulkManualSearch').onclick = async () => {
       found = await enrichWithVisualSimilarity(found, prepared, run);
     }
     found = applyLocalLearning(found, bulkLearningScan);
+    found = resolveCandidateVariants(found, $('#bulkVariant').value);
     bulkCandidates = found.slice(0, 3);
     renderBulkCandidates();
     $('#bulkNoMatch').hidden = Boolean(bulkCandidates.length);
@@ -2339,6 +2451,7 @@ $('#bulkEndSession').onclick = () => {
 function identifiedCollectionEntry(candidate) {
   const value = candidate || recognition;
   if (!value) return null;
+  if (Variants.explicitVariant(value) === 'unknown') return null;
   return {
     ...value,
     id: value.collectionId || value.localCollectionId || Date.now(),
@@ -2366,19 +2479,44 @@ function renderIdentificationActions() {
   if (!recognition || !recognition.accepted) {
     panel.hidden = true;
     $('#identifiedCardSummary').innerHTML = '';
+    $('#recognitionVariantPanel').hidden = true;
     return;
   }
+  const variantResolution = recognition.variantResolution || Variants.resolve(recognition);
+  const variantConfirmed = Boolean(variantResolution.confirmed)
+    && Variants.explicitVariant(recognition) !== 'unknown';
   const price = recognition.price && Number.isFinite(Number(recognition.price.value))
     ? formatMoney(recognition.price.value)
     : recognition.price && recognition.price.label || 'Kein belastbarer Preis verfügbar';
   const source = recognition.price && recognition.price.source || recognition.source || 'Kartendatenbank';
   const image = recognition.imageSmall || recognition.imageLarge || '';
+  const identityScore = Math.round(clamp(Number(recognition.identificationScore) || Number(recognition.confidence) || 0, 0, 1) * 100);
+  const variantScore = Math.round(clamp(Number(variantResolution.confidence) || 0, 0, 1) * 100);
   $('#identifiedCardSummary').innerHTML = `<div class="identified-card">
     <div class="identified-card-image">${image ? `<img loading="lazy" decoding="async" src="${esc(image)}" alt="${esc(recognition.name)}">` : '<span>Kein Kartenbild</span>'}</div>
-    <div><h2>${esc(recognition.name || 'Unbekannte Karte')}</h2><p>${esc(recognition.set || 'Set unbekannt')} · ${esc(recognition.number || 'Nummer unbekannt')}</p><small>${languageLabel(recognition.language || $('#lang').value)} · ${esc(Collection.variantLabel(recognition.printingVariant))}</small><b>${esc(price)}</b><em>Raw · Quelle: ${esc(source)}</em></div>
+    <div><h2>✓ ${esc(recognition.name || 'Unbekannte Karte')} erkannt</h2><p>${esc(recognition.set || 'Set unbekannt')} · ${esc(recognition.number || 'Nummer unbekannt')}</p><small>${languageLabel(recognition.language || $('#lang').value)} · ${esc(Variants.label(recognition.printingVariant))}</small><div class="variant-score-line"><span class="identity-confirmed">Kartenidentität ${identityScore} %</span><span>Variante ${variantConfirmed ? variantScore + ' %' : 'noch offen'}</span></div><b>${esc(price)}</b><em>Raw · Quelle: ${esc(source)}${recognition.price && recognition.price.variantSpecific === false && variantConfirmed ? ' · kein variantenspezifischer Preis verfügbar' : ''}</em></div>
   </div>`;
+  const variantPanel = $('#recognitionVariantPanel');
+  variantPanel.hidden = variantConfirmed;
+  $('#recognitionVariantHint').textContent = `${recognition.name} ist sicher erkannt. Die Auswahl ändert weder Name, Set noch Kartennummer.`;
+  $('#recognitionVariantOptions').innerHTML = variantResolution.options.map(value =>
+    `<button type="button" onclick="selectRecognitionVariant('${esc(value)}')">${esc(Variants.label(value))}</button>`
+  ).join('');
+  $('#saveIdentifiedCard').disabled = !variantConfirmed;
+  $('#gradeIdentifiedCard').disabled = !variantConfirmed;
   panel.hidden = false;
 }
+
+window.selectRecognitionVariant = value => {
+  if (!recognition || !recognition.accepted) return;
+  recognition = Variants.selectVariant(recognition, value, 'USER_SELECTED_SCAN');
+  recognition.variantResolution = Variants.resolve(recognition);
+  candidates = candidates.map(candidate => Learning.cardsEquivalent(candidate, recognition)
+    ? {...recognition} : candidate);
+  setRecState('good', '✓ Karte erkannt', `${recognition.name} · Variante ${Variants.label(value)} ausgewählt. Die Identität wurde nicht erneut gesucht.`);
+  renderCandidates(false);
+  renderIdentificationActions();
+};
 
 $('#saveIdentifiedCard').onclick = () => {
   const entry = identifiedCollectionEntry(recognition);
@@ -2414,18 +2552,18 @@ $('#gradeIdentifiedCard').onclick = () => {
 window.applyCandidate = (index, automatic = false) => {
   const candidate = candidates[index];
   if (!candidate) return;
-  recognition = {...candidate, accepted: true, automaticallyAccepted: Boolean(automatic)};
-  if (!automatic) recordLearningSelection(learningScan, recognition, 'single-candidate-selection');
+  const variantResolution = candidate.variantResolution || Variants.resolve(candidate);
+  recognition = {...candidate, variantResolution, accepted: true, automaticallyAccepted: Boolean(automatic)};
   recognizedTcg = candidate.tcg;
   $('#name').value = candidate.name || '';
   $('#set').value = candidate.set || '';
   $('#number').value = candidate.number || '';
   setRecState(
-    'good',
-    automatic ? '✓ Karte erkannt' : 'Erkannt',
+    variantResolution.confirmed ? 'good' : 'warn',
+    '✓ Karte erkannt',
     `${label(candidate.tcg)} · ${candidate.name}${candidate.set ? ' · ' + candidate.set : ''}`
-      + `${candidate.number ? ' · ' + candidate.number : ''} · Confidence ${Math.round((candidate.confidence || 0) * 100)} %`
-      + (automatic ? ' · Mit „Ändern“ kannst du die Alternativen wählen.' : '')
+      + `${candidate.number ? ' · ' + candidate.number : ''} · Identität ${Math.round((candidate.identificationScore || candidate.confidence || 0) * 100)} %`
+      + (variantResolution.confirmed ? ` · ${Variants.label(variantResolution.variant)}` : ' · Bitte Druckvariante auswählen.')
   );
   renderCandidates(false);
   renderIdentificationActions();
@@ -2497,6 +2635,7 @@ async function runRecognition(manual = false) {
       if (run !== recognitionRun) return null;
     }
     foundCandidates = applyLocalLearning(foundCandidates, learningScan);
+    foundCandidates = resolveCandidateVariants(foundCandidates);
     if (kind === 'pokemon') foundCandidates = Recognition.filterPlausibleCandidates(foundCandidates);
     if (!foundCandidates.length && serviceError) throw serviceError;
     debugRecognitionCandidates('FinalRanking', foundCandidates);
@@ -2533,7 +2672,7 @@ async function runRecognition(manual = false) {
       setRecState(
         'warn',
         'Keine eindeutige Karte gefunden',
-        'Die gefundenen Varianten stimmen bei Artwork, Kartennummer oder anderen starken Merkmalen nicht ausreichend überein. Bitte erneut scannen oder manuell suchen.'
+        'Name, Kartennummer, Set oder Artwork reichen für eine belastbare Kartenidentität nicht aus. Bitte erneut scannen oder manuell suchen.'
       );
       return best;
     }
@@ -2542,12 +2681,7 @@ async function runRecognition(manual = false) {
       return best;
     }
     if (decision.status === 'variant-uncertain') {
-      recognition = null;
-      setRecState(
-        'warn',
-        'Karte erkannt – Variante noch nicht eindeutig',
-        'Name, Nummer und Set passen. Bitte vergleiche Holo-/Druckvarianten und bestätige die richtige Karte.'
-      );
+      window.applyCandidate(0, true);
       return best;
     }
     recognition = null;
@@ -2591,6 +2725,7 @@ $('#manualSearch').onclick = async () => {
       if (run !== recognitionRun) return;
     }
     foundCandidates = applyLocalLearning(foundCandidates, learningScan);
+    foundCandidates = resolveCandidateVariants(foundCandidates);
     candidates = foundCandidates;
     renderCandidates(!candidates.length);
     const recovery = !candidates.length && recoveryState(lookup.status);
@@ -3393,6 +3528,7 @@ window.openCollectionDetail = encodedId => {
     : '<div><small>Raw-Marktwert</small><b>Keine aktuellen Marktdaten verfügbar</b></div>';
   const gradingMarket = '<div><small>PSA / CGC / BGS</small><b>Keine aktuellen Marktdaten verfügbar</b><span>PriceCharting wird nur mit belastbaren Kartendaten angezeigt.</span></div>';
   const latestGrading = gradingRecords[0];
+  const variantOptions = [...new Set([card.printingVariant, ...Variants.possibleVariants(card)].filter(Boolean))];
   const pregradeNotice = latestGrading || card.grade || card.score
     ? `<p><b>PokéFolio Vorgrading:</b> ${esc(latestGrading ? String(latestGrading.pregrade).replace('.', ',') + ' / 10' : card.grade || card.score)}<br><small>Schätzung – kein offizielles PSA-/CGC-/BGS-Grading und kein automatisch abgeleiteter Grading-Marktwert.</small></p>`
     : '';
@@ -3403,6 +3539,7 @@ window.openCollectionDetail = encodedId => {
     <div class="card-detail-info"><span class="section-kicker">${esc(label(card.tcg))}</span><h2 id="collectionDetailTitle">${esc(card.name)}</h2><p>${esc(card.set || 'Set unbekannt')} · ${esc(card.number || 'Nummer unbekannt')}</p><div class="item-meta"><span>${languageLabel(card.lang || card.language)}</span><span>${esc(Collection.variantLabel(card.printingVariant))}</span></div>
       <div class="detail-values"><div><small>Einzelwert</small><b>${unitValue ? formatMoney(unitValue) : '–'}</b></div><div><small>Bestand</small><b>${card.quantity}</b></div><div><small>Gesamt</small><b>${unitValue ? formatMoney(unitValue * card.quantity) : '–'}</b></div></div>
       <div class="collection-quantity detail-quantity"><button type="button" onclick="adjustDetailQuantity('${encodeURIComponent(String(card.id))}',-1)">−</button><output>${card.quantity}</output><button type="button" onclick="adjustDetailQuantity('${encodeURIComponent(String(card.id))}',1)">+</button></div>
+      <section class="detail-variant-editor"><h3>Druckvariante</h3><p>Ändert nur die physische Ausführung. Kartenidentität, Scans, Notizen und Vorgradings bleiben erhalten.</p><div class="variant-options">${variantOptions.map(value => `<button type="button" class="${Collection.normalizedVariant({variant: value}) === card.printingVariant ? 'active' : ''}" onclick="changeCollectionVariant('${encodeURIComponent(String(card.id))}','${esc(value)}')">${esc(Variants.label(value))}</button>`).join('')}</div></section>
       <button type="button" class="secondary compact" onclick="toggleCollectionFavorite('${encodeURIComponent(String(card.id))}')">${card.favorite ? '★ Favorit entfernen' : '☆ Als Favorit markieren'}</button>
       <button type="button" class="primary compact detail-grading-button" onclick="startGradingFromCollection('${encodeURIComponent(String(card.id))}')">PokéFolio Vorgrading starten</button>
       <button type="button" class="secondary compact detail-grading-button" onclick="showCollectionGradings()">Gradings anzeigen</button>
@@ -3462,6 +3599,53 @@ window.saveCollectionNotes = encodedId => {
   persistCollection(collection);
   renderCollection();
   openCollectionDetail(encodedId);
+};
+
+async function refreshedVariantPrice(card, variant) {
+  try {
+    const hints = Recognition.extractHints(`${card.name || ''}\n${card.number || ''}`);
+    const lookup = await lookupCandidates(card.tcg || 'pokemon', hints, card.name || card.number || '', ++recognitionRun);
+    const exact = (lookup.candidates || []).find(candidate => {
+      const sameNumber = Recognition.numberKey(candidate.number) === Recognition.numberKey(card.number);
+      const sameSet = Recognition.norm(candidate.setId || candidate.set) === Recognition.norm(card.setId || card.set);
+      return sameNumber && sameSet;
+    });
+    return exact ? Variants.priceForVariant(exact, variant) : Variants.priceForVariant(card, variant);
+  } catch (error) {
+    console.warn('[PokeFolio Collection] Variantenpreis konnte nicht aktualisiert werden: ' + error.message);
+    return Variants.priceForVariant(card, variant);
+  }
+}
+
+window.changeCollectionVariant = async (encodedId, value) => {
+  const id = decodeURIComponent(encodedId);
+  const current = loadCollection().find(card => String(card.id) === id);
+  if (!current) return;
+  const localPrice = Variants.priceForVariant(current, value);
+  let changed = Collection.changeVariant(loadCollection(), id, value, localPrice);
+  if (!changed.entry || changed.action === 'INVALID_VARIANT') return;
+  persistCollection(changed.collection);
+
+  const nextIdentity = changed.entry.collectionKey;
+  const migratedGrading = Grading.createState(gradingState);
+  migratedGrading.records = migratedGrading.records.map(record => {
+    if (String(record.collectionId) !== String(changed.previousId) && record.collectionKey !== changed.oldKey) return record;
+    return {...record, collectionId: String(changed.entry.id), collectionKey: nextIdentity,
+      cardIdentityId: nextIdentity, cardIdentity: {...(record.cardIdentity || {}),
+        id: changed.entry.id, printingVariant: changed.entry.printingVariant}};
+  });
+  persistGradingState(migratedGrading);
+  renderCollection();
+  openCollectionDetail(encodeURIComponent(String(changed.entry.id)));
+  console.debug('[PokeFolio Collection] Variante geändert oldKey=' + changed.oldKey
+    + ' newKey=' + changed.newKey + ' action=' + changed.action);
+
+  const freshPrice = await refreshedVariantPrice(changed.entry, value);
+  if (!freshPrice) return;
+  changed = Collection.changeVariant(loadCollection(), changed.entry.id, value, freshPrice);
+  persistCollection(changed.collection);
+  renderCollection();
+  openCollectionDetail(encodeURIComponent(String(changed.entry.id)));
 };
 
 window.adjustCardQuantity = (id, delta) => {
