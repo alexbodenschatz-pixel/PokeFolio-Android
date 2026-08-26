@@ -5,7 +5,7 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
 
-  const SCHEMA_VERSION = 4;
+  const SCHEMA_VERSION = 5;
   const DEFAULT_VARIANT = 'normal';
 
   function text(value) {
@@ -306,8 +306,13 @@
     if (state.set && state.set !== 'all' && normalizedSet(card) !== keyPart(state.set)) return false;
     if (state.cardType && state.cardType !== 'all' && keyPart(card.cardType) !== keyPart(state.cardType)) return false;
     if (state.variant && state.variant !== 'all' && normalizedVariant(card) !== normalizedVariant({variant: state.variant})) return false;
-    if (state.graded === 'graded' && !(card.grade || card.pregrade || (card.specimens || []).some(item => item.grade || item.pregrade))) return false;
-    if (state.graded === 'raw' && (card.grade || card.pregrade || (card.specimens || []).some(item => item.grade || item.pregrade))) return false;
+    const hasGrading = Boolean(
+      card.grade || card.pregrade || Number(card.gradingRecordCount) > 0
+      || (card.gradingRecords || []).length
+      || (card.specimens || []).some(item => item.grade || item.pregrade)
+    );
+    if (state.graded === 'graded' && !hasGrading) return false;
+    if (state.graded === 'raw' && hasGrading) return false;
     if (state.favorite === 'favorite' && !card.favorite) return false;
     const value = finiteNumber(card.estimatedUnitValue, estimatedUnitValue(card));
     if (Number.isFinite(Number(state.minValue)) && text(state.minValue) && value < Number(state.minValue)) return false;
@@ -341,7 +346,9 @@
       summary.duplicates += Math.max(0, quantity - 1);
       summary.estimatedValue += unitValue * quantity;
       if (card.favorite) summary.favorites++;
-      if (card.grade || card.pregrade || (card.specimens || []).some(item => item.grade || item.pregrade)) {
+      if (card.grade || card.pregrade || Number(card.gradingRecordCount) > 0
+          || (card.gradingRecords || []).length
+          || (card.specimens || []).some(item => item.grade || item.pregrade)) {
         summary.graded++;
       }
       return summary;

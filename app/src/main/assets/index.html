@@ -8,19 +8,40 @@
 </head>
 <body>
 <header>
-  <div><b>PokéFolio</b><small>Android Standalone</small></div>
-  <span class="pill">v0.13.1</span>
+  <div class="brand"><b>PokéFolio</b><small>Dein TCG-Portfolio</small></div>
+  <div class="header-actions"><span class="currency-pill">EUR</span><span class="pill">v0.14.0</span></div>
 </header>
 <main>
-  <section id="scan" class="page active">
+  <section id="home" class="page active">
+    <div class="home-heading"><div><span class="section-kicker">Portfolio Dashboard</span><h1>Deine Sammlung</h1></div><button type="button" class="avatar-button" data-home-action="settings" aria-label="System und KI öffnen">PF</button></div>
+    <div class="tcgs home-tcgs" aria-label="TCG auswählen"><button type="button" data-home-tcg="all" class="active">Alle</button><button type="button" data-home-tcg="pokemon">Pokémon</button><button type="button" data-home-tcg="yugioh">Yu-Gi-Oh!</button><button type="button" data-home-tcg="onepiece">One Piece</button></div>
+    <section class="home-portfolio" aria-label="Portfolio-Kurzübersicht">
+      <span>Sammlungswert</span><b id="homePortfolioValue">0,00 €</b>
+      <div><span><strong id="homeTotalCards">0</strong>Karten</span><span><strong id="homeDistinctCards">0</strong>verschiedene</span><span><strong id="homeDuplicates">0</strong>Duplikate</span><span><strong id="homeSetCount">0</strong>Sets begonnen</span></div>
+    </section>
+    <section class="quick-actions" aria-label="Schnellaktionen">
+      <button type="button" class="scan-action" data-home-action="scan"><span>⌁</span><b>Karte scannen</b><small>Erkennen &amp; Preis prüfen</small></button>
+      <button type="button" data-home-action="bulk"><span>▦</span><b>Bulk-Scan</b><small>Schnell erfassen</small></button>
+      <button type="button" data-home-action="gallery"><span>＋</span><b>Bild auswählen</b><small>Galerie erkennen</small></button>
+      <button type="button" data-home-action="grading"><span>✦</span><b>Grading</b><small>Zustand separat prüfen</small></button>
+      <button type="button" data-home-action="collection"><span>◇</span><b>Sammlung</b><small>Karten &amp; Sets</small></button>
+    </section>
+    <section class="dashboard-section"><div class="dashboard-section-head"><div><span class="section-kicker">Portfolio</span><h2>Wertvollste</h2></div><button type="button" data-home-action="portfolio">Alle anzeigen</button></div><div id="homeValuable" class="dashboard-card-rail"></div></section>
+    <section class="dashboard-section"><div class="dashboard-section-head"><div><span class="section-kicker">Sammlung</span><h2>Neu hinzugefügt</h2></div></div><div id="homeRecent" class="dashboard-card-rail"></div></section>
+    <section class="dashboard-section"><div class="dashboard-section-head"><div><span class="section-kicker">Erkennung</span><h2>Zuletzt gescannt</h2></div></div><div id="homeScans" class="scan-history-rail"></div></section>
+    <section class="dashboard-section"><div class="dashboard-section-head"><div><span class="section-kicker">Set-Tracker</span><h2>Sets in Arbeit</h2></div><button type="button" data-home-action="sets">Sets öffnen</button></div><div id="homeSets" class="home-set-list"></div></section>
+    <section id="homeTrend" class="dashboard-section" hidden><div class="dashboard-section-head"><div><span class="section-kicker">Marktdaten</span><h2>Heute im Trend</h2></div></div><div id="homeTrendList" class="dashboard-card-rail"></div></section>
+  </section>
+
+  <section id="scan" class="page">
     <div class="scan-modes" role="tablist" aria-label="Scanmodus">
       <button type="button" data-scan-mode="single" class="active" role="tab" aria-selected="true">Einzelscan</button>
       <button type="button" data-scan-mode="bulk" role="tab" aria-selected="false">Bulk-Scan</button>
     </div>
 
     <div id="singleScanPanel">
-      <h1>Messe-Schnellcheck</h1>
-      <p class="muted">Karte scannen, automatisch erkennen und erst danach entscheiden, ob sie gespeichert wird.</p>
+      <h1>Karten-Scan</h1>
+      <p class="muted">Vorderseite scannen, Karte bestimmen, Preis prüfen und optional sammeln. Grading startet nur auf ausdrücklichen Wunsch.</p>
     <div class="tcgs single-tcgs">
       <button data-tcg="auto" class="active">Automatisch</button>
       <button data-tcg="pokemon">Pokémon</button>
@@ -28,16 +49,11 @@
       <button data-tcg="onepiece">One Piece</button>
     </div>
 
-    <div class="photos">
+    <div class="photos identity-photos">
       <label class="photo-card">
         <input id="front" type="file" accept="image/*" capture="environment">
         <div class="photo-placeholder"><div class="mini-frame"></div><b>Vorderseite</b><span>Kamera mit Scanrahmen oder Galerie</span></div>
         <img id="frontImg" alt="Vorschau der Kartenvorderseite">
-      </label>
-      <label class="photo-card">
-        <input id="back" type="file" accept="image/*" capture="environment">
-        <div class="photo-placeholder"><div class="mini-frame"></div><b>Rückseite</b><span>für bessere Bewertung empfohlen</span></div>
-        <img id="backImg" alt="Vorschau der Kartenrückseite">
       </label>
     </div>
 
@@ -49,24 +65,30 @@
         <dl id="recognitionFeatureList"></dl>
       </details>
       <div id="matchComparison" class="match-comparison" hidden>
-        <aside id="scanReference" class="scan-reference">
-          <span class="section-kicker">Gescanntes Bild</span>
-          <button class="scan-preview-button" type="button" onclick="openScanPreview()" aria-label="Gescanntes Bild vergrößern">
-            <img id="comparisonScanImg" alt="Gescanntes oder hochgeladenes Kartenbild">
-          </button>
-          <small>Antippen zum Vergrößern</small>
-        </aside>
+        <div class="comparison-heading"><span class="section-kicker">1 Karte in Prüfung</span><b id="comparisonHeadline">Scan mit Referenzen vergleichen</b></div>
+        <div class="direct-card-compare">
+          <aside id="scanReference" class="scan-reference">
+            <span class="section-kicker">Gescannt</span>
+            <button class="scan-preview-button" type="button" onclick="openScanPreview()" aria-label="Gescanntes Bild vergrößern"><img id="comparisonScanImg" alt="Vollständige normalisierte Karte"></button>
+            <small>Finaler Karten-Crop</small>
+          </aside>
+          <aside id="bestReference" class="scan-reference best-reference">
+            <span class="section-kicker">Referenz</span>
+            <button id="bestReferenceButton" class="scan-preview-button" type="button" onclick="openFocusedCandidateImage()" aria-label="Bestes Referenzbild vergrößern"><span id="bestReferencePlaceholder" class="candidate-image-placeholder visible"><b>Kartenbild</b><small>nicht verfügbar</small></span><img id="bestReferenceImg" alt="Bester Referenztreffer" hidden></button>
+            <small id="bestReferenceLanguage">Referenzbild wird geprüft</small>
+          </aside>
+        </div>
         <section class="matches-panel" aria-labelledby="matchesTitle">
           <div class="matches-heading">
-            <div><span class="section-kicker">Kartenvergleich</span><h2 id="matchesTitle">Mögliche Treffer</h2></div>
+            <div><span class="section-kicker">Passende Karten</span><h2 id="matchesTitle">Mögliche Treffer</h2></div>
             <small id="matchesSubtitle"></small>
           </div>
           <div id="candidateList" class="candidate-list"></div>
         </section>
       </div>
       <div id="emptyMatches" class="empty-matches" hidden>
-        <b>Keine passenden Kartenkandidaten gefunden</b>
-        <span>Starte die Erkennung erneut, nimm ein neues Bild auf oder gib den Namen manuell ein.</span>
+        <b>Keine belastbaren Kandidaten gefunden</b>
+        <span>Keine passenden Kartenkandidaten gefunden. Starte die Erkennung erneut, nimm ein neues Bild auf oder gib den Namen manuell ein.</span>
         <div class="empty-actions">
           <button type="button" class="secondary compact" onclick="runRecognition(false)">Erkennung erneut starten</button>
           <button type="button" class="secondary compact" onclick="takeNewPhoto()">Neues Bild aufnehmen</button>
@@ -85,8 +107,16 @@
       <div class="row"><label>Set<input id="set"></label><label>Nummer<input id="number"></label></div>
       <label>Sprache<select id="lang"><option value="de">Deutsch</option><option value="en">Englisch</option><option value="ja">Japanisch</option><option value="ko">Koreanisch</option><option value="zh-CN">Chinesisch (vereinfacht)</option><option value="zh-TW">Chinesisch (traditionell)</option></select></label>
     </div>
-    <button id="analyze" class="primary">Vorgrading starten</button>
-    <div id="result"></div>
+    <section id="identificationActions" class="card identification-actions" hidden aria-live="polite">
+      <span class="section-kicker">Identifikation abgeschlossen</span>
+      <div id="identifiedCardSummary"></div>
+      <div class="identification-buttons">
+        <button id="saveIdentifiedCard" type="button" class="primary">Zur Sammlung hinzufügen</button>
+        <button id="inspectIdentifiedCard" type="button" class="secondary">Nur prüfen</button>
+        <button id="gradeIdentifiedCard" type="button" class="secondary grading-cta">Grading starten</button>
+      </div>
+      <small>„Nur prüfen“ speichert weder Sammlungseintrag noch Grading. PokéFolio lernt nur nach einer bestätigten Auswahl.</small>
+    </section>
     </div>
 
     <div id="bulkScanPanel" hidden>
@@ -169,6 +199,7 @@
       <div><b id="portfolioValue">0,00 €</b><span>geschätzter Wert</span></div>
       <div><b id="portfolioDuplicates">0</b><span>Duplikate</span></div>
     </section>
+    <div class="collection-section-tabs" role="tablist" aria-label="Sammlungsbereiche"><button type="button" data-collection-tab="cards" class="active">Karten</button><button type="button" data-collection-tab="sets">Sets &amp; Serien</button><button type="button" data-collection-tab="duplicates">Duplikate</button><button type="button" data-collection-tab="missing">Fehlende</button><button type="button" data-collection-tab="favorites">Favoriten</button></div>
     <div class="filters collection-tcg-chips" aria-label="TCG-Filter"><button type="button" data-collection-tcg="all" class="active">Alle</button><button type="button" data-collection-tcg="pokemon">Pokémon</button><button type="button" data-collection-tcg="yugioh">Yu-Gi-Oh!</button><button type="button" data-collection-tcg="onepiece">One Piece</button></div>
     <div class="collection-toolbar card">
       <label class="collection-search"><span>Sammlung durchsuchen</span><input id="collectionSearch" type="search" autocomplete="off" placeholder="Name, Nummer, Set, Sprache …"></label>
@@ -200,9 +231,71 @@
     <button id="collectionLoadMore" type="button" class="secondary" hidden>Mehr Karten laden</button>
   </section>
 
+  <section id="portfolio" class="page">
+    <div class="home-heading"><div><span class="section-kicker">Markt &amp; Bestand</span><h1>Portfolio</h1></div><span class="currency-pill">EUR</span></div>
+    <section class="portfolio-focus card"><span>Geschätzter Sammlungswert</span><b id="portfolioPageValue">0,00 €</b><small>Raw-Preise bevorzugt von Cardmarket; Grading-Werte nur bei belastbarer Zuordnung.</small></section>
+    <div id="portfolioBreakdown" class="portfolio-breakdown"></div>
+    <section class="dashboard-section"><div class="dashboard-section-head"><div><span class="section-kicker">Top-Karten</span><h2>Wertvollste Karten</h2></div></div><div id="portfolioTopCards" class="dashboard-card-rail"></div></section>
+  </section>
+
+  <section id="grading" class="page">
+    <div class="grading-heading"><div><span class="section-kicker">Zustand &amp; Echtheits-Screening</span><h1>Grading</h1></div><span class="grading-brand">PF</span></div>
+    <p class="muted">Bewerte Zentrierung, Ecken, Kanten und Oberfläche einer konkreten Karte. Identifikation und Zustandsanalyse bleiben getrennte Schritte.</p>
+    <div class="grading-disclaimer"><b>PokéFolio Vorgrading</b><span>Smartphone-basierte Schätzung – kein offizielles PSA-, CGC-, BGS- oder TAG-Grading.</span></div>
+
+    <section class="grading-quick-actions" aria-label="Grading-Schnellaktionen">
+      <button id="gradingSelectCollection" type="button"><span>▦</span><b>Aus Sammlung</b><small>Identität übernehmen</small></button>
+      <button id="gradingNewCard" type="button"><span>＋</span><b>Neue Karte</b><small>Zuerst identifizieren</small></button>
+      <button id="gradingShowLast" type="button"><span>✦</span><b>Letztes Grading</b><small>Schnell öffnen</small></button>
+      <button id="gradingShowHistory" type="button"><span>↺</span><b>Historie</b><small>Alle Vorgradings</small></button>
+    </section>
+
+    <section class="grading-summary" aria-label="Grading-Übersicht">
+      <div><b id="gradingRecordCount">0</b><span>Vorgradings</span></div>
+      <div><b id="gradingCardCount">0</b><span>Karten bewertet</span></div>
+      <div><b id="gradingPendingCount">0</b><span>Exemplare ungeprüft</span></div>
+    </section>
+
+    <section id="gradingCollectionPicker" class="card grading-picker" hidden>
+      <div class="recognition-head"><div><span class="section-kicker">Sammlung</span><h2>Karte auswählen</h2></div><button id="gradingClosePicker" type="button" class="secondary compact">Schließen</button></div>
+      <label>Sammlung durchsuchen<input id="gradingCollectionSearch" type="search" placeholder="Name, Set oder Nummer"></label>
+      <div id="gradingCollectionList" class="grading-collection-list"></div>
+    </section>
+
+    <section id="gradingEmpty" class="grading-empty card">
+      <b>Noch keine Karte für das Grading gewählt</b>
+      <span>Wähle eine bereits identifizierte Sammlungskarte oder identifiziere zuerst eine neue Karte.</span>
+    </section>
+
+    <section id="gradingWorkspace" class="grading-workspace" hidden>
+      <article id="gradingTarget" class="card grading-target"></article>
+      <div class="card grading-specimen-row"><label>Physisches Exemplar<select id="gradingSpecimen"></select></label><p id="gradingSpecimenHint" class="muted"></p></div>
+      <div class="photos grading-photos">
+        <label class="photo-card">
+          <input id="gradingFront" type="file" accept="image/*" capture="environment">
+          <div class="photo-placeholder"><div class="mini-frame"></div><b>Vorderseite</b><span>hochwertige Aufnahme erforderlich</span></div>
+          <img id="gradingFrontImg" alt="Vorderseite für PokéFolio Vorgrading">
+        </label>
+        <label class="photo-card">
+          <input id="gradingBack" type="file" accept="image/*" capture="environment">
+          <div class="photo-placeholder"><div class="mini-frame"></div><b>Rückseite</b><span>vollständig und reflexionsarm</span></div>
+          <img id="gradingBackImg" alt="Rückseite für PokéFolio Vorgrading">
+        </label>
+      </div>
+      <div id="gradingQuality" class="grading-quality card"><b>Aufnahmequalität</b><span>Vorder- und Rückseite aufnehmen. Ungeeignete Bilder werden nicht bewertet.</span></div>
+      <button id="gradingAnalyze" type="button" class="primary">PokéFolio Vorgrading starten</button>
+      <div id="gradingResult"></div>
+    </section>
+
+    <section id="gradingHistory" class="grading-history card" hidden>
+      <div class="recognition-head"><div><span class="section-kicker">Verlauf</span><h2>Grading-Historie</h2></div><button id="gradingCloseHistory" type="button" class="secondary compact">Schließen</button></div>
+      <div id="gradingHistoryList"></div>
+    </section>
+  </section>
+
   <section id="settings" class="page">
     <h1>System</h1>
-    <div class="card"><b>Erkennung v0.13.1</b><p>Die echte Kartenkontur wird innerhalb des Scanrahmens erkannt, perspektivisch entzerrt und vollständig für OCR sowie Kartenvergleich verwendet.</p></div>
+    <div class="card"><b>Erkennung v0.14.0</b><p>Positionsbezogene OCR, sprachbewusste Referenzen, visuelle Top-K-Reduktion und harte Widerspruchsfilter ergänzen den vollständigen perspektivisch korrigierten Kartenvergleich.</p></div>
     <section class="card learning-settings" aria-labelledby="learningTitle">
       <span class="section-kicker">KI &amp; Erkennung</span>
       <div class="learning-title"><div><h2 id="learningTitle">PokéFolio Lernsystem</h2><p>Bestätigte Scans und eindeutige Korrekturen verbessern die Erkennung ausschließlich lokal auf diesem Gerät.</p></div><span id="learningStatus" class="status good">Lokales Lernen aktiv</span></div>
@@ -226,12 +319,14 @@
       <div id="learningStatsPanel" class="learning-panel" hidden></div>
     </section>
     <div class="card"><b>Datenabgleich</b><p>Deutsche Pokémon-Karten werden primär über TCGdex gesucht; die Pokémon TCG API dient als unabhängiger Fallback. YGOPRODeck und OPTCG API bleiben für die anderen Kartenspiele erhalten. Einzelne Serverfehler brechen die Erkennung nicht ab; OCR-Merkmale und manuelle Eingabe bleiben verfügbar.</p></div>
-    <div class="card"><b>Vorgrading</b><p>Der Score ist eine grobe Smartphone-Vorprüfung und kein offizielles PSA-, CGC- oder TAG-Grading. Echtheit und Zustand werden getrennt behandelt.</p></div>
+    <div class="card"><b>Grading getrennt vom Scan</b><p>Der normale Scan identifiziert Karten und zeigt Preise. PokéFolio Vorgrading wird ausschließlich bewusst im Grading-Reiter gestartet; Echtheit und Zustand bleiben getrennt.</p></div>
   </section>
 </main>
 <nav>
-  <button data-page="scan" class="active">⌁<span>Scan</span></button>
+  <button data-page="home" class="active">⌂<span>Start</span></button>
   <button data-page="collection">▦<span>Sammlung</span></button>
+  <button data-page="scan" class="nav-scan">⌁<span>Scan</span></button>
+  <button data-page="grading">✦<span>Grading</span></button>
   <button data-page="settings">⚙<span>System</span></button>
 </nav>
 <div id="collectionDetail" class="collection-detail" hidden role="dialog" aria-modal="true" aria-labelledby="collectionDetailTitle">
@@ -248,9 +343,11 @@
 <canvas id="work" hidden></canvas>
 <script src="pokemon-names.js"></script>
 <script src="recognition-core.js"></script>
+<script src="reference-core.js"></script>
 <script src="api-core.js"></script>
 <script src="collection-core.js"></script>
 <script src="learning-core.js"></script>
+<script src="grading-core.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

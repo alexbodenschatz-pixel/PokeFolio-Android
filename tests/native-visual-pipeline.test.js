@@ -134,3 +134,16 @@ test('liefert eine enge Kopfzeilen-OCR mit Original, Grau, Kontrast, Schärfe un
   assert.match(processor, /kopfzeile-2x-/);
   assert.match(processor, /kopfzeile-3x-/);
 });
+
+test('überträgt explizite OCR-Regionen für Kopf, Mitte, unteren Text und Metadaten', () => {
+  assert.match(processor, /TOP_HEADER/);
+  assert.match(processor, /TOP_SECONDARY/);
+  assert.match(processor, /MIDDLE_TEXT/);
+  assert.match(processor, /LOWER_TEXT/);
+  assert.match(processor, /BOTTOM_METADATA/);
+  assert.match(processor, /sekundaer-normal-/);
+  assert.match(processor, /mitteltext-kontrast-/);
+  assert.match(processor, /untertext-normal-/);
+  assert.match(activity, /pass\.put\("region", variant\.region\)/);
+  assert.match(activity, /OCR_PASS region=/);
+});

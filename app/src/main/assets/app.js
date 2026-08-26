@@ -6,6 +6,7 @@ const Recognition = window.PokeRecognition;
 const Api = window.PokeApi;
 const Collection = window.PokeCollection;
 const Learning = window.PokeLearning;
+const Grading = window.PokeGrading;
 
 let selectedTcg = 'auto';
 let recognizedTcg = 'pokemon';
@@ -17,10 +18,13 @@ let collectionFilters = {
 };
 let collectionViewMode = localStorage.getItem('pf_collection_view') || 'grid';
 let collectionSort = localStorage.getItem('pf_collection_sort') || 'newest';
+let collectionSectionTab = collectionViewMode === 'sets' ? 'sets' : 'cards';
+let dashboardTcg = 'all';
 let collectionVisibleLimit = 90;
 let last = null;
 let recognition = null;
 let candidates = [];
+let candidateFocusIndex = 0;
 let bulkCandidates = [];
 let bulkHints = null;
 let bulkSourceDataUrl = '';
@@ -33,8 +37,10 @@ let recognizedRotation = 0;
 let requestSequence = 1;
 let pendingBulkScanner = null;
 let learningState = loadLearningState();
+let gradingState = loadGradingState();
 let learningScan = null;
 let bulkLearningScan = null;
+let gradingDraft = {card: null, source: '', frontDataUrl: '', frontMetadata: null, frontRotation: 0};
 const pendingOcr = new Map();
 const pendingHttp = new Map();
 const pendingVisual = new Map();
@@ -58,15 +64,52 @@ function displayNormalizedCard(id, prepared) {
     + ' final=' + (prepared.width || '?') + 'x' + (prepared.height || '?'));
 }
 
+function navigateToPage(page) {
+  $$('nav button').forEach(item => item.classList.toggle('active', item.dataset.page === page));
+  $$('.page').forEach(item => item.classList.toggle('active', item.id === page));
+  if (page === 'home') renderDashboard();
+  if (page === 'collection') renderCollection();
+  if (page === 'portfolio') renderPortfolio();
+  if (page === 'grading') renderGradingPage();
+  if (page === 'settings') renderLearningSettings();
+  window.scrollTo({top: 0, behavior: 'smooth'});
+}
+window.navigateToPage = navigateToPage;
+
 $$('nav button').forEach(button => {
+  button.onclick = () => navigateToPage(button.dataset.page);
+});
+
+$$('.home-tcgs button').forEach(button => {
   button.onclick = () => {
-    $$('nav button').forEach(item => item.classList.remove('active'));
-    $$('.page').forEach(page => page.classList.remove('active'));
-    button.classList.add('active');
-    $('#' + button.dataset.page).classList.add('active');
-    if (button.dataset.page === 'collection') renderCollection();
-    if (button.dataset.page === 'settings') renderLearningSettings();
+    dashboardTcg = button.dataset.homeTcg;
+    $$('.home-tcgs button').forEach(item => item.classList.toggle('active', item === button));
+    renderDashboard();
   };
+});
+
+$$('[data-home-action]').forEach(button => {
+  button.onclick = () => {
+    const action = button.dataset.homeAction;
+    if (action === 'settings') return navigateToPage('settings');
+    if (action === 'collection') return navigateToPage('collection');
+    if (action === 'portfolio') return navigateToPage('portfolio');
+    if (action === 'grading') return navigateToPage('grading');
+    if (action === 'sets') {
+      activateCollectionSection('sets');
+      return navigateToPage('collection');
+    }
+    navigateToPage('scan');
+    if (action === 'bulk') setScanMode('bulk');
+    else {
+      setScanMode('single');
+      if (action === 'gallery') $('#front').click();
+    }
+  };
+});
+
+$$('.collection-section-tabs button').forEach(button => {
+  button.onclick = () => activateCollectionSection(button.dataset.collectionTab);
 });
 
 $$('.single-tcgs button').forEach(button => {
@@ -192,7 +235,11 @@ function bindPhoto(id) {
       renderRecognitionFeatures(null);
       $('#comparisonScanImg').src = previewUrl;
       renderCandidates(false);
+      renderIdentificationActions();
       scheduleRecognition(180);
+    } else if (id === 'gradingFront' || id === 'gradingBack') {
+      $('#gradingResult').innerHTML = '';
+      renderGradingQualityMessage('neutral', 'Aufnahme bereit', 'Beide Seiten werden vor dem Vorgrading auf Schärfe, Belichtung, Reflexion, Crop und Perspektive geprüft.');
     }
   };
 }
@@ -209,7 +256,8 @@ function consumeNativeCaptureMetadata() {
 }
 
 bindPhoto('front');
-bindPhoto('back');
+bindPhoto('gradingFront');
+bindPhoto('gradingBack');
 
 function scheduleRecognition(delay = 220) {
   clearTimeout(recognitionTimer);
@@ -239,8 +287,11 @@ function renderRecognitionFeatures(hints) {
     hints.cardType || 'unknown'
   ];
   const rows = [
+    ['Schrift', hints.script || 'nicht sicher erkannt'],
+    ['Region', hints.region || 'nicht sicher erkannt'],
     ['Kartentyp', cardTypeLabel],
     ['Haupttitel', hints.mainTitle || identity.baseName || 'nicht zuverlässig erkannt'],
+    ['Entwickelt sich aus', hints.evolvesFrom || 'nicht vorhanden'],
     ['Ignorierte Zusatznamen', (hints.ignoredAdditionalNames || []).join(', ') || 'keine'],
     ['Pokémon-Name', identity.baseName || 'nicht erkannt'],
     ['Variante', identity.variant || 'nicht erkannt'],
@@ -256,7 +307,8 @@ function renderRecognitionFeatures(hints) {
     ['OCR-Sicherheit Titel', Number.isFinite(titleConfidence) ? Math.round(titleConfidence * 100) + ' %' : '0 %'],
     ['OCR-Sicherheit Name', Number.isFinite(confidence) ? Math.round(confidence * 100) + ' %' : '0 %'],
     ['Namensquelle', identity.source || 'keine validierte Pokémon-Kopfzeile'],
-    ['Titelquelle', hints.titleSource || identity.source || 'keine validierte Kopfzeile']
+    ['Titelquelle', hints.titleSource || identity.source || 'keine validierte Kopfzeile'],
+    ['Official Validation', hints.officialValidationStatus || 'Nicht verfügbar']
   ];
   list.innerHTML = rows.map(([name, value]) => `<dt>${esc(name)}</dt><dd>${esc(value)}</dd>`).join('');
   details.hidden = false;
@@ -272,6 +324,12 @@ function debugRecognitionFeatures(hints) {
     + ` Kartennummer=${collector ? [collector.number, collector.total].filter(Boolean).join('/') : '<nicht erkannt>'}`
     + ` Set=${setCode && setCode.value || '<nicht erkannt>'}`
     + ` Sprache=${hints && hints.language || '<unsicher>'}`
+    + ` Script=${hints && hints.script || '<unsicher>'}`
+    + ` Region=${hints && hints.region || '<unsicher>'}`
+    + ` Titelquelle=${hints && hints.titleSource || '<keine>'}`
+    + ` WholeOCR=${JSON.stringify(hints && hints.ocrByRegion && hints.ocrByRegion.whole || '').slice(0, 500)}`
+    + ` TopOCR=${JSON.stringify(hints && hints.ocrByRegion && hints.ocrByRegion.top || '').slice(0, 500)}`
+    + ` BottomOCR=${JSON.stringify(hints && hints.ocrByRegion && hints.ocrByRegion.bottom || '').slice(0, 500)}`
     + ` Titelsicherheit=${Math.round((Number(hints && hints.titleConfidence) || 0) * 100)}%`);
 }
 
@@ -294,6 +352,8 @@ function debugRecognitionCandidates(stage, candidatesToLog) {
       + ` NummerScore=${details.collector || 'unknown'}`
       + ` SetScore=${details.set || 'unknown'}`
       + ` Sprache=${details.language || 'unknown'}`
+      + ` Official=${candidate.officialValidationStatus || 'NOT_AVAILABLE'}`
+      + ` LocalLearning=${Math.round((Number(candidate.learnedVisualScore) || 0) * 100)}%`
       + ` Regeltext=${details.rules || 'unknown'}`
       + ` Artwork=${Number.isFinite(Number(details.artwork)) ? Math.round(Number(details.artwork) * 100) + '%' : 'unknown'}`);
   });
@@ -342,6 +402,43 @@ function loadCollection() {
 function persistCollection(collection) {
   localStorage.setItem('pf_collection', JSON.stringify(collection));
   localStorage.setItem('pf_collection_schema', String(Collection.SCHEMA_VERSION));
+}
+
+function loadGradingState() {
+  let raw = null;
+  try {
+    raw = JSON.parse(localStorage.getItem('pf_grading_state') || 'null');
+  } catch (error) {
+    console.warn('[PokeFolio Grading] Grading-Speicher konnte nicht gelesen werden: ' + error.message);
+  }
+  const migration = Grading.migrateLegacyCollection(raw, loadCollection());
+  const storedSchema = Number(localStorage.getItem('pf_grading_schema') || 0);
+  if (migration.changed || storedSchema !== Grading.SCHEMA_VERSION) {
+    localStorage.setItem('pf_grading_state', JSON.stringify(migration.state));
+    localStorage.setItem('pf_grading_schema', String(Grading.SCHEMA_VERSION));
+    console.debug('[PokeFolio Grading] Migration Schema=' + Grading.SCHEMA_VERSION
+      + ' Datensätze=' + migration.state.records.length
+      + ' Altbestand=' + migration.migratedCount);
+  }
+  return migration.state;
+}
+
+function persistGradingState(state) {
+  gradingState = Grading.createState(state);
+  try {
+    localStorage.setItem('pf_grading_state', JSON.stringify(gradingState));
+    localStorage.setItem('pf_grading_schema', String(Grading.SCHEMA_VERSION));
+  } catch (error) {
+    console.error('[PokeFolio Grading] Grading-Historie konnte nicht gespeichert werden: ' + error.message);
+    throw new Error('Der lokale Speicher reicht für dieses Grading nicht aus.');
+  }
+}
+
+function collectionWithGrading() {
+  return loadCollection().map(card => {
+    const gradingRecords = Grading.recordsForCard(gradingState, card);
+    return {...card, gradingRecords, gradingRecordCount: gradingRecords.length};
+  });
 }
 
 function loadLearningState() {
@@ -1146,6 +1243,8 @@ function pokemonCardFromApi(card) {
     .map(entry => entry && (entry.market || entry.mid || entry.low))
     .find(value => Number.isFinite(Number(value)));
   const eurPrice = cardmarket.trendPrice || cardmarket.averageSellPrice || cardmarket.avg7 || cardmarket.lowPrice;
+  const imageSmall = card.images && (card.images.small || card.images.large) || '';
+  const imageLarge = card.images && (card.images.large || card.images.small) || '';
   return {
     tcg: 'pokemon',
     cardType: Recognition.normalizedPokemonCardType(card.supertype),
@@ -1166,8 +1265,15 @@ function pokemonCardFromApi(card) {
     rules: card.rules || [],
     language: 'en',
     languages: ['en'],
-    imageSmall: card.images && (card.images.small || card.images.large) || '',
-    imageLarge: card.images && (card.images.large || card.images.small) || '',
+    imageSmall,
+    imageLarge,
+    imageLanguage: 'en',
+    imagesByLanguage: {en: {small: imageSmall, large: imageLarge, source: 'Pokémon TCG API'}},
+    fieldProvenance: {
+      cardName: 'POKEMON_TCG_API', cardNumber: 'POKEMON_TCG_API', set: 'POKEMON_TCG_API',
+      image: 'POKEMON_TCG_API_EN', price: Number.isFinite(Number(eurPrice)) ? 'CARDMARKET' : 'TCGPLAYER'
+    },
+    officialValidationStatus: 'NOT_AVAILABLE',
     source: 'Pokémon TCG API',
     price: Number.isFinite(Number(eurPrice))
       ? {value: Number(eurPrice), currency: 'EUR', label: Number(eurPrice).toFixed(2).replace('.', ',') + ' €', source: 'Cardmarket', kind: 'raw-market'}
@@ -1187,6 +1293,8 @@ function tcgdexImageUrl(value, quality) {
 function pokemonCardFromTcgdex(card, language = 'de') {
   const set = card.set || {};
   const cardCount = set.cardCount || {};
+  const imageSmall = tcgdexImageUrl(card.image, 'low');
+  const imageLarge = tcgdexImageUrl(card.image, 'high');
   return {
     tcg: 'pokemon',
     cardType: Recognition.normalizedPokemonCardType(card.category),
@@ -1209,8 +1317,15 @@ function pokemonCardFromTcgdex(card, language = 'de') {
     trainerType: card.trainerType || '',
     language,
     languages: [language],
-    imageSmall: tcgdexImageUrl(card.image, 'low'),
-    imageLarge: tcgdexImageUrl(card.image, 'high'),
+    imageSmall,
+    imageLarge,
+    imageLanguage: language,
+    imagesByLanguage: {[language]: {small: imageSmall, large: imageLarge, source: `TCGdex ${language}`}},
+    fieldProvenance: {
+      cardName: `TCGDEX_${language}`, cardNumber: `TCGDEX_${language}`,
+      set: `TCGDEX_${language}`, image: `TCGDEX_${language}`
+    },
+    officialValidationStatus: 'NOT_AVAILABLE',
     source: `TCGdex (${languageLabel(language)})`,
     price: null
   };
@@ -1296,13 +1411,25 @@ function mergePokemonCandidate(current, incoming, language) {
       ? incoming.trainerType : current.trainerType || incoming.trainerType || '',
     language: preferIncomingText ? incoming.language || current.language : current.language || incoming.language,
     languages: [...new Set([...(current.languages || []), ...(incoming.languages || [])])],
+    imagesByLanguage: {...(current.imagesByLanguage || {}), ...(incoming.imagesByLanguage || {})},
     imageSmall: preferIncomingText && incoming.imageSmall
       ? incoming.imageSmall : current.imageSmall || incoming.imageSmall,
     imageLarge: preferIncomingText && incoming.imageLarge
       ? incoming.imageLarge : current.imageLarge || incoming.imageLarge,
+    imageLanguage: preferIncomingText ? incoming.imageLanguage || current.imageLanguage : current.imageLanguage || incoming.imageLanguage,
+    fieldProvenance: {...(current.fieldProvenance || {}), ...(preferIncomingText ? incoming.fieldProvenance || {} : {})},
+    officialValidationStatus: current.officialValidationStatus || incoming.officialValidationStatus || 'NOT_AVAILABLE',
     price: current.price || incoming.price,
     source: [...sources].join(' + ')
   };
+}
+
+function normalizeReferenceLanguage(language) {
+  return PokeReference.normalizeLanguage(language);
+}
+
+function selectLocalizedReference(candidate, requestedLanguage) {
+  return PokeReference.selectLocalizedImage(candidate, requestedLanguage);
 }
 
 async function pokemonSearch(hints, manual = '', runToken) {
@@ -1311,7 +1438,9 @@ async function pokemonSearch(hints, manual = '', runToken) {
     ? hints.language
     : '';
   const requestedLanguage = detectedLanguage || selectedLanguage;
-  const language = ({de: 'de', en: 'en', ja: 'ja', 'zh-TW': 'zh-tw'})[requestedLanguage] || 'en';
+  // TCGdex currently provides de/en/ja/Traditional Chinese. Korean and Simplified
+  // Chinese use a controlled structured fallback instead of mixing arbitrary results.
+  const language = ({de: 'de', en: 'en', ja: 'ja', 'zh-TW': 'zh-tw', 'zh-CN': 'zh-tw'})[requestedLanguage] || 'en';
   const candidateLanguage = language === 'zh-tw' ? 'zh-TW' : language;
   const pokemonTcgUrls = Api.buildPokemonTcgUrls(hints, manual);
   const tcgdexUrls = Api.buildTcgdexUrls(hints, manual, language);
@@ -1362,9 +1491,16 @@ async function pokemonSearch(hints, manual = '', runToken) {
     const key = pokemonVariantKey(candidate);
     variants.set(key, mergePokemonCandidate(variants.get(key), candidate, candidateLanguage));
   });
-  const identityFiltered = Recognition.prefilterPokemonCandidates(
-    [...variants.values()], hints, manual
+  const localizedVariants = [...variants.values()].map(candidate =>
+    selectLocalizedReference(candidate, requestedLanguage)
   );
+  const identityFiltered = Recognition.prefilterPokemonCandidates(localizedVariants, hints, manual);
+  const filterDiagnostics = identityFiltered.filterDiagnostics || {};
+  console.debug('[PokeFolio Recognition] Kandidaten vor=' + (filterDiagnostics.before == null ? localizedVariants.length : filterDiagnostics.before)
+    + ' nachSprache=' + (filterDiagnostics.afterLanguage == null ? identityFiltered.length : filterDiagnostics.afterLanguage)
+    + ' nachHardContradictions=' + (filterDiagnostics.afterHardContradictions == null ? identityFiltered.length : filterDiagnostics.afterHardContradictions)
+    + ' nachIdentität=' + identityFiltered.length
+    + ' languageFallback=' + Boolean(filterDiagnostics.usedLanguageFallback));
   const broadlyRanked = Recognition.rankPokemonCandidates(
     identityFiltered, hints, manual, 80
   ).filter(candidate => {
@@ -1530,29 +1666,45 @@ async function lookupCandidates(kind, hints, manual = '', runToken) {
 }
 
 async function enrichWithVisualSimilarity(list, preparedCard, runToken) {
-  const visualLimit = Math.min(60, list.length);
+  // Two-stage local visual reduction: inexpensive thumbnails first reduce the
+  // structured candidate pool, then only the strongest Top-K receive a detailed image pass.
+  const visualLimit = Math.min(40, list.length);
   let consecutiveFailures = 0;
-  const enriched = await mapWithConcurrency(list.slice(0, visualLimit), 3, async candidate => {
+  const coarse = await mapWithConcurrency(list.slice(0, visualLimit), 3, async candidate => {
     if (runToken !== undefined && runToken !== recognitionRun) return candidate;
     if (candidate.tcg !== 'pokemon') return candidate;
-    // The list keeps lightweight thumbnails, but variant discrimination needs
-    // the highest-resolution artwork available (fine frame/footer differences).
-    const imageUrl = candidate.imageLarge || candidate.imageSmall;
+    const imageUrl = candidate.imageSmall || candidate.imageLarge;
     if (!imageUrl) return candidate;
     if (consecutiveFailures >= 6) return candidate;
     try {
       const result = await nativeVisualCompare(preparedCard, imageUrl);
       consecutiveFailures = 0;
-      return Recognition.combineVisualSimilarity(candidate, result);
+      return {...Recognition.combineVisualSimilarity(candidate, result), coarseVisualChecked: true};
     } catch (error) {
       consecutiveFailures++;
-      console.warn('Bildvergleich für Kandidat fehlgeschlagen:', candidate.id, error.message);
+      console.warn('Grober Bildvergleich für Kandidat fehlgeschlagen:', candidate.id, error.message);
       return candidate;
     }
   });
-  return enriched.concat(list.slice(visualLimit))
+  const visualTopK = coarse.concat(list.slice(visualLimit))
     .sort((left, right) => (right.confidence || 0) - (left.confidence || 0))
-    .slice(0, 60);
+    .slice(0, 20);
+  console.debug('[PokeFolio Recognition] VISUAL_TOP_K input=' + list.length
+    + ' coarseChecked=' + Math.min(visualLimit, list.length) + ' selected=' + visualTopK.length);
+  const detailed = await mapWithConcurrency(visualTopK, 3, async (candidate, index) => {
+    if (index >= 12 || candidate.tcg !== 'pokemon') return candidate;
+    if (runToken !== undefined && runToken !== recognitionRun) return candidate;
+    const imageUrl = candidate.imageLarge || candidate.imageSmall;
+    if (!imageUrl || imageUrl === candidate.imageSmall && candidate.coarseVisualChecked) return candidate;
+    try {
+      const result = await nativeVisualCompare(preparedCard, imageUrl);
+      return {...Recognition.combineVisualSimilarity(candidate, result), detailedVisualChecked: true};
+    } catch (error) {
+      console.warn('Detaillierter Bildvergleich für Top-Kandidat fehlgeschlagen:', candidate.id, error.message);
+      return candidate;
+    }
+  });
+  return detailed.sort((left, right) => (right.confidence || 0) - (left.confidence || 0));
 }
 
 function evidenceLabel(value) {
@@ -1589,7 +1741,9 @@ function evidenceLabel(value) {
 }
 
 function matchStatus(value, unknownText = 'unbekannt') {
-  return value === 'match' ? 'stimmt' : value === 'mismatch' ? 'abweichend' : unknownText;
+  return value === 'match' ? 'stimmt'
+    : value === 'mismatch' ? 'abweichend'
+      : value === 'fallback' ? 'Referenz-Fallback' : unknownText;
 }
 
 function candidateBreakdown(candidate) {
@@ -1655,11 +1809,15 @@ function renderCandidates(showEmpty = false) {
   if (!candidates.length) {
     box.innerHTML = '';
     comparison.hidden = true;
+    $('#bestReferenceImg').hidden = true;
+    $('#bestReferencePlaceholder').classList.add('visible');
     empty.hidden = !showEmpty;
     return;
   }
 
   const shown = candidates.slice(0, 5);
+  candidateFocusIndex = clamp(candidateFocusIndex, 0, shown.length - 1);
+  const focused = shown[candidateFocusIndex];
   const decision = Recognition.confidenceDecision(candidates);
   const confident = decision.autoAccept;
   const plausible = Recognition.hasPlausibleCandidate(candidates);
@@ -1667,6 +1825,15 @@ function renderCandidates(showEmpty = false) {
   comparison.hidden = false;
   $('#scanReference').hidden = !previewUrls.has('front');
   if (previewUrls.has('front')) $('#comparisonScanImg').src = previewUrls.get('front');
+  const focusedImage = focused.imageLarge || focused.imageSmall || '';
+  const focusedImageLanguage = focused.imageLanguage ? languageLabel(focused.imageLanguage) : '';
+  $('#comparisonHeadline').textContent = `${focused.name || 'Karte'}${focused.number ? ' · ' + focused.number : ''}`;
+  $('#bestReferenceImg').hidden = !focusedImage;
+  $('#bestReferencePlaceholder').classList.toggle('visible', !focusedImage);
+  if (focusedImage) $('#bestReferenceImg').src = focusedImage;
+  $('#bestReferenceLanguage').textContent = focused.referenceLanguageFallback
+    ? `Referenzbild: ${focusedImageLanguage || 'andere Sprache'}`
+    : focusedImageLanguage ? `Referenzbild: ${focusedImageLanguage}` : 'Kein Referenzbild verfügbar';
   $('#matchesTitle').textContent = confident
     ? 'Karte erkannt'
     : decision.status === 'variant-uncertain' ? 'Karte erkannt – Variante noch nicht eindeutig'
@@ -1676,47 +1843,49 @@ function renderCandidates(showEmpty = false) {
     : decision.status === 'variant-uncertain' ? 'Identität stimmt; bitte Druckvariante vergleichen'
     : plausible ? 'Mehrere Karten könnten passen' : 'Varianten weichen in wichtigen Merkmalen ab';
 
-  box.innerHTML = shown.map((candidate, index) => {
+  const focusedConfidence = Math.round(clamp(Number(focused.confidence) || 0, 0, 1) * 100);
+  const focusedLevel = Recognition.confidenceLevel(focused.confidence);
+  const focusedSelected = Boolean(recognition && recognition.accepted && recognition.id === focused.id);
+  const reasons = (focused.evidence || []).slice(0, 5)
+    .map(value => `<span>${esc(evidenceLabel(value))}</span>`).join('');
+  const price = focused.price
+    ? `${esc(focused.price.label)}<small>Raw · Quelle: ${esc(focused.price.source || 'Marktdatenanbieter')}</small>`
+    : 'Keine aktuellen Marktdaten verfügbar';
+  const referenceNotice = focused.referenceLanguageFallback
+    ? `Referenzbild: ${focusedImageLanguage || 'andere Sprache'} (Sprach-Fallback)`
+    : focusedImageLanguage ? `Referenzbild: ${focusedImageLanguage}` : 'Kein lokalisiertes Referenzbild verfügbar';
+  const officialBadge = focused.officialValidationStatus === 'CONFIRMED'
+    ? '<span class="official-validation">✓ Kartendaten offiziell bestätigt</span>' : '';
+  const strip = shown.map((candidate, index) => {
     const confidence = Math.round(clamp(Number(candidate.confidence) || 0, 0, 1) * 100);
-    const level = Recognition.confidenceLevel(candidate.confidence);
-    const high = confidence >= 80;
-    const selected = Boolean(recognition && recognition.accepted && recognition.id === candidate.id);
     const imageUrl = candidate.imageSmall || candidate.imageLarge || '';
-    const reasons = (candidate.evidence || []).slice(0, 5)
-      .map(value => `<span>${esc(evidenceLabel(value))}</span>`)
-      .join('');
-    const price = candidate.price
-      ? `${esc(candidate.price.label)}<small>Quelle: ${esc(candidate.price.source || 'Marktdatenanbieter')}</small>`
-      : 'Keine aktuellen Marktdaten verfügbar';
-    const bestBadge = index === 0
-      ? `<span class="best-badge">${confident ? 'Bester Treffer' : decision.status === 'variant-uncertain' ? 'Identität erkannt' : plausible ? 'Wahrscheinlichster Treffer' : 'Niedrige Übereinstimmung'}</span>`
-      : '';
-    const image = imageUrl
-      ? `<img loading="lazy" decoding="async" src="${esc(imageUrl)}" alt="${esc(candidate.name)}" onerror="candidateImageFailed(this)">`
-      : '';
-    const imageContent = `<span class="candidate-image-placeholder${imageUrl ? '' : ' visible'}" aria-hidden="true"><b>Kartenbild</b><small>nicht verfügbar</small></span>${image}`;
-    const imageWrapper = imageUrl
-      ? `<button type="button" class="candidate-image-button" onclick="openCandidateImage(${index})" aria-label="${esc(candidate.name)} vergrößern">${imageContent}</button>`
-      : `<div class="candidate-image-button no-image">${imageContent}</div>`;
-    return `<article class="candidate-card${index === 0 ? ' best' : ' alternative'}${high ? ' high-confidence' : ''}${selected ? ' selected' : ''}">
-      <div class="candidate-visual">${bestBadge}${imageWrapper}<span class="confidence-badge">${confidence} % Gesamt</span></div>
+    const confidenceClass = confidence >= 80 ? 'strong' : confidence >= 65 ? 'possible' : 'uncertain';
+    return `<button type="button" class="candidate-thumb ${confidenceClass}${index === candidateFocusIndex ? ' active' : ''}" onclick="focusCandidate(${index})" aria-label="${esc(candidate.name)} mit ${confidence} Prozent anzeigen">
+      <span><span class="candidate-image-placeholder${imageUrl ? '' : ' visible'}"><b>Kartenbild</b><small>nicht verfügbar</small></span>${imageUrl ? `<img loading="lazy" decoding="async" src="${esc(imageUrl)}" alt="${esc(candidate.name)}" onerror="candidateImageFailed(this)">` : ''}</span>
+      <b>${esc(candidate.name || 'Unbekannt')}</b><small>${confidence} %</small>
+    </button>`;
+  }).join('');
+  box.innerHTML = `<div class="candidate-strip" role="list">${strip}</div>
+    <article class="candidate-card candidate-primary${focusedConfidence >= 80 ? ' high-confidence' : ''}${focusedSelected ? ' selected' : ''}">
       <div class="candidate-content">
-        <div class="candidate-title"><b>${esc(candidate.name || 'Unbekannte Karte')}</b><small>${esc(candidate.set || 'Set unbekannt')}</small></div>
-        <dl class="candidate-meta">
-          <div><dt>Nummer</dt><dd>${esc(candidate.number || '–')}</dd></div>
-          <div><dt>Seltenheit</dt><dd>${esc(candidate.rarity || '–')}</dd></div>
-          <div><dt>Preis</dt><dd>${price}</dd></div>
-        </dl>
-        <b class="confidence-label ${esc(level.key)}">${esc(level.label)}</b>
-        <div class="confidence-track" aria-label="Trefferwahrscheinlichkeit ${confidence} Prozent"><span style="width:${confidence}%"></span></div>
-        ${candidate.tcg === 'pokemon' ? candidateBreakdown(candidate) : ''}
+        <div class="candidate-title"><span class="best-badge">${candidateFocusIndex === 0 ? 'Bester Treffer' : 'Alternative'}</span><b>${esc(focused.name || 'Unbekannte Karte')}</b><small>${esc(focused.set || 'Set unbekannt')}</small></div>
+        <dl class="candidate-meta"><div><dt>Nummer</dt><dd>${esc(focused.number || '–')}</dd></div><div><dt>Sprache</dt><dd>${esc(languageLabel(focused.language))}</dd></div><div><dt>Variante</dt><dd>${esc(Collection.variantLabel(focused.printingVariant || 'unknown'))}</dd></div><div><dt>Raw-Preis</dt><dd>${price}</dd></div></dl>
+        <b class="confidence-label ${esc(focusedLevel.key)}">${focusedConfidence} % Gesamt · ${esc(focusedLevel.label)}</b>
+        <div class="confidence-track" aria-label="Trefferwahrscheinlichkeit ${focusedConfidence} Prozent"><span style="width:${focusedConfidence}%"></span></div>
+        ${focused.tcg === 'pokemon' ? candidateBreakdown(focused) : ''}
         <div class="candidate-reasons">${reasons || '<span>Bild und Kartendaten prüfen</span>'}</div>
-        <small class="candidate-source">Quelle: ${esc(candidate.source || 'Kartendatenbank')}</small>
-        <div class="candidate-actions"><button class="choose-card" type="button" onclick="applyCandidate(${index})">${selected ? 'Ausgewählt' : 'Diese Karte'}</button><button class="candidate-detail-button" type="button" onclick="toggleCandidateDetails(this)">Details</button><button class="candidate-reject-button" type="button" onclick="rejectCandidate(${index})">Nicht diese Karte</button></div>
+        <small class="candidate-source">${esc(referenceNotice)}</small>${officialBadge}<small class="candidate-source">Quelle: ${esc(focused.source || 'Kartendatenbank')}</small>
+        <div class="candidate-actions"><button class="choose-card" type="button" onclick="applyCandidate(${candidateFocusIndex})">${focusedSelected ? 'Ausgewählt' : 'Diese Karte'}</button><button class="candidate-detail-button" type="button" onclick="toggleCandidateDetails(this)">Details</button><button class="candidate-reject-button" type="button" onclick="rejectCandidate(${candidateFocusIndex})">Nicht diese Karte</button></div>
       </div>
     </article>`;
-  }).join('');
 }
+
+window.focusCandidate = index => {
+  candidateFocusIndex = clamp(Number(index) || 0, 0, Math.max(0, candidates.length - 1));
+  renderCandidates(false);
+};
+
+window.openFocusedCandidateImage = () => openCandidateImage(candidateFocusIndex);
 
 window.toggleCandidateDetails = button => {
   const details = button.closest('.candidate-content').querySelector('.candidate-details');
@@ -1728,6 +1897,7 @@ window.rejectCandidate = index => {
   if (!rejected) return;
   recordLearningRejection(learningScan, rejected, 'single-candidate');
   if (recognition && Learning.cardsEquivalent(recognition, rejected)) recognition = null;
+  renderIdentificationActions();
   candidates.splice(index, 1);
   renderCandidates(true);
   setRecState('warn', 'Kandidat ausgeschlossen', candidates.length
@@ -2042,6 +2212,7 @@ async function runBulkRecognition(dataUrl, previewUrl, normalizedCapture = null)
     }
     if (run !== recognitionRun || scanMode !== 'bulk') return;
     found = applyLocalLearning(found, bulkLearningScan);
+    if (kind === 'pokemon') found = Recognition.filterPlausibleCandidates(found);
     if (!found.length && serviceError) throw serviceError;
     bulkCandidates = found.slice(0, 5);
     debugRecognitionCandidates('BulkFinalRanking', bulkCandidates);
@@ -2165,6 +2336,81 @@ $('#bulkEndSession').onclick = () => {
   setBulkStatus('ready', 'Sitzung beendet', 'Alle erfassten Karten bleiben in der Sammlung gespeichert.');
 };
 
+function identifiedCollectionEntry(candidate) {
+  const value = candidate || recognition;
+  if (!value) return null;
+  return {
+    ...value,
+    id: value.collectionId || value.localCollectionId || Date.now(),
+    tcg: value.tcg || recognizedTcg,
+    name: value.name || $('#name').value || 'Unbenannte Karte',
+    set: value.set || $('#set').value,
+    setId: value.setId || '',
+    number: value.number || $('#number').value,
+    lang: value.language || $('#lang').value,
+    language: value.language || $('#lang').value,
+    printingVariant: Collection.normalizedVariant(value),
+    identityVerified: true,
+    quantity: 1,
+    entryMode: 'identity',
+    date: new Date().toISOString(),
+    image: value.imageSmall || value.imageLarge || '',
+    imageSmall: value.imageSmall || '',
+    imageLarge: value.imageLarge || ''
+  };
+}
+
+function renderIdentificationActions() {
+  const panel = $('#identificationActions');
+  if (!panel) return;
+  if (!recognition || !recognition.accepted) {
+    panel.hidden = true;
+    $('#identifiedCardSummary').innerHTML = '';
+    return;
+  }
+  const price = recognition.price && Number.isFinite(Number(recognition.price.value))
+    ? formatMoney(recognition.price.value)
+    : recognition.price && recognition.price.label || 'Kein belastbarer Preis verfügbar';
+  const source = recognition.price && recognition.price.source || recognition.source || 'Kartendatenbank';
+  const image = recognition.imageSmall || recognition.imageLarge || '';
+  $('#identifiedCardSummary').innerHTML = `<div class="identified-card">
+    <div class="identified-card-image">${image ? `<img loading="lazy" decoding="async" src="${esc(image)}" alt="${esc(recognition.name)}">` : '<span>Kein Kartenbild</span>'}</div>
+    <div><h2>${esc(recognition.name || 'Unbekannte Karte')}</h2><p>${esc(recognition.set || 'Set unbekannt')} · ${esc(recognition.number || 'Nummer unbekannt')}</p><small>${languageLabel(recognition.language || $('#lang').value)} · ${esc(Collection.variantLabel(recognition.printingVariant))}</small><b>${esc(price)}</b><em>Raw · Quelle: ${esc(source)}</em></div>
+  </div>`;
+  panel.hidden = false;
+}
+
+$('#saveIdentifiedCard').onclick = () => {
+  const entry = identifiedCollectionEntry(recognition);
+  if (!entry) return;
+  if (recognition.accepted) recordLearningSelection(learningScan, recognition, 'single-collection-save');
+  const saved = Collection.upsertCollection(loadCollection(), entry);
+  persistCollection(saved.collection);
+  recordScanHistory('SAVED', recognition, null);
+  const message = saved.action === 'NEW_CARD'
+    ? `${saved.entry.name} wurde zur Sammlung hinzugefügt.`
+    : `${saved.entry.name}: Bestand auf ${saved.entry.quantity} erhöht.`;
+  reset();
+  alert(message);
+};
+
+$('#inspectIdentifiedCard').onclick = () => {
+  if (recognition) recordScanHistory('CHECKED', recognition, null);
+  reset();
+};
+
+$('#gradeIdentifiedCard').onclick = () => {
+  const entry = identifiedCollectionEntry(recognition);
+  if (!entry) return;
+  if (recognition.accepted) recordLearningSelection(learningScan, recognition, 'single-grading-handoff');
+  startGradingWithCard(entry, {
+    source: 'scan',
+    frontDataUrl: previewUrls.get('front') || '',
+    frontMetadata: normalizedCaptureMetadata.get('front') || null,
+    frontRotation: recognizedRotation
+  });
+};
+
 window.applyCandidate = (index, automatic = false) => {
   const candidate = candidates[index];
   if (!candidate) return;
@@ -2182,10 +2428,12 @@ window.applyCandidate = (index, automatic = false) => {
       + (automatic ? ' · Mit „Ändern“ kannst du die Alternativen wählen.' : '')
   );
   renderCandidates(false);
+  renderIdentificationActions();
 };
 
 window.changeRecognizedCandidate = () => {
   recognition = null;
+  renderIdentificationActions();
   renderCandidates(false);
   setRecState('warn', 'Auswahl ändern', 'Vergleiche die Kandidaten und wähle die passende Karte.');
 };
@@ -2203,6 +2451,7 @@ async function runRecognition(manual = false) {
     'Rotation, Perspektive, Kontrast und Kartenmerkmale werden lokal ausgewertet.'
   );
   recognition = null;
+  renderIdentificationActions();
   learningScan = null;
   candidates = [];
   renderRecognitionFeatures(null);
@@ -2248,9 +2497,12 @@ async function runRecognition(manual = false) {
       if (run !== recognitionRun) return null;
     }
     foundCandidates = applyLocalLearning(foundCandidates, learningScan);
+    if (kind === 'pokemon') foundCandidates = Recognition.filterPlausibleCandidates(foundCandidates);
     if (!foundCandidates.length && serviceError) throw serviceError;
     debugRecognitionCandidates('FinalRanking', foundCandidates);
     candidates = foundCandidates;
+    candidateFocusIndex = 0;
+    recordScanHistory(candidates.length ? 'MATCHES' : 'NO_MATCH', candidates[0], hints);
     renderCandidates(!candidates.length);
 
     if (!candidates.length) {
@@ -2389,15 +2641,27 @@ function regionScore(data, width, height, x0, y0, x1, y1) {
   return {mean, contrast, difference: difference / Math.max(count, 1)};
 }
 
-async function analyzeSide(file, rotation = 0) {
-  if (!file) return null;
-  const dataUrl = await canonicalDataUrl(file, 0.9, rotation);
+async function analyzeSide(source, rotation = 0, metadata = null) {
+  if (!source) return null;
+  let originalWidth = 0;
+  let originalHeight = 0;
+  let dataUrl;
+  if (typeof source === 'string') {
+    dataUrl = source;
+  } else {
+    const original = await imageFromFile(source);
+    originalWidth = original.naturalWidth;
+    originalHeight = original.naturalHeight;
+    dataUrl = await canonicalDataUrl(source, 0.88, rotation);
+  }
   const image = await new Promise((resolve, reject) => {
     const value = new Image();
     value.onload = () => resolve(value);
     value.onerror = reject;
     value.src = dataUrl;
   });
+  originalWidth = Number(metadata && metadata.width) || originalWidth || image.naturalWidth;
+  originalHeight = Number(metadata && metadata.height) || originalHeight || image.naturalHeight;
   const canvas = $('#work');
   const context = canvas.getContext('2d', {willReadFrequently: true});
   canvas.width = 504;
@@ -2423,72 +2687,44 @@ async function analyzeSide(file, rotation = 0) {
   );
   const cornerScore = clamp(surface * 0.72 + cornerConsistency * 0.28, 55, 98);
   const edgeScore = clamp(surface * 0.76 + clamp(62 + edge.contrast * 0.48, 55, 98) * 0.24, 55, 98);
+  let reflected = 0;
+  let shadowed = 0;
+  let sampled = 0;
+  for (let y = 0; y < canvas.height; y += 4) {
+    for (let x = 0; x < canvas.width; x += 4) {
+      const index = (y * canvas.width + x) * 4;
+      const luminance = 0.2126 * data[index] + 0.7152 * data[index + 1] + 0.0722 * data[index + 2];
+      if (luminance >= 246) reflected++;
+      if (luminance <= 24) shadowed++;
+      sampled++;
+    }
+  }
+  const cropReliable = metadata
+    ? metadata.fallbackUsed !== true && metadata.reliable !== false
+      && (metadata.confidence == null || Number(metadata.confidence) >= 0.42)
+    : true;
+  const cardComplete = metadata && Number(metadata.cardCoverage) > 0
+    ? Number(metadata.cardCoverage) >= 0.28 : true;
+  const perspectiveConfidence = metadata && metadata.confidence != null
+    ? Number(metadata.confidence) : 0.74;
   return {
     centering: Math.round(clamp(86 + contrast * 0.07, 70, 96)),
     corners: Math.round(cornerScore),
     edges: Math.round(edgeScore),
     surface: Math.round(surface),
     quality: Math.round((exposure + sharpness + contrast) / 3),
-    preview: dataUrl
+    sharpness,
+    mean: full.mean,
+    reflectionRatio: reflected / Math.max(1, sampled),
+    shadowRatio: shadowed / Math.max(1, sampled),
+    originalWidth,
+    originalHeight,
+    cropReliable,
+    cardComplete,
+    perspectiveConfidence,
+    preview: canvas.toDataURL('image/jpeg', 0.78)
   };
 }
-
-$('#analyze').onclick = async () => {
-  const frontFile = $('#front').files[0];
-  if (!frontFile) {
-    alert('Bitte zuerst die Vorderseite aufnehmen oder auswählen.');
-    return;
-  }
-  $('#analyze').disabled = true;
-  $('#analyze').textContent = 'Analyse …';
-  try {
-    if (!recognition) await runRecognition(false);
-    const front = await analyzeSide(frontFile, recognizedRotation);
-    const back = await analyzeSide($('#back').files[0], 0);
-    const values = [front.centering, front.corners, front.edges, front.surface];
-    if (back) values.push(back.centering, back.corners, back.edges, back.surface);
-    const average = values.reduce((sum, value) => sum + value, 0) / values.length;
-    const score = Math.round(clamp(650 + (average - 60) * 8.7, 600, 970));
-    const grade = score >= 950 ? '9.5–10 Vorprüfung'
-      : score >= 900 ? '9 Mint-Bereich'
-        : score >= 850 ? '8.5 NM-MT+'
-          : score >= 800 ? '8 NM-MT'
-            : score >= 700 ? '7 Near Mint'
-              : '6 oder niedriger';
-    const cardTcg = recognition && recognition.tcg || recognizedTcg || 'pokemon';
-    last = {
-      id: Date.now(),
-      tcg: cardTcg,
-      name: recognition && recognition.name || $('#name').value || 'Unbenannte Karte',
-      set: recognition && recognition.set || $('#set').value,
-      setId: recognition && recognition.setId || '',
-      number: recognition && recognition.number || $('#number').value,
-      printedTotal: recognition && recognition.printedTotal || '',
-      cardType: recognition && recognition.cardType || '',
-      rarity: recognition && recognition.rarity || '',
-      price: recognition && recognition.price || null,
-      lang: $('#lang').value,
-      language: $('#lang').value,
-      printingVariant: Collection.normalizedVariant(recognition || {}),
-      entryMode: 'individual',
-      quantity: 1,
-      recognitionConfidence: recognition && recognition.confidence || 0,
-      recognitionSource: recognition && recognition.source || '',
-      score,
-      grade,
-      front,
-      back,
-      date: new Date().toISOString(),
-      image: recognition && (recognition.imageSmall || recognition.imageLarge) || front.preview,
-      imageSmall: recognition && recognition.imageSmall || '',
-      imageLarge: recognition && recognition.imageLarge || ''
-    };
-    renderResult(last);
-  } finally {
-    $('#analyze').disabled = false;
-    $('#analyze').textContent = 'Vorgrading starten';
-  }
-};
 
 function metrics(side, labelText) {
   if (!side) return '';
@@ -2498,36 +2734,356 @@ function metrics(side, labelText) {
     <div class="metric"><b>${labelText} Oberfläche</b><br>${side.surface}/100</div>`;
 }
 
-function renderResult(result) {
-  const price = result.price ? `<br><small>Preisindikator: ca. ${esc(result.price.label)}</small>` : '';
-  const recognized = result.recognitionConfidence
-    ? `<div class="recognition-note"><b>Erkannt:</b> ${esc(result.name)}${result.set ? ' · ' + esc(result.set) : ''}${result.number ? ' · ' + esc(result.number) : ''}<br><small>${Math.round(result.recognitionConfidence * 100)} % · ${esc(result.recognitionSource)}</small>${price}</div>`
-    : '<div class="recognition-note warn"><b>Karte nicht sicher identifiziert.</b><br><small>Der Score ist nur eine grobe Zustands-Vorprüfung. Nutze „Manuell suchen“, bevor du sie speicherst.</small></div>';
-  $('#result').innerHTML = `<div class="result">
-    <div class="score">${result.score}<small>/1000</small></div>
-    <h2>${result.grade}</h2>
-    <p>${label(result.tcg)} · ${esc(result.name)}</p>
-    ${recognized}
-    <div class="grid">${metrics(result.front, 'Front')}${metrics(result.back, 'Back')}</div>
-    <div class="warning"><b>Echtheit:</b> Nicht eindeutig<br><small>Ohne geprüfte sprach- und setspezifische Referenz wird die Karte nicht als Fake markiert.</small></div>
-    <div class="decision"><button class="primary" onclick="saveCard()">Zur Sammlung</button><button class="secondary" onclick="discard()">Nur prüfen</button></div>
-  </div>`;
+function renderGradingQualityMessage(kind, title, text) {
+  const box = $('#gradingQuality');
+  if (!box) return;
+  box.className = 'grading-quality card ' + (kind || 'neutral');
+  box.innerHTML = `<b>${esc(title || 'Aufnahmequalität')}</b><span>${esc(text || '')}</span>`;
 }
 
-window.saveCard = () => {
-  if (!last) return;
-  if (recognition && recognition.accepted) {
-    recordLearningSelection(learningScan, recognition, 'single-collection-save');
+function gradingIdentity(card) {
+  const value = card || {};
+  return {
+    id: value.id,
+    collectionKey: value.collectionKey || '',
+    tcg: value.tcg || recognizedTcg || 'pokemon',
+    name: value.name || 'Unbenannte Karte',
+    set: value.set || '',
+    setId: value.setId || '',
+    number: value.number || '',
+    language: value.language || value.lang || $('#lang').value || 'de',
+    lang: value.language || value.lang || $('#lang').value || 'de',
+    printingVariant: Collection.normalizedVariant(value),
+    quantity: Math.max(1, Number(value.quantity) || 1),
+    image: value.image || value.imageSmall || value.imageLarge || '',
+    imageSmall: value.imageSmall || value.image || '',
+    imageLarge: value.imageLarge || value.image || '',
+    price: value.price || null,
+    estimatedUnitValue: Number(value.estimatedUnitValue) || Collection.estimatedUnitValue(value)
+  };
+}
+
+function clearGradingPhotos(keepFront = false) {
+  ['gradingFront', 'gradingBack'].forEach(id => {
+    const input = $('#' + id);
+    input.value = '';
+    input.parentElement.classList.remove('has');
+    $('#' + id + 'Img').removeAttribute('src');
+    if (previewUrls.has(id)) {
+      const value = previewUrls.get(id);
+      if (String(value).startsWith('blob:')) URL.revokeObjectURL(value);
+      previewUrls.delete(id);
+    }
+    normalizedCaptureMetadata.delete(id);
+  });
+  if (!keepFront) {
+    gradingDraft.frontDataUrl = '';
+    gradingDraft.frontMetadata = null;
+    gradingDraft.frontRotation = 0;
   }
-  const saved = Collection.upsertCollection(loadCollection(), last);
-  persistCollection(saved.collection);
-  reset();
-  alert(saved.action === 'NEW_CARD'
-    ? 'Zur Sammlung hinzugefügt.'
-    : 'Karte bereits vorhanden – Stückzahl erhöht.');
+  gradingDraft.analysis = null;
+  $('#gradingResult').innerHTML = '';
+}
+
+function renderGradingTarget() {
+  const card = gradingDraft.card;
+  if (!card) return;
+  const image = card.imageLarge || card.imageSmall || card.image || '';
+  const records = Grading.recordsForCard(gradingState, card);
+  $('#gradingTarget').innerHTML = `<div class="grading-target-image">${image
+    ? `<img loading="lazy" decoding="async" src="${esc(image)}" alt="${esc(card.name)}">`
+    : '<span>Kein Referenzbild</span>'}</div><div><span class="section-kicker">Identifizierte Karte</span><h2>${esc(card.name)}</h2><p>${esc(card.set || 'Set unbekannt')} · ${esc(card.number || 'Nummer unbekannt')}</p><small>${languageLabel(card.language)} · ${esc(Collection.variantLabel(card.printingVariant))}</small><em>${records.length} gespeicherte Vorgradings</em></div>`;
+  const select = $('#gradingSpecimen');
+  const count = Math.max(1, Number(card.quantity) || 1);
+  const graded = new Set(records.map(record => Number(record.specimenIndex)));
+  select.innerHTML = Array.from({length: count}, (_, index) => {
+    const number = index + 1;
+    return `<option value="${number}">Exemplar ${number}${graded.has(number) ? ' · bereits bewertet' : ' · noch ungeprüft'}</option>`;
+  }).join('');
+  const preferred = Math.min(count, Math.max(1, Number(gradingDraft.specimenIndex)
+    || Grading.nextUngradedSpecimen(gradingState, card)));
+  select.value = String(preferred);
+  gradingDraft.specimenIndex = preferred;
+  $('#gradingSpecimenHint').textContent = count > 1
+    ? `${graded.size} von ${count} physischen Exemplaren besitzen ein Vorgrading. Jede Zustandsprüfung bleibt separat.`
+    : graded.size ? 'Für dieses Exemplar existiert bereits ein Vorgrading. Eine neue Prüfung wird als weiterer Historieneintrag gespeichert.'
+      : 'Dieses physische Exemplar besitzt noch kein Vorgrading.';
+}
+
+function startGradingWithCard(card, options = {}) {
+  if (!card) return;
+  clearGradingPhotos(false);
+  gradingDraft = {
+    card: gradingIdentity(card),
+    source: options.source || 'collection',
+    frontDataUrl: options.frontDataUrl || '',
+    frontMetadata: options.frontMetadata || null,
+    frontRotation: Number(options.frontRotation) || 0,
+    specimenIndex: options.specimenIndex || Grading.nextUngradedSpecimen(gradingState, card),
+    analysis: null
+  };
+  $('#gradingCollectionPicker').hidden = true;
+  $('#gradingHistory').hidden = true;
+  $('#gradingEmpty').hidden = true;
+  $('#gradingWorkspace').hidden = false;
+  if (gradingDraft.frontDataUrl) {
+    $('#gradingFrontImg').src = gradingDraft.frontDataUrl;
+    $('#gradingFront').parentElement.classList.add('has');
+  }
+  renderGradingTarget();
+  renderGradingQualityMessage(
+    gradingDraft.frontDataUrl ? 'neutral' : 'warn',
+    gradingDraft.frontDataUrl ? 'Vorderseite übernommen' : 'Vorder- und Rückseite erforderlich',
+    gradingDraft.frontDataUrl
+      ? 'Die identifizierte Vorderseite wurde übernommen. Bitte jetzt eine aktuelle, vollständige Rückseite aufnehmen.'
+      : 'Für ein belastbares PokéFolio Vorgrading müssen beide Kartenseiten neu und vollständig fotografiert werden.'
+  );
+  navigateToPage('grading');
+}
+window.startGradingWithCard = startGradingWithCard;
+
+function renderGradingPicker() {
+  const query = String($('#gradingCollectionSearch').value || '').trim().toLocaleLowerCase('de-DE');
+  const cards = collectionWithGrading().filter(card => !query || [card.name, card.set, card.number]
+    .some(value => String(value || '').toLocaleLowerCase('de-DE').includes(query))).slice(0, 100);
+  $('#gradingCollectionList').innerHTML = cards.length ? cards.map(card => {
+    const image = cardThumbnail(card);
+    const graded = Grading.gradedSpecimenCount(gradingState, card);
+    return `<button type="button" onclick="selectGradingCard('${encodeURIComponent(String(card.id))}')">
+      <span>${image ? `<img loading="lazy" decoding="async" src="${esc(image)}" alt="${esc(card.name)}">` : '◇'}</span>
+      <span><b>${esc(card.name)}</b><small>${esc(card.set || 'Set unbekannt')} · ${esc(card.number || 'Nummer unbekannt')}</small><em>${graded}/${card.quantity} Exemplare bewertet</em></span>
+    </button>`;
+  }).join('') : '<p class="muted">Keine passende Sammlungskarte gefunden.</p>';
+}
+
+window.selectGradingCard = encodedId => {
+  const id = decodeURIComponent(encodedId);
+  const card = loadCollection().find(item => String(item.id) === id);
+  if (card) startGradingWithCard(card, {source: 'collection'});
 };
 
-window.discard = () => reset();
+window.startGradingFromCollection = encodedId => {
+  if (window.closeCollectionDetail) window.closeCollectionDetail();
+  window.selectGradingCard(encodedId);
+};
+
+function gradingRecordCard(record) {
+  return gradingIdentity(record && record.cardIdentity || {
+    id: record && record.collectionId,
+    collectionKey: record && record.collectionKey,
+    name: 'Unbekannte Karte'
+  });
+}
+
+function renderStoredGrading(record, saved = true) {
+  if (!record) return '';
+  const authenticity = ({
+    LIKELY_ORIGINAL: 'Keine offensichtlichen Auffälligkeiten erkannt',
+    SUSPICIOUS: 'Auffälligkeiten erkannt – fachlich prüfen lassen',
+    INCONCLUSIVE: 'Per Smartphone nicht eindeutig beurteilbar'
+  })[record.authenticity && record.authenticity.status] || 'Nicht beurteilt';
+  const defects = (record.defects || []).length
+    ? record.defects.map(item => `<li>${esc(typeof item === 'string' ? item : item.label || item.type)}</li>`).join('')
+    : '<li>Keine automatisch belastbaren Einzeldefekte erkannt.</li>';
+  return `<article class="grading-result-card">
+    <div class="grading-result-heading"><div><span class="section-kicker">PokéFolio Vorgrading</span><h2>${String(record.pregrade).replace('.', ',')} / 10</h2><p>${esc(record.gradeLabel)}</p></div><strong>${Math.round(record.conditionScore)}<small>/1000</small></strong></div>
+    <p class="grading-legal">Smartphone-basierte Zustandsschätzung – kein offizielles Grading und keine Garantie für eine Bewertung durch PSA, CGC, BGS oder TAG.</p>
+    <div class="grading-sides"><section><h3>Vorderseite</h3>${metrics(record.subscores.front, 'Vorne')}</section><section><h3>Rückseite</h3>${metrics(record.subscores.back, 'Hinten')}</section></div>
+    <section class="grading-authenticity"><span>Echtheits-Screening · separat vom Zustand</span><b>${esc(authenticity)}</b><small>Keine Echtheitsgarantie; im Zweifel professionelle Prüfung nutzen.</small></section>
+    <section class="grading-defects"><h3>Hinweise</h3><ul>${defects}</ul></section>
+    <section class="grading-market-snapshot"><div><small>Raw-Preis</small><b>${record.marketSnapshot && record.marketSnapshot.rawValue ? formatMoney(record.marketSnapshot.rawValue) : 'nicht verfügbar'}</b><span>${esc(record.marketSnapshot && record.marketSnapshot.rawSource || 'Keine belastbare Quelle')}</span></div><div><small>Grading-Marktwerte</small><b>${record.marketSnapshot && record.marketSnapshot.gradedValue ? formatMoney(record.marketSnapshot.gradedValue) : 'nicht verfügbar'}</b><span>${esc(record.marketSnapshot && record.marketSnapshot.gradedSource || 'Keine belastbare PSA-/CGC-/BGS-Zuordnung')}</span></div></section>
+    ${saved ? `<small class="grading-saved-note">Gespeichert am ${new Date(record.createdAt).toLocaleString('de-DE')} · Exemplar ${record.specimenIndex}</small>` : '<button id="saveGradingRecord" type="button" class="primary">Vorgrading in Historie speichern</button>'}
+  </article>`;
+}
+
+function renderGradingHistory() {
+  const records = Grading.createState(gradingState).records;
+  $('#gradingHistoryList').innerHTML = records.length ? records.map(record => {
+    const card = gradingRecordCard(record);
+    const image = card.imageSmall || card.imageLarge || '';
+    return `<article class="grading-history-row"><span>${image ? `<img loading="lazy" decoding="async" src="${esc(image)}" alt="${esc(card.name)}">` : '◇'}</span><div><b>${esc(card.name)}</b><small>${esc(card.set || 'Set unbekannt')} · ${esc(card.number || 'Nummer unbekannt')} · Exemplar ${record.specimenIndex}</small><em>${String(record.pregrade).replace('.', ',')} / 10 · ${new Date(record.createdAt).toLocaleDateString('de-DE')}</em></div><button type="button" onclick="openGradingRecord('${encodeURIComponent(record.id)}')">Details</button></article>`;
+  }).join('') : '<p class="muted">Noch kein PokéFolio Vorgrading gespeichert.</p>';
+}
+
+window.openGradingRecord = encodedId => {
+  const id = decodeURIComponent(encodedId);
+  const record = Grading.createState(gradingState).records.find(item => item.id === id);
+  if (!record) return;
+  $('#gradingHistory').hidden = true;
+  $('#gradingEmpty').hidden = true;
+  $('#gradingWorkspace').hidden = false;
+  gradingDraft = {card: gradingRecordCard(record), source: 'history', specimenIndex: record.specimenIndex, analysis: record};
+  renderGradingTarget();
+  clearGradingPhotos(true);
+  $('#gradingResult').innerHTML = renderStoredGrading(record, true);
+  renderGradingQualityMessage('good', 'Gespeichertes Vorgrading', 'Dieser Historieneintrag verändert weder Kartenidentität noch Stückzahl.');
+};
+
+function renderGradingPage() {
+  const stats = Grading.statistics(gradingState);
+  const collection = loadCollection();
+  const pending = collection.reduce((sum, card) => sum + Math.max(0,
+    (Number(card.quantity) || 1) - Grading.gradedSpecimenCount(gradingState, card)), 0);
+  $('#gradingRecordCount').textContent = formatInteger(stats.records);
+  $('#gradingCardCount').textContent = formatInteger(stats.cards);
+  $('#gradingPendingCount').textContent = formatInteger(pending);
+  if (!gradingDraft.card) {
+    $('#gradingEmpty').hidden = false;
+    $('#gradingWorkspace').hidden = true;
+  }
+  if (!$('#gradingCollectionPicker').hidden) renderGradingPicker();
+  if (!$('#gradingHistory').hidden) renderGradingHistory();
+}
+
+async function normalizedGradingSide(id, carriedDataUrl, carriedMetadata, rotation = 0) {
+  const file = $('#' + id).files[0];
+  let dataUrl = carriedDataUrl || '';
+  let originalWidth = 0;
+  let originalHeight = 0;
+  if (file) {
+    const image = await imageFromFile(file);
+    originalWidth = image.naturalWidth;
+    originalHeight = image.naturalHeight;
+    dataUrl = await ocrDataUrl(file);
+  }
+  if (!dataUrl) throw new Error(id === 'gradingFront' ? 'Vorderseite fehlt.' : 'Rückseite fehlt.');
+  const captured = normalizedCaptureMetadata.get(id) || carriedMetadata;
+  let prepared;
+  if (captured && captured.normalized) {
+    prepared = {...captured, dataUrl, prepared: true};
+  } else {
+    try {
+      prepared = await nativePrepareCard(dataUrl);
+    } catch (error) {
+      prepared = {dataUrl, reliable: false, fallbackUsed: true, method: 'grading-fallback', confidence: 0.2};
+    }
+  }
+  const analysis = await analyzeSide(prepared.dataUrl, rotation, {
+    ...prepared,
+    width: originalWidth || prepared.width,
+    height: originalHeight || prepared.height
+  });
+  return {prepared, analysis};
+}
+
+function gradingDefects(front, back) {
+  const defects = [];
+  [['Vorderseite', front], ['Rückseite', back]].forEach(([side, value]) => {
+    if (value.centering < 75) defects.push(`${side}: Zentrierung auffällig`);
+    if (value.corners < 75) defects.push(`${side}: Ecken auffällig`);
+    if (value.edges < 75) defects.push(`${side}: Kanten auffällig`);
+    if (value.surface < 75) defects.push(`${side}: Oberfläche auffällig`);
+  });
+  return defects;
+}
+
+$('#gradingSelectCollection').onclick = () => {
+  $('#gradingCollectionPicker').hidden = false;
+  $('#gradingHistory').hidden = true;
+  renderGradingPicker();
+};
+$('#gradingClosePicker').onclick = () => { $('#gradingCollectionPicker').hidden = true; };
+$('#gradingCollectionSearch').oninput = renderGradingPicker;
+$('#gradingNewCard').onclick = () => {
+  setScanMode('single');
+  navigateToPage('scan');
+  setRecState('neutral', 'Neue Karte zuerst identifizieren', 'Vorderseite scannen, Kandidat bestätigen und anschließend „Grading starten“ wählen.');
+};
+$('#gradingShowHistory').onclick = () => {
+  $('#gradingCollectionPicker').hidden = true;
+  $('#gradingHistory').hidden = false;
+  renderGradingHistory();
+};
+$('#gradingCloseHistory').onclick = () => { $('#gradingHistory').hidden = true; };
+$('#gradingShowLast').onclick = () => {
+  const lastRecord = Grading.createState(gradingState).records[0];
+  if (lastRecord) window.openGradingRecord(encodeURIComponent(lastRecord.id));
+  else {
+    $('#gradingHistory').hidden = false;
+    renderGradingHistory();
+  }
+};
+$('#gradingSpecimen').onchange = event => {
+  gradingDraft.specimenIndex = Number(event.target.value) || 1;
+  renderGradingTarget();
+};
+
+$('#gradingAnalyze').onclick = async () => {
+  if (!gradingDraft.card) {
+    renderGradingQualityMessage('bad', 'Keine identifizierte Karte', 'Bitte zuerst eine Karte aus der Sammlung wählen oder eine neue Karte identifizieren.');
+    return;
+  }
+  const frontAvailable = Boolean($('#gradingFront').files[0] || gradingDraft.frontDataUrl);
+  const backAvailable = Boolean($('#gradingBack').files[0]);
+  if (!frontAvailable || !backAvailable) {
+    renderGradingQualityMessage('bad', 'Beide Seiten erforderlich', 'Vorgrading startet erst, wenn Vorder- und Rückseite vollständig aufgenommen wurden.');
+    return;
+  }
+  $('#gradingAnalyze').disabled = true;
+  renderGradingQualityMessage('busy', 'Aufnahmequalität wird geprüft …', 'Crop, Auflösung, Schärfe, Belichtung, Reflexion und Perspektive werden vor der Zustandsanalyse geprüft.');
+  try {
+    const [front, back] = await Promise.all([
+      normalizedGradingSide('gradingFront', gradingDraft.frontDataUrl, gradingDraft.frontMetadata, gradingDraft.frontRotation),
+      normalizedGradingSide('gradingBack', '', null, 0)
+    ]);
+    const frontQuality = Grading.evaluateImageQuality(front.analysis);
+    const backQuality = Grading.evaluateImageQuality(back.analysis);
+    if (!frontQuality.eligible || !backQuality.eligible) {
+      const reasons = [...frontQuality.reasons.map(value => 'Vorne: ' + value), ...backQuality.reasons.map(value => 'Hinten: ' + value)];
+      gradingDraft.analysis = null;
+      $('#gradingResult').innerHTML = '';
+      renderGradingQualityMessage('bad', 'Aufnahme für zuverlässiges Grading ungeeignet', reasons.join(' · ') || 'Bitte beide Seiten erneut fotografieren.');
+      return;
+    }
+    const subscores = Grading.normalizeSubscores({front: front.analysis, back: back.analysis});
+    const conditionScore = Grading.scoreFromSubscores(subscores);
+    const card = gradingDraft.card;
+    const rawValue = Number(card.estimatedUnitValue) || Collection.estimatedUnitValue(card);
+    const analysis = Grading.normalizeRecord({
+      id: 'draft-' + Date.now(),
+      cardIdentity: card,
+      cardIdentityId: Grading.cardIdentityId(card),
+      collectionId: card.id != null ? String(card.id) : '',
+      collectionKey: card.collectionKey || '',
+      specimenIndex: gradingDraft.specimenIndex || 1,
+      conditionScore,
+      subscores,
+      frontImage: front.analysis.preview,
+      backImage: back.analysis.preview,
+      authenticity: {
+        status: 'INCONCLUSIVE',
+        confidence: 0,
+        reasons: ['Smartphone-Fotos reichen nicht für eine Echtheitsgarantie.']
+      },
+      defects: gradingDefects(subscores.front, subscores.back),
+      quality: {front: frontQuality, back: backQuality},
+      marketSnapshot: {
+        rawValue: rawValue || null,
+        rawSource: card.price && card.price.source || '',
+        gradedValue: null,
+        gradedSource: ''
+      },
+      source: 'POKEFOLIO_PREGRADING'
+    });
+    gradingDraft.analysis = analysis;
+    $('#gradingResult').innerHTML = renderStoredGrading(analysis, false);
+    $('#saveGradingRecord').onclick = () => {
+      const result = Grading.addRecord(gradingState, gradingDraft.card, gradingDraft.analysis);
+      persistGradingState(result.state);
+      gradingDraft.analysis = result.record;
+      $('#gradingResult').innerHTML = renderStoredGrading(result.record, true);
+      renderGradingTarget();
+      renderGradingPage();
+      renderGradingQualityMessage('good', 'Vorgrading gespeichert', `Exemplar ${result.record.specimenIndex} wurde getrennt von Kartenidentität und Stückzahl dokumentiert.`);
+    };
+    renderGradingQualityMessage('good', 'Aufnahmen geeignet', 'Beide Seiten erfüllen die Mindestanforderungen. Prüfe die Schätzung und speichere sie bewusst in der Historie.');
+  } catch (error) {
+    console.error('[PokeFolio Grading] ' + error.message);
+    renderGradingQualityMessage('bad', 'Vorgrading fehlgeschlagen', error.message || 'Unbekannter Fehler.');
+  } finally {
+    $('#gradingAnalyze').disabled = false;
+  }
+};
 
 function reset() {
   recognitionRun++;
@@ -2535,8 +3091,9 @@ function reset() {
   recognition = null;
   learningScan = null;
   candidates = [];
+  candidateFocusIndex = 0;
   recognizedRotation = 0;
-  ['front', 'back'].forEach(id => {
+  ['front'].forEach(id => {
     const input = $('#' + id);
     input.value = '';
     input.parentElement.classList.remove('has');
@@ -2546,7 +3103,7 @@ function reset() {
     normalizedCaptureMetadata.delete(id);
   });
   ['name', 'set', 'number'].forEach(id => $('#' + id).value = '');
-  $('#result').innerHTML = '';
+  renderIdentificationActions();
   $('#comparisonScanImg').removeAttribute('src');
   renderCandidates(false);
   setRecState(
@@ -2556,13 +3113,143 @@ function reset() {
   );
 }
 
+function dashboardCards(collection, limit = 8) {
+  return collection.slice(0, limit).map(card => {
+    const image = cardThumbnail(card);
+    const value = Collection.estimatedUnitValue(card);
+    const grade = card.grade || card.pregrade || '';
+    return `<button type="button" class="dashboard-card" onclick="openCollectionDetail('${encodeURIComponent(String(card.id))}')">
+      <span class="dashboard-card-image">${image ? `<img loading="lazy" decoding="async" src="${esc(image)}" alt="${esc(card.name)}" onerror="collectionImageFailed(this)">` : '<span class="collection-image-placeholder">Kein Bild</span>'}<strong>×${Number(card.quantity) || 1}</strong></span>
+      <b>${esc(card.name || 'Unbenannte Karte')}</b><span>#${esc(card.number || '–')} · ${esc(Collection.variantLabel(card.printingVariant))}</span>
+      <small>${grade ? esc(grade) : 'Raw'}${value ? ` · ${formatMoney(value)}` : ' · kein Preis'}</small>
+    </button>`;
+  }).join('');
+}
+
+function loadScanHistory() {
+  try {
+    const value = JSON.parse(localStorage.getItem('pf_scan_history') || '[]');
+    return Array.isArray(value) ? value.slice(0, 20) : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function recordScanHistory(status, candidate, hints) {
+  const history = loadScanHistory();
+  history.unshift({
+    id: Date.now(), status, createdAt: new Date().toISOString(),
+    name: candidate && candidate.name || hints && hints.mainTitle || 'Nicht erkannt',
+    tcg: candidate && candidate.tcg || 'pokemon',
+    number: candidate && candidate.number || hints && hints.pokemonNumber || '',
+    set: candidate && candidate.set || '', language: candidate && candidate.language || hints && hints.language || '',
+    confidence: Number(candidate && candidate.confidence) || 0,
+    image: candidate && (candidate.imageSmall || candidate.imageLarge) || ''
+  });
+  localStorage.setItem('pf_scan_history', JSON.stringify(history.slice(0, 20)));
+}
+
+function renderDashboard() {
+  const collection = loadCollection();
+  const filtered = dashboardTcg === 'all' ? collection
+    : collection.filter(card => card.tcg === dashboardTcg);
+  const summary = Collection.portfolioSummary(filtered);
+  const sets = Collection.summarizeSets(filtered);
+  $('#homePortfolioValue').textContent = formatMoney(summary.estimatedValue);
+  $('#homeTotalCards').textContent = formatInteger(summary.totalCards);
+  $('#homeDistinctCards').textContent = formatInteger(summary.distinctCards);
+  $('#homeDuplicates').textContent = formatInteger(summary.duplicates);
+  $('#homeSetCount').textContent = formatInteger(sets.length);
+
+  const valuable = filtered.slice().sort((left, right) =>
+    Collection.estimatedUnitValue(right) - Collection.estimatedUnitValue(left)
+  ).filter(card => Collection.estimatedUnitValue(card) > 0);
+  $('#homeValuable').innerHTML = valuable.length ? dashboardCards(valuable, 8)
+    : '<div class="dashboard-empty">Noch keine belastbaren Preisdaten vorhanden.</div>';
+  const recent = filtered.slice().sort((left, right) =>
+    String(right.date || right.addedAt || '').localeCompare(String(left.date || left.addedAt || ''))
+  );
+  $('#homeRecent').innerHTML = recent.length ? dashboardCards(recent, 8)
+    : '<div class="dashboard-empty">Noch keine Karten in der Sammlung.</div>';
+
+  const history = loadScanHistory().filter(item => dashboardTcg === 'all' || item.tcg === dashboardTcg).slice(0, 8);
+  $('#homeScans').innerHTML = history.length ? history.map(item => `<article class="scan-history-card">
+    ${item.image ? `<img loading="lazy" decoding="async" src="${esc(item.image)}" alt="${esc(item.name)}">` : '<span class="scan-history-placeholder">⌁</span>'}
+    <span><b>${esc(item.name)}</b><small>${esc(item.number || item.set || 'ohne sichere Nummer')}</small><em class="${item.status === 'SAVED' ? 'saved' : ''}">${item.status === 'SAVED' ? 'Gespeichert' : 'Nicht gespeichert'}</em></span>
+  </article>`).join('') : '<div class="dashboard-empty">Noch keine Scan-Historie.</div>';
+
+  $('#homeSets').innerHTML = sets.length ? sets.slice().sort((a, b) => b.completion - a.completion).slice(0, 5).map(group => {
+    const percent = Math.round(group.completion * 1000) / 10;
+    return `<button type="button" class="home-set" onclick="openDashboardSet('${encodeURIComponent(group.key)}')"><span><b>${esc(group.set)}</b><small>${group.ownedNumbers} / ${group.printedTotal || '–'} · ${languageLabel(group.language)}</small></span><strong>${String(percent).replace('.', ',')} %</strong><i><span style="width:${Math.min(100, percent)}%"></span></i></button>`;
+  }).join('') : '<div class="dashboard-empty">Noch kein Set begonnen.</div>';
+
+  const trending = filtered.filter(card => Number.isFinite(Number(card.price && card.price.changePercent)));
+  $('#homeTrend').hidden = !trending.length;
+  if (trending.length) $('#homeTrendList').innerHTML = dashboardCards(trending, 8);
+}
+
+window.openDashboardSet = encodedKey => {
+  navigateToPage('collection');
+  activateCollectionSection('sets');
+  openSetDetail(encodedKey);
+};
+
+function renderPortfolio() {
+  const collection = loadCollection();
+  const summary = Collection.portfolioSummary(collection);
+  $('#portfolioPageValue').textContent = formatMoney(summary.estimatedValue);
+  const tcgs = ['pokemon', 'yugioh', 'onepiece'];
+  $('#portfolioBreakdown').innerHTML = tcgs.map(tcg => {
+    const cards = collection.filter(card => card.tcg === tcg);
+    const item = Collection.portfolioSummary(cards);
+    return `<button type="button" onclick="openPortfolioTcg('${tcg}')"><span>${esc(label(tcg))}</span><b>${formatMoney(item.estimatedValue)}</b><small>${formatInteger(item.totalCards)} Karten · ${formatInteger(item.distinctCards)} verschieden</small></button>`;
+  }).join('');
+  const valuable = collection.slice().sort((left, right) =>
+    Collection.estimatedUnitValue(right) - Collection.estimatedUnitValue(left)
+  ).filter(card => Collection.estimatedUnitValue(card) > 0);
+  $('#portfolioTopCards').innerHTML = valuable.length ? dashboardCards(valuable, 12)
+    : '<div class="dashboard-empty">Keine belastbaren Marktwerte vorhanden.</div>';
+}
+
+window.openPortfolioTcg = tcg => {
+  collectionFilters.tcg = tcg;
+  $('#collectionTcgFilter').value = tcg;
+  activateCollectionSection('cards');
+  navigateToPage('collection');
+};
+
+function activateCollectionSection(tab) {
+  collectionSectionTab = tab || 'cards';
+  $$('.collection-section-tabs button').forEach(button =>
+    button.classList.toggle('active', button.dataset.collectionTab === collectionSectionTab)
+  );
+  if (collectionSectionTab === 'sets' || collectionSectionTab === 'missing') {
+    collectionViewMode = 'sets';
+    collectionFilters.quantity = 'all';
+    collectionFilters.favorite = 'all';
+  } else {
+    if (collectionViewMode === 'sets') collectionViewMode = 'grid';
+    collectionFilters.quantity = collectionSectionTab === 'duplicates' ? 'duplicates' : 'all';
+    collectionFilters.favorite = collectionSectionTab === 'favorites' ? 'favorite' : 'all';
+  }
+  localStorage.setItem('pf_collection_view', collectionViewMode);
+  renderCollection();
+}
+
 function renderCollection() {
-  const allCards = loadCollection();
+  const allCards = collectionWithGrading();
   const portfolio = Collection.portfolioSummary(allCards);
   $('#portfolioTotal').textContent = formatInteger(portfolio.totalCards);
   $('#portfolioDistinct').textContent = formatInteger(portfolio.distinctCards);
   $('#portfolioValue').textContent = formatMoney(portfolio.estimatedValue);
   $('#portfolioDuplicates').textContent = formatInteger(portfolio.duplicates);
+  $$('.collection-section-tabs button').forEach(button =>
+    button.classList.toggle('active', button.dataset.collectionTab === collectionSectionTab)
+  );
+  $$('.quantity-filters button').forEach(button =>
+    button.classList.toggle('active', button.dataset.quantityFilter === collectionFilters.quantity)
+  );
+  $('#collectionFavoriteFilter').value = collectionFilters.favorite;
   $('#collectionSort').value = collectionSort;
   $$('.collection-view-switch button').forEach(button => {
     button.classList.toggle('active', button.dataset.collectionView === collectionViewMode);
@@ -2589,11 +3276,15 @@ function renderCollection() {
   });
   const filteredCollection = allCards.filter(card => Collection.matchesFilters(card, collectionFilters));
   const setsMode = collectionViewMode === 'sets';
+  $('#setOverview').classList.toggle('missing-focus', collectionSectionTab === 'missing');
   $('#setOverview').hidden = !setsMode;
   $('#collectionList').hidden = setsMode;
   $('#collectionLoadMore').hidden = setsMode || !view.hasMore;
   $('.collection-result-heading').hidden = setsMode;
   if (setsMode) renderSetOverview(filteredCollection);
+  $('#collectionListTitle').textContent = ({duplicates: 'Duplikate', favorites: 'Favoriten'})[
+    collectionSectionTab
+  ] || 'Karten';
   $('#collectionResultCount').textContent = `${formatInteger(view.total)} ${view.total === 1 ? 'Ergebnis' : 'Ergebnisse'}`;
   const box = $('#collectionList');
   box.className = collectionViewMode === 'list' ? 'collection-list-view' : 'collection-grid';
@@ -2617,7 +3308,8 @@ function renderCollectionCard(card) {
   const image = cardThumbnail(card);
   const encodedId = encodeURIComponent(String(card.id));
   const unitValue = Number(card.estimatedUnitValue) || Collection.estimatedUnitValue(card);
-  const grade = card.grade || card.pregrade || (card.specimens || []).find(item => item.grade || item.pregrade);
+  const latestGrading = card.gradingRecords && card.gradingRecords[0];
+  const grade = latestGrading || card.grade || card.pregrade || (card.specimens || []).find(item => item.grade || item.pregrade);
   return `<article class="collection-entry" data-collection-key="${esc(card.collectionKey)}">
     <button type="button" class="collection-entry-main" onclick="openCollectionDetail('${encodedId}')" aria-label="Details zu ${esc(card.name)}">
       <span class="collection-image-wrap">
@@ -2627,7 +3319,7 @@ function renderCollectionCard(card) {
       </span>
       <span class="collection-entry-info"><small>${esc(label(card.tcg))}</small><b>${esc(card.name || 'Unbenannte Karte')}</b>
         <span>${esc(card.number || 'Nummer unbekannt')}</span><span class="collection-set-name">${esc(card.set || 'Set unbekannt')}</span>
-        <span class="collection-entry-meta">${languageLabel(card.lang || card.language)} · ${esc(Collection.variantLabel(card.printingVariant))}${grade ? ' · Grading' : ''}</span>
+        <span class="collection-entry-meta">${languageLabel(card.lang || card.language)} · ${esc(Collection.variantLabel(card.printingVariant))}${grade ? ` · ${latestGrading ? String(latestGrading.pregrade).replace('.', ',') + '/10' : 'Grading'}` : ''}</span>
         ${unitValue ? `<strong class="collection-value">${formatMoney(unitValue * card.quantity)}</strong>` : ''}
       </span>
     </button>
@@ -2687,31 +3379,37 @@ window.openSetDetail = encodedKey => {
 
 window.openCollectionDetail = encodedId => {
   const id = decodeURIComponent(encodedId);
-  const card = loadCollection().find(item => String(item.id) === id);
+  const card = collectionWithGrading().find(item => String(item.id) === id);
   if (!card) return;
   const image = card.imageLarge || card.image || card.imageSmall || card.front && card.front.preview || '';
   const unitValue = Number(card.estimatedUnitValue) || Collection.estimatedUnitValue(card);
   const specimens = card.specimens || [];
+  const gradingRecords = Grading.recordsForCard(gradingState, card);
+  const gradedSpecimens = Grading.gradedSpecimenCount(gradingState, card);
   const learning = Learning.cardLearningStatus(learningState, card);
   const rawPriceSource = card.price && card.price.source || '';
   const rawMarket = unitValue
     ? `<div><small>Raw-Marktwert</small><b>${formatMoney(unitValue)}</b><span>Quelle: ${esc(rawPriceSource || 'gespeicherter Preisindikator')}</span></div>`
     : '<div><small>Raw-Marktwert</small><b>Keine aktuellen Marktdaten verfügbar</b></div>';
   const gradingMarket = '<div><small>PSA / CGC / BGS</small><b>Keine aktuellen Marktdaten verfügbar</b><span>PriceCharting wird nur mit belastbaren Kartendaten angezeigt.</span></div>';
-  const pregradeNotice = card.grade || card.score
-    ? `<p><b>PokéFolio Vorgrading:</b> ${esc(card.grade || card.score)}<br><small>Schätzung – kein offizielles PSA-/CGC-/BGS-Grading und kein automatisch abgeleiteter Grading-Marktwert.</small></p>`
+  const latestGrading = gradingRecords[0];
+  const pregradeNotice = latestGrading || card.grade || card.score
+    ? `<p><b>PokéFolio Vorgrading:</b> ${esc(latestGrading ? String(latestGrading.pregrade).replace('.', ',') + ' / 10' : card.grade || card.score)}<br><small>Schätzung – kein offizielles PSA-/CGC-/BGS-Grading und kein automatisch abgeleiteter Grading-Marktwert.</small></p>`
     : '';
   const scanDetails = specimens.map((copy, index) => `<div class="specimen-row"><b>Einzelexemplar ${index + 1}</b><span>${esc(copy.grade || copy.pregrade || 'Raw / ohne Pregrade')}</span>${copy.notes ? `<small>${esc(copy.notes)}</small>` : ''}</div>`).join('');
+  const gradingDetails = gradingRecords.map(record => `<button type="button" class="specimen-row grading-detail-row" onclick="openGradingFromCollectionDetail('${encodeURIComponent(record.id)}')"><b>Exemplar ${record.specimenIndex}</b><span>${String(record.pregrade).replace('.', ',')} / 10</span><small>${new Date(record.createdAt).toLocaleString('de-DE')} · ${esc(record.gradeLabel)}</small></button>`).join('');
   $('#collectionDetailBody').innerHTML = `<article class="card-detail-card">
     <div class="card-detail-image">${image ? `<img loading="lazy" decoding="async" src="${esc(image)}" alt="${esc(card.name)}">` : '<span class="collection-image-placeholder">Kein Kartenbild</span>'}</div>
     <div class="card-detail-info"><span class="section-kicker">${esc(label(card.tcg))}</span><h2 id="collectionDetailTitle">${esc(card.name)}</h2><p>${esc(card.set || 'Set unbekannt')} · ${esc(card.number || 'Nummer unbekannt')}</p><div class="item-meta"><span>${languageLabel(card.lang || card.language)}</span><span>${esc(Collection.variantLabel(card.printingVariant))}</span></div>
       <div class="detail-values"><div><small>Einzelwert</small><b>${unitValue ? formatMoney(unitValue) : '–'}</b></div><div><small>Bestand</small><b>${card.quantity}</b></div><div><small>Gesamt</small><b>${unitValue ? formatMoney(unitValue * card.quantity) : '–'}</b></div></div>
       <div class="collection-quantity detail-quantity"><button type="button" onclick="adjustDetailQuantity('${encodeURIComponent(String(card.id))}',-1)">−</button><output>${card.quantity}</output><button type="button" onclick="adjustDetailQuantity('${encodeURIComponent(String(card.id))}',1)">+</button></div>
       <button type="button" class="secondary compact" onclick="toggleCollectionFavorite('${encodeURIComponent(String(card.id))}')">${card.favorite ? '★ Favorit entfernen' : '☆ Als Favorit markieren'}</button>
+      <button type="button" class="primary compact detail-grading-button" onclick="startGradingFromCollection('${encodeURIComponent(String(card.id))}')">PokéFolio Vorgrading starten</button>
+      <button type="button" class="secondary compact detail-grading-button" onclick="showCollectionGradings()">Gradings anzeigen</button>
     </div>
     <section class="detail-market"><h3>Marktwerte</h3><div class="detail-market-grid">${rawMarket}${gradingMarket}</div>${pregradeNotice}</section>
     <section class="detail-learning"><h3>Erkennung</h3><div><span>Lokale Referenzen</span><b>${learning.references}</b></div><div><span>Letzte Confidence</span><b>${learning.lastConfidence ? Math.round(learning.lastConfidence * 100) + ' %' : '–'}</b></div><div><span>Durchschnitt</span><b>${learning.averageConfidence ? Math.round(learning.averageConfidence * 100) + ' %' : '–'}</b></div>${learning.optimized ? '<p>✓ Erkennung für diese Karte lokal optimiert</p>' : '<p class="muted">Noch nicht ausreichend bestätigt.</p>'}</section>
-    <details class="detail-scan-data" ${specimens.length ? 'open' : ''}><summary>Scan-Daten, Pregrade und Authentizität</summary>${scanDetails || '<p class="muted">Bulk-Eintrag ohne individuellen Front-/Backscan oder Pregrade.</p>'}</details>
+    <details id="collectionGradings" class="detail-scan-data" ${gradingRecords.length || specimens.length ? 'open' : ''}><summary>Scan-Daten, Pregrade und Authentizität · ${gradedSpecimens}/${card.quantity} Exemplare bewertet</summary>${gradingDetails}${scanDetails || (!gradingDetails ? '<p class="muted">Bulk-Eintrag ohne individuellen Front-/Backscan oder getrenntes Vorgrading. Der Sammlungseintrag und seine Stückzahl bleiben davon unabhängig.</p>' : '')}</details>
     <label class="detail-notes">Notizen<textarea id="collectionDetailNotes" rows="4" placeholder="Persönliche Notizen …">${esc(card.collectionNotes || '')}</textarea></label>
     <button type="button" class="secondary" onclick="saveCollectionNotes('${encodeURIComponent(String(card.id))}')">Notizen speichern</button>
     <button type="button" class="danger" onclick="delCard('${esc(card.id)}')">Eintrag entfernen</button>
@@ -2722,6 +3420,19 @@ window.openCollectionDetail = encodedId => {
 window.closeCollectionDetail = () => {
   $('#collectionDetail').hidden = true;
   $('#collectionDetailBody').innerHTML = '';
+};
+
+window.showCollectionGradings = () => {
+  const details = $('#collectionGradings');
+  if (!details) return;
+  details.open = true;
+  details.scrollIntoView({behavior: 'smooth', block: 'center'});
+};
+
+window.openGradingFromCollectionDetail = encodedRecordId => {
+  window.closeCollectionDetail();
+  navigateToPage('grading');
+  window.openGradingRecord(encodedRecordId);
 };
 
 $('#collectionDetail').onclick = event => {
@@ -2776,4 +3487,5 @@ window.delCard = id => {
 };
 
 loadCollection();
+renderDashboard();
 renderLearningSettings();

@@ -11,7 +11,7 @@ const index = fs.readFileSync(path.join(assets, 'index.html'), 'utf8');
 const styles = fs.readFileSync(path.join(assets, 'styles.css'), 'utf8');
 
 test('lädt die lokale Lernschicht getrennt vor der App', () => {
-  assert.match(index, /<script src="learning-core\.js"><\/script>\s*<script src="app\.js"><\/script>/);
+  assert.match(index, /<script src="learning-core\.js"><\/script>[\s\S]*<script src="app\.js"><\/script>/);
   assert.match(app, /const Learning = window\.PokeLearning/);
   assert.match(app, /pf_learning_state/);
 });

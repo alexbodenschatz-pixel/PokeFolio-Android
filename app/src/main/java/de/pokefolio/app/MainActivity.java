@@ -116,7 +116,7 @@ public final class MainActivity extends Activity {
         settings.setAllowContentAccess(true);
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
         settings.setMediaPlaybackRequiresUserGesture(false);
-        settings.setUserAgentString(settings.getUserAgentString() + " PokeFolio/0.13.1");
+        settings.setUserAgentString(settings.getUserAgentString() + " PokeFolio/0.14.0");
 
         webView.addJavascriptInterface(new NativeBridge(), "PokeNative");
         webView.setWebViewClient(new WebViewClient() {
@@ -477,7 +477,7 @@ public final class MainActivity extends Activity {
             connection.setReadTimeout(8000);
             connection.setInstanceFollowRedirects(false);
             connection.setRequestProperty("Accept", "image/avif,image/webp,image/*");
-            connection.setRequestProperty("User-Agent", "PokeFolio/0.13.1 Android");
+            connection.setRequestProperty("User-Agent", "PokeFolio/0.14.0 Android");
             int status = connection.getResponseCode();
             if (status < 200 || status >= 300) {
                 throw new IOException("Kartenbild HTTP " + status);
@@ -645,6 +645,7 @@ public final class MainActivity extends Activity {
             JSONObject pass = new JSONObject();
             try {
                 pass.put("variant", variant.name);
+                pass.put("region", variant.region);
                 pass.put("width", variant.bitmap.getWidth());
                 pass.put("height", variant.bitmap.getHeight());
                 if (task.isSuccessful() && task.getResult() != null) {
@@ -653,6 +654,12 @@ public final class MainActivity extends Activity {
                     pass.put("text", value);
                     if (!value.isEmpty()) {
                         uniqueTexts.add(value);
+                        if (isDebugBuild()) {
+                            String safeText = value.replace('\n', ' ').replace('\r', ' ').trim();
+                            if (safeText.length() > 420) safeText = safeText.substring(0, 420) + "…";
+                            Log.d(TAG, "OCR_PASS region=" + variant.region
+                                    + " variant=" + variant.name + " text=" + safeText);
+                        }
                     }
                     JSONArray lines = new JSONArray();
                     for (Text.TextBlock block : text.getTextBlocks()) {
@@ -705,7 +712,7 @@ public final class MainActivity extends Activity {
             connection.setRequestMethod("GET");
             connection.setRequestProperty("Accept", "application/json");
             connection.setRequestProperty("Cache-Control", "no-cache");
-            connection.setRequestProperty("User-Agent", "PokeFolio/0.13.1 Android");
+            connection.setRequestProperty("User-Agent", "PokeFolio/0.14.0 Android");
             status = connection.getResponseCode();
             InputStream stream = status >= 200 && status < 400
                     ? connection.getInputStream()

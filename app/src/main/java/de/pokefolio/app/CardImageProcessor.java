@@ -25,11 +25,23 @@ public final class CardImageProcessor {
 
     public static final class OcrVariant {
         public final String name;
+        /** Logical card region represented by this bitmap. */
+        public final String region;
         public final Bitmap bitmap;
 
         OcrVariant(String name, Bitmap bitmap) {
             this.name = name;
+            this.region = regionForVariant(name);
             this.bitmap = bitmap;
+        }
+
+        private static String regionForVariant(String name) {
+            if (name.startsWith("kopfzeile-")) return "TOP_HEADER";
+            if (name.startsWith("sekundaer-")) return "TOP_SECONDARY";
+            if (name.startsWith("mitteltext-")) return "MIDDLE_TEXT";
+            if (name.startsWith("untertext-")) return "LOWER_TEXT";
+            if (name.startsWith("unterkante-")) return "BOTTOM_METADATA";
+            return "WHOLE_CARD";
         }
     }
 
@@ -236,6 +248,9 @@ public final class CardImageProcessor {
                 Bitmap card = fitCardToCanvas(normal, NORMALIZED_WIDTH, NORMALIZED_HEIGHT);
                 variants.add(new OcrVariant("karte-kontrast-" + rotation, enhanceForOcr(card)));
                 addHeaderOcrVariants(variants, card, rotation);
+                addSecondaryHeaderOcrVariants(variants, card, rotation);
+                addMiddleTextOcrVariants(variants, card, rotation);
+                addLowerTextOcrVariant(variants, card, rotation);
                 addCollectorOcrVariants(variants, card, rotation);
                 if (card != normal) {
                     card.recycle();
@@ -1153,6 +1168,68 @@ public final class CardImageProcessor {
         sharpGray.recycle();
         if (sharpLarge != bottom) sharpLarge.recycle();
         if (bottom != card) bottom.recycle();
+    }
+
+    /** Stage/evolution line below the title. Kept separate so it cannot become the main title. */
+    private static void addSecondaryHeaderOcrVariants(
+            List<OcrVariant> variants,
+            Bitmap card,
+            int rotation
+    ) {
+        int top = Math.max(0, Math.round(card.getHeight() * 0.11f));
+        int bottom = Math.min(card.getHeight(), Math.round(card.getHeight() * 0.31f));
+        Bitmap roi = Bitmap.createBitmap(card, 0, top, card.getWidth(), Math.max(2, bottom - top));
+        int width = 1200;
+        Bitmap scaled = Bitmap.createScaledBitmap(
+                roi,
+                width,
+                Math.max(2, Math.round(roi.getHeight() * width / (float) roi.getWidth())),
+                true
+        );
+        variants.add(new OcrVariant("sekundaer-normal-" + rotation, scaled));
+        variants.add(new OcrVariant("sekundaer-grau-" + rotation, grayscaleForOcr(scaled)));
+        if (roi != card) roi.recycle();
+    }
+
+    /** Attack, ability and trainer rule text used as supporting evidence, never as a title. */
+    private static void addMiddleTextOcrVariants(
+            List<OcrVariant> variants,
+            Bitmap card,
+            int rotation
+    ) {
+        int top = Math.max(0, Math.round(card.getHeight() * 0.34f));
+        int bottom = Math.min(card.getHeight(), Math.round(card.getHeight() * 0.78f));
+        Bitmap roi = Bitmap.createBitmap(card, 0, top, card.getWidth(), Math.max(2, bottom - top));
+        int width = 1200;
+        Bitmap scaled = Bitmap.createScaledBitmap(
+                roi,
+                width,
+                Math.max(2, Math.round(roi.getHeight() * width / (float) roi.getWidth())),
+                true
+        );
+        variants.add(new OcrVariant("mitteltext-normal-" + rotation, scaled));
+        variants.add(new OcrVariant("mitteltext-kontrast-" + rotation, enhanceForOcr(scaled)));
+        if (roi != card) roi.recycle();
+    }
+
+    /** Lower rules and weakness/retreat zone, deliberately separate from collector metadata. */
+    private static void addLowerTextOcrVariant(
+            List<OcrVariant> variants,
+            Bitmap card,
+            int rotation
+    ) {
+        int top = Math.max(0, Math.round(card.getHeight() * 0.67f));
+        int bottom = Math.min(card.getHeight(), Math.round(card.getHeight() * 0.88f));
+        Bitmap roi = Bitmap.createBitmap(card, 0, top, card.getWidth(), Math.max(2, bottom - top));
+        int width = 1100;
+        Bitmap scaled = Bitmap.createScaledBitmap(
+                roi,
+                width,
+                Math.max(2, Math.round(roi.getHeight() * width / (float) roi.getWidth())),
+                true
+        );
+        variants.add(new OcrVariant("untertext-normal-" + rotation, scaled));
+        if (roi != card) roi.recycle();
     }
 
     /** Dedicated 23%-header OCR for species name, V/ex/GX marker and KP/HP. */
