@@ -73,6 +73,7 @@ public final class MainActivity extends Activity {
 
     private WebView webView;
     private ValueCallback<Uri[]> fileCallback;
+    private String pendingFileCaptureMetadata = "";
     private String bulkScannerRequestId;
     private ExecutorService bridgeExecutor;
     private ExecutorService networkExecutor;
@@ -115,7 +116,7 @@ public final class MainActivity extends Activity {
         settings.setAllowContentAccess(true);
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
         settings.setMediaPlaybackRequiresUserGesture(false);
-        settings.setUserAgentString(settings.getUserAgentString() + " PokeFolio/0.13.0");
+        settings.setUserAgentString(settings.getUserAgentString() + " PokeFolio/0.13.1");
 
         webView.addJavascriptInterface(new NativeBridge(), "PokeNative");
         webView.setWebViewClient(new WebViewClient() {
@@ -164,6 +165,9 @@ public final class MainActivity extends Activity {
                     fileCallback.onReceiveValue(null);
                 }
                 fileCallback = callback;
+                synchronized (MainActivity.this) {
+                    pendingFileCaptureMetadata = "";
+                }
 
                 Intent gallery = new Intent(Intent.ACTION_GET_CONTENT);
                 gallery.addCategory(Intent.CATEGORY_OPENABLE);
@@ -281,6 +285,16 @@ public final class MainActivity extends Activity {
             runOnUiThread(() -> launchBulkScanner(requestId));
         }
 
+        /** Consumed once by the file-input change handler to avoid rectifying a camera crop twice. */
+        @JavascriptInterface
+        public String consumeCaptureMetadata() {
+            synchronized (MainActivity.this) {
+                String metadata = pendingFileCaptureMetadata;
+                pendingFileCaptureMetadata = "";
+                return metadata;
+            }
+        }
+
         @JavascriptInterface
         public void vibrateBulkSuccess() {
             runOnUiThread(() -> {
@@ -329,7 +343,7 @@ public final class MainActivity extends Activity {
         try {
             output.put("requestId", requestId);
             source = decodeDataUrlBitmap(dataUrl);
-            preparation = CardImageProcessor.prepareForVisualComparisonDetailed(source, true);
+            preparation = CardImageProcessor.prepareCapturedCardDetailed(source);
             ByteArrayOutputStream bytes = new ByteArrayOutputStream(120_000);
             if (!preparation.bitmap.compress(Bitmap.CompressFormat.JPEG, 91, bytes)) {
                 throw new IOException("Der Kartenausschnitt konnte nicht kodiert werden.");
@@ -342,6 +356,19 @@ public final class MainActivity extends Activity {
             output.put("method", preparation.method);
             output.put("width", preparation.bitmap.getWidth());
             output.put("height", preparation.bitmap.getHeight());
+            output.put("confidence", preparation.confidence);
+            output.put("cardCoverage", preparation.cardCoverage);
+            output.put("fallbackUsed", preparation.fallbackUsed);
+            output.put("detectedQuad", quadJson(preparation.detectedQuad));
+            if (isDebugBuild()) {
+                Log.d(TAG, "CARD_PREPARATION source=" + source.getWidth() + "x" + source.getHeight()
+                        + " final=" + preparation.bitmap.getWidth() + "x" + preparation.bitmap.getHeight()
+                        + " method=" + preparation.method
+                        + " confidence=" + String.format(java.util.Locale.US, "%.3f", preparation.confidence)
+                        + " coverage=" + String.format(java.util.Locale.US, "%.3f", preparation.cardCoverage)
+                        + " fallback=" + preparation.fallbackUsed
+                        + " quad=" + quadJson(preparation.detectedQuad));
+            }
         } catch (Exception error) {
             Log.w(TAG, "Card preparation failed", error);
             try {
@@ -356,6 +383,18 @@ public final class MainActivity extends Activity {
             if (source != null && !source.isRecycled()) source.recycle();
         }
         sendJs("onNativePreparedCard", output);
+    }
+
+    private org.json.JSONArray quadJson(android.graphics.PointF[] quad) {
+        org.json.JSONArray points = new org.json.JSONArray();
+        if (quad == null) return points;
+        for (android.graphics.PointF point : quad) {
+            org.json.JSONArray pair = new org.json.JSONArray();
+            pair.put(Math.round(point.x));
+            pair.put(Math.round(point.y));
+            points.put(pair);
+        }
+        return points;
     }
 
     private void performVisualComparison(
@@ -438,7 +477,7 @@ public final class MainActivity extends Activity {
             connection.setReadTimeout(8000);
             connection.setInstanceFollowRedirects(false);
             connection.setRequestProperty("Accept", "image/avif,image/webp,image/*");
-            connection.setRequestProperty("User-Agent", "PokeFolio/0.13.0 Android");
+            connection.setRequestProperty("User-Agent", "PokeFolio/0.13.1 Android");
             int status = connection.getResponseCode();
             if (status < 200 || status >= 300) {
                 throw new IOException("Kartenbild HTTP " + status);
@@ -666,7 +705,7 @@ public final class MainActivity extends Activity {
             connection.setRequestMethod("GET");
             connection.setRequestProperty("Accept", "application/json");
             connection.setRequestProperty("Cache-Control", "no-cache");
-            connection.setRequestProperty("User-Agent", "PokeFolio/0.13.0 Android");
+            connection.setRequestProperty("User-Agent", "PokeFolio/0.13.1 Android");
             status = connection.getResponseCode();
             InputStream stream = status >= 200 && status < 400
                     ? connection.getInputStream()
@@ -810,6 +849,7 @@ public final class MainActivity extends Activity {
                         encoded.toByteArray(),
                         Base64.NO_WRAP
                 ));
+                putCaptureMetadata(output, data);
                 if (isDebugBuild()) {
                     Log.d(TAG, "Bulk scanner image delivered requestId="
                             + sanitizeLogText(requestId, 80)
@@ -861,6 +901,9 @@ public final class MainActivity extends Activity {
         }
         Uri[] results = null;
         if (resultCode == RESULT_OK) {
+            synchronized (this) {
+                pendingFileCaptureMetadata = captureMetadataJson(data);
+            }
             results = WebChromeClient.FileChooserParams.parseResult(resultCode, data);
             if ((results == null || results.length == 0) && data != null && data.getData() != null) {
                 results = new Uri[]{data.getData()};
@@ -868,6 +911,37 @@ public final class MainActivity extends Activity {
         }
         fileCallback.onReceiveValue(results);
         fileCallback = null;
+    }
+
+    private String captureMetadataJson(Intent data) {
+        if (data == null || !data.getBooleanExtra(CameraActivity.EXTRA_NORMALIZED_CARD, false)) {
+            return "";
+        }
+        JSONObject metadata = new JSONObject();
+        try {
+            putCaptureMetadata(metadata, data);
+            return metadata.toString();
+        } catch (Exception error) {
+            Log.w(TAG, "Unable to pass normalized capture metadata", error);
+            return "";
+        }
+    }
+
+    private void putCaptureMetadata(JSONObject output, Intent data) throws Exception {
+        boolean normalized = data != null
+                && data.getBooleanExtra(CameraActivity.EXTRA_NORMALIZED_CARD, false);
+        if (!normalized) return;
+        float confidence = data.getFloatExtra(CameraActivity.EXTRA_CROP_CONFIDENCE, 0f);
+        boolean fallback = data.getBooleanExtra(CameraActivity.EXTRA_CROP_FALLBACK, false);
+        output.put("normalized", true);
+        output.put("prepared", true);
+        output.put("method", data.getStringExtra(CameraActivity.EXTRA_CROP_METHOD));
+        output.put("confidence", confidence);
+        output.put("cardCoverage", data.getFloatExtra(CameraActivity.EXTRA_CROP_COVERAGE, 0f));
+        output.put("fallbackUsed", fallback);
+        output.put("reliable", !fallback && confidence >= 0.61f);
+        output.put("width", CardImageProcessor.NORMALIZED_WIDTH);
+        output.put("height", CardImageProcessor.NORMALIZED_HEIGHT);
     }
 
     @Override

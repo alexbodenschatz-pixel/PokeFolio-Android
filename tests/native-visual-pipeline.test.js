@@ -11,23 +11,32 @@ const processor = fs.readFileSync(path.join(javaRoot, 'CardImageProcessor.java')
 const matcher = fs.readFileSync(path.join(javaRoot, 'CardVisualMatcher.java'), 'utf8');
 const camera = fs.readFileSync(path.join(javaRoot, 'CameraActivity.java'), 'utf8');
 const overlay = fs.readFileSync(path.join(javaRoot, 'CardOverlayView.java'), 'utf8');
+const app = fs.readFileSync(path.join(__dirname, '..', 'app', 'src', 'main', 'assets', 'app.js'), 'utf8');
 const styles = fs.readFileSync(path.join(__dirname, '..', 'app', 'src', 'main', 'assets', 'styles.css'), 'utf8');
 const gradle = fs.readFileSync(path.join(__dirname, '..', 'app', 'build.gradle'), 'utf8');
 
 test('schneidet und entzerrt den Scan genau einmal vor den Kandidatenvergleichen', () => {
   assert.match(activity, /prepareCardImage\(String dataUrl, String requestId\)/);
-  assert.match(activity, /prepareForVisualComparisonDetailed\(source, true\)/);
+  assert.match(activity, /prepareCapturedCardDetailed\(source\)/);
   assert.match(activity, /comparePreparedCardImage/);
-  assert.match(processor, /fitCardToCanvas\(oriented, 378, 528\)/);
+  assert.match(processor, /prepareDetailed\(source, attemptPerspectiveCorrection, 378, 528\)/);
+  assert.match(processor, /fitCardToCanvas\(oriented, targetWidth, targetHeight\)/);
   assert.match(processor, /Scales the whole detected card into 63:88 without discarding any edge pixels/);
   assert.doesNotMatch(processor, /centerCropToCard/);
-  assert.match(processor, /base != source && !isVariantBitmap\(variants, base\)/);
-  assert.match(processor, /"perspective"/);
-  assert.match(processor, /isCardAspectFrame\(scaled\)/);
-  assert.match(processor, /!attemptPerspectiveCorrection \|\| framedCard \|\| rectified != null/);
-  assert.match(processor, /"framed-card"/);
-  assert.doesNotMatch(processor, /alreadyCardCrop/);
-  assert.match(processor, /"center-fallback"/);
+  assert.match(processor, /scaled != source && !scaled\.isRecycled\(\)/);
+  assert.match(processor, /!isVariantBitmap\(variants, base\) && !base\.isRecycled\(\)/);
+  assert.match(processor, /"detected-perspective"/);
+  assert.doesNotMatch(processor, /isCardAspectFrame/);
+  assert.match(processor, /detectCard\(detectionBitmap\)/);
+  assert.match(processor, /"search-region-fallback"/);
+  assert.match(app, /nativeOcr\(prepared\.dataUrl \|\| dataUrl/);
+  assert.match(app, /displayNormalizedCard\('front', prepared\)/);
+  assert.match(app, /The native normalized card is authoritative/);
+  assert.match(camera, /EXTRA_NORMALIZED_CARD/);
+  assert.match(activity, /consumeCaptureMetadata/);
+  assert.match(app, /AUTHORITATIVE_CAMERA_CROP_REUSED mode=single/);
+  assert.match(app, /AUTHORITATIVE_CAMERA_CROP_REUSED mode=bulk/);
+  assert.match(app, /normalizedCaptureMetadata\.get\('front'\)/);
   assert.match(activity, /"images\.scrydex\.com"/);
 });
 
@@ -80,10 +89,15 @@ test('erlaubt TCGdex nativ und protokolliert typisierte HTTP-Bridge-Fehler nur i
 });
 
 test('bewahrt beim Kamera- und Konturzuschnitt Sicherheitsränder an allen Kartenkanten', () => {
-  assert.match(processor, /frameInView\.width\(\) \* 0\.045f/);
-  assert.match(processor, /frameInView\.height\(\) \* 0\.045f/);
+  assert.match(processor, /frameInView\.width\(\) \* 0\.025f/);
+  assert.match(processor, /frameInView\.height\(\) \* 0\.025f/);
   assert.match(processor, /rectangleHeight \* scaleY \* 0\.035f/);
-  assert.match(processor, /expandQuad\(quad, source\.getWidth\(\), source\.getHeight\(\), 0\.018f\)/);
+  assert.match(processor, /DETECTION_MARGIN = 0\.030f/);
+  assert.match(processor, /factor = 1f \+ fraction \* 2f/);
+  assert.match(camera, /cropPreviewRegionDetailed/);
+  assert.match(camera, /prepareCapturedCardDetailed\(region\)/);
+  assert.match(styles, /\.photo-card img\{[^}]*object-fit:contain/);
+  assert.match(styles, /\.bulk-camera-stage>img\{[^}]*object-fit:contain/);
 });
 
 test('berechnet regionale pHash-, dHash-, Graustufen-, Gradienten- und Farbmerkmale', () => {

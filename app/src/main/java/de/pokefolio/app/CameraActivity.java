@@ -55,6 +55,11 @@ import java.util.concurrent.TimeUnit;
 /** Native CameraX scanner with a card-sized region of interest. */
 public final class CameraActivity extends ComponentActivity {
     public static final String EXTRA_BULK_MODE = "de.pokefolio.app.extra.BULK_MODE";
+    public static final String EXTRA_NORMALIZED_CARD = "de.pokefolio.app.extra.NORMALIZED_CARD";
+    public static final String EXTRA_CROP_METHOD = "de.pokefolio.app.extra.CROP_METHOD";
+    public static final String EXTRA_CROP_CONFIDENCE = "de.pokefolio.app.extra.CROP_CONFIDENCE";
+    public static final String EXTRA_CROP_COVERAGE = "de.pokefolio.app.extra.CROP_COVERAGE";
+    public static final String EXTRA_CROP_FALLBACK = "de.pokefolio.app.extra.CROP_FALLBACK";
     private static final String TAG = "PokeFolioCamera";
     private static final int CAMERA_PERMISSION_REQUEST = 44;
 
@@ -422,30 +427,42 @@ public final class CameraActivity extends ComponentActivity {
         imageCapture.takePicture(options, cameraExecutor, new ImageCapture.OnImageSavedCallback() {
             @Override
             public void onImageSaved(ImageCapture.OutputFileResults output) {
+                Bitmap oriented = null;
+                Bitmap region = null;
+                CardImageProcessor.VisualPreparation preparation = null;
                 try {
-                    Bitmap oriented = CardImageProcessor.decodeAndOrient(temporary, 3200);
-                    Bitmap region = CardImageProcessor.cropPreviewRegion(
+                    oriented = CardImageProcessor.decodeAndOrient(temporary, 3200);
+                    CardImageProcessor.PreviewCrop previewCrop = CardImageProcessor.cropPreviewRegionDetailed(
                             oriented,
                             frame,
                             previewWidth,
                             previewHeight
                     );
-                    Bitmap rectified = CardImageProcessor.rectifyCard(region);
-                    Bitmap result = rectified != null ? rectified : region;
-                    Uri uri = writeCardToGallery(result);
-                    if (rectified != null && rectified != region) {
-                        region.recycle();
+                    region = previewCrop.bitmap;
+                    preparation = CardImageProcessor.prepareCapturedCardDetailed(region);
+                    Log.i(TAG, "CARD_CROP overlay=" + frame
+                            + " preview=" + previewWidth + "x" + previewHeight
+                            + " capture=" + oriented.getWidth() + "x" + oriented.getHeight()
+                            + " captureRoi=" + previewCrop.sourceRect
+                            + " detectedQuad=" + formatQuad(preparation.detectedQuad)
+                            + " final=" + preparation.bitmap.getWidth() + "x" + preparation.bitmap.getHeight()
+                            + " confidence=" + String.format(Locale.US, "%.3f", preparation.confidence)
+                            + " coverage=" + String.format(Locale.US, "%.3f", preparation.cardCoverage)
+                            + " fallback=" + preparation.fallbackUsed
+                            + " method=" + preparation.method);
+                    if (isDebugBuild()) {
+                        writeDebugStages(oriented, region, preparation);
                     }
-                    if (oriented != region && oriented != result && !oriented.isRecycled()) {
-                        oriented.recycle();
-                    }
-                    if (!result.isRecycled()) {
-                        result.recycle();
-                    }
+                    Uri uri = writeCardToGallery(preparation.bitmap);
 
                     Intent resultIntent = new Intent();
                     resultIntent.setData(uri);
                     resultIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                    resultIntent.putExtra(EXTRA_NORMALIZED_CARD, true);
+                    resultIntent.putExtra(EXTRA_CROP_METHOD, preparation.method);
+                    resultIntent.putExtra(EXTRA_CROP_CONFIDENCE, preparation.confidence);
+                    resultIntent.putExtra(EXTRA_CROP_COVERAGE, preparation.cardCoverage);
+                    resultIntent.putExtra(EXTRA_CROP_FALLBACK, preparation.fallbackUsed);
                     runOnUiThread(() -> {
                         setResult(RESULT_OK, resultIntent);
                         finish();
@@ -453,6 +470,11 @@ public final class CameraActivity extends ComponentActivity {
                 } catch (Exception error) {
                     showCaptureError("Die Kartenaufnahme konnte nicht verarbeitet werden.", error);
                 } finally {
+                    if (preparation != null && !preparation.bitmap.isRecycled()) {
+                        preparation.bitmap.recycle();
+                    }
+                    if (region != null && !region.isRecycled()) region.recycle();
+                    if (oriented != null && !oriented.isRecycled()) oriented.recycle();
                     //noinspection ResultOfMethodCallIgnored
                     temporary.delete();
                 }
@@ -465,6 +487,56 @@ public final class CameraActivity extends ComponentActivity {
                 showCaptureError("Aufnahme fehlgeschlagen.", error);
             }
         });
+    }
+
+    private String formatQuad(android.graphics.PointF[] quad) {
+        if (quad == null) return "none";
+        StringBuilder text = new StringBuilder("[");
+        for (int index = 0; index < quad.length; index++) {
+            if (index > 0) text.append(';');
+            text.append(Math.round(quad[index].x)).append(',').append(Math.round(quad[index].y));
+        }
+        return text.append(']').toString();
+    }
+
+    /** Diagnostic stages stay in app cache and are only emitted by debuggable builds. */
+    private void writeDebugStages(
+            Bitmap original,
+            Bitmap frameRoi,
+            CardImageProcessor.VisualPreparation preparation
+    ) {
+        File directory = new File(getCacheDir(), "card-crop-debug");
+        if (!directory.exists() && !directory.mkdirs()) {
+            Log.w(TAG, "CARD_CROP_DEBUG could not create " + directory);
+            return;
+        }
+        Bitmap outlined = null;
+        try {
+            outlined = CardImageProcessor.drawDetectedQuad(
+                    frameRoi, preparation.detectedQuad, preparation.reliable);
+            writeDebugBitmap(new File(directory, "01-original.jpg"), original);
+            writeDebugBitmap(new File(directory, "02-frame-roi.jpg"), frameRoi);
+            writeDebugBitmap(new File(directory, "03-detected-card.jpg"), outlined);
+            writeDebugBitmap(new File(directory, "04-perspective-corrected.jpg"), preparation.bitmap);
+            writeDebugBitmap(new File(directory, "05-final-normalized.jpg"), preparation.bitmap);
+            Log.d(TAG, "CARD_CROP_DEBUG path=" + directory.getAbsolutePath());
+        } catch (Exception error) {
+            Log.w(TAG, "CARD_CROP_DEBUG write failed", error);
+        } finally {
+            if (outlined != null && !outlined.isRecycled()) outlined.recycle();
+        }
+    }
+
+    private void writeDebugBitmap(File file, Bitmap bitmap) throws Exception {
+        try (OutputStream stream = new java.io.FileOutputStream(file)) {
+            if (!bitmap.compress(Bitmap.CompressFormat.JPEG, 92, stream)) {
+                throw new IllegalStateException("Debugbild konnte nicht geschrieben werden.");
+            }
+        }
+    }
+
+    private boolean isDebugBuild() {
+        return (getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0;
     }
 
     private Uri writeCardToGallery(Bitmap bitmap) throws Exception {

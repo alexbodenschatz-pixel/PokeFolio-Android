@@ -7,6 +7,7 @@ import android.graphics.ColorMatrix;
 import android.graphics.ColorMatrixColorFilter;
 import android.graphics.Matrix;
 import android.graphics.Paint;
+import android.graphics.Path;
 import android.graphics.PointF;
 import android.graphics.RectF;
 
@@ -36,13 +37,60 @@ public final class CardImageProcessor {
         public final Bitmap bitmap;
         public final boolean reliable;
         public final String method;
+        public final float confidence;
+        public final float cardCoverage;
+        public final boolean fallbackUsed;
+        /** Detected corners in source-image coordinates, clockwise from top-left. */
+        public final PointF[] detectedQuad;
 
-        VisualPreparation(Bitmap bitmap, boolean reliable, String method) {
+        VisualPreparation(
+                Bitmap bitmap,
+                boolean reliable,
+                String method,
+                float confidence,
+                float cardCoverage,
+                boolean fallbackUsed,
+                PointF[] detectedQuad
+        ) {
             this.bitmap = bitmap;
             this.reliable = reliable;
             this.method = method;
+            this.confidence = confidence;
+            this.cardCoverage = cardCoverage;
+            this.fallbackUsed = fallbackUsed;
+            this.detectedQuad = copyPoints(detectedQuad);
         }
     }
+
+    public static final class PreviewCrop {
+        public final Bitmap bitmap;
+        /** Pixel coordinates in the EXIF-oriented ImageCapture bitmap. */
+        public final RectF sourceRect;
+
+        PreviewCrop(Bitmap bitmap, RectF sourceRect) {
+            this.bitmap = bitmap;
+            this.sourceRect = new RectF(sourceRect);
+        }
+    }
+
+    private static final class CardDetection {
+        final PointF[] quad;
+        final float confidence;
+        final float coverage;
+
+        CardDetection(PointF[] quad, float confidence, float coverage) {
+            this.quad = quad;
+            this.confidence = confidence;
+            this.coverage = coverage;
+        }
+    }
+
+    /** Exact normalized trading-card geometry; 900 * 88 / 63 = 1257.14. */
+    static final int NORMALIZED_WIDTH = 900;
+    static final int NORMALIZED_HEIGHT = 1257;
+    private static final float CARD_RATIO = 63f / 88f;
+    private static final float DETECTION_MARGIN = 0.030f;
+    private static final float RELIABLE_DETECTION = 0.61f;
 
     public static Bitmap decodeAndOrient(File file, int maxDimension) throws IOException {
         BitmapFactory.Options bounds = new BitmapFactory.Options();
@@ -116,15 +164,29 @@ public final class CardImageProcessor {
         return matrix;
     }
 
-    /** Maps the visible overlay into a FILL_CENTER preview image and keeps the full card border. */
+    /**
+     * Maps the visible overlay search area into the oriented capture bitmap. CameraX Preview and
+     * ImageCapture are bound to one ViewPort; this is therefore a ViewPort/FILL_CENTER mapping,
+     * never an assumption that the overlay itself is the card contour.
+     */
     public static Bitmap cropPreviewRegion(
             Bitmap source,
             RectF frameInView,
             int previewWidth,
             int previewHeight
     ) {
+        return cropPreviewRegionDetailed(source, frameInView, previewWidth, previewHeight).bitmap;
+    }
+
+    public static PreviewCrop cropPreviewRegionDetailed(
+            Bitmap source,
+            RectF frameInView,
+            int previewWidth,
+            int previewHeight
+    ) {
         if (previewWidth <= 0 || previewHeight <= 0 || frameInView.isEmpty()) {
-            return scaleDown(source, 2200);
+            Bitmap fallback = scaleDown(source, 2200);
+            return new PreviewCrop(fallback, new RectF(0, 0, source.getWidth(), source.getHeight()));
         }
         float scale = Math.max(
                 previewWidth / (float) source.getWidth(),
@@ -135,8 +197,10 @@ public final class CardImageProcessor {
         float hiddenX = (displayedWidth - previewWidth) / 2f;
         float hiddenY = (displayedHeight - previewHeight) / 2f;
 
-        float paddingX = frameInView.width() * 0.045f;
-        float paddingY = frameInView.height() * 0.045f;
+        // The overlay is only the allowed search region. Keep a small guard band so preview
+        // rounding, sensor rotation and a card touching the guide cannot remove a real edge.
+        float paddingX = frameInView.width() * 0.025f;
+        float paddingY = frameInView.height() * 0.025f;
         RectF padded = new RectF(frameInView);
         padded.inset(-paddingX, -paddingY);
         int left = clamp(Math.round((padded.left + hiddenX) / scale), 0, source.getWidth() - 2);
@@ -148,19 +212,17 @@ public final class CardImageProcessor {
         if (scaled != cropped && cropped != source) {
             cropped.recycle();
         }
-        return scaled;
+        return new PreviewCrop(scaled, new RectF(left, top, right, bottom));
     }
 
     /** Returns OCR passes covering rotation, scale, contrast, lighting and a rectified card area. */
     public static List<OcrVariant> createOcrVariants(Bitmap source) {
         Bitmap scaled = scaleDown(source, 1800);
-        // Gallery downloads and camera-frame crops can already contain the complete
-        // 63:88 card. Running edge detection again tends to lock onto the artwork or
-        // text boxes and removes the header/footer that OCR needs most.
-        boolean framedCard = isCardAspectFrame(scaled);
-        Bitmap rectified = framedCard ? null : rectifyCard(scaled);
-        Bitmap boundedFallback = !framedCard && rectified == null ? cropLikelyCardBounds(scaled) : null;
-        Bitmap base = rectified != null ? rectified : boundedFallback != null ? boundedFallback : scaled;
+        // Never trust the source aspect ratio alone: the camera guide is also 63:88 while a
+        // smaller physical card and substantial background can still be inside it.
+        VisualPreparation preparation = prepareDetailed(
+                scaled, true, NORMALIZED_WIDTH, NORMALIZED_HEIGHT);
+        Bitmap base = preparation.bitmap;
         List<OcrVariant> variants = new ArrayList<>();
 
         int[] rotations = {0, 90, 180, 270};
@@ -171,7 +233,7 @@ public final class CardImageProcessor {
 
             float ratio = normal.getWidth() / (float) normal.getHeight();
             if (ratio >= 0.42f && ratio <= 1.08f) {
-                Bitmap card = fitCardToCanvas(normal, 900, 1257);
+                Bitmap card = fitCardToCanvas(normal, NORMALIZED_WIDTH, NORMALIZED_HEIGHT);
                 variants.add(new OcrVariant("karte-kontrast-" + rotation, enhanceForOcr(card)));
                 addHeaderOcrVariants(variants, card, rotation);
                 addCollectorOcrVariants(variants, card, rotation);
@@ -184,12 +246,12 @@ public final class CardImageProcessor {
             }
         }
 
-        if (scaled != source && scaled != base && !scaled.isRecycled()) {
+        if (scaled != source && !scaled.isRecycled()) {
             scaled.recycle();
         }
         // A small source can itself be the 0-degree full-image OCR variant.
         // Never recycle caller-owned or still-enqueued bitmaps here.
-        if (base != source && !isVariantBitmap(variants, base) && !base.isRecycled()) {
+        if (!isVariantBitmap(variants, base) && !base.isRecycled()) {
             base.recycle();
         }
         return variants;
@@ -223,16 +285,39 @@ public final class CardImageProcessor {
             Bitmap source,
             boolean attemptPerspectiveCorrection
     ) {
+        return prepareDetailed(source, attemptPerspectiveCorrection, 378, 528);
+    }
+
+    /** High-resolution authoritative card crop used by CameraActivity before saving the scan. */
+    public static VisualPreparation prepareCapturedCardDetailed(Bitmap source) {
+        return prepareDetailed(source, true, NORMALIZED_WIDTH, NORMALIZED_HEIGHT);
+    }
+
+    private static VisualPreparation prepareDetailed(
+            Bitmap source,
+            boolean attemptPerspectiveCorrection,
+            int targetWidth,
+            int targetHeight
+    ) {
         Bitmap scaled = scaleDown(source, 1600);
-        boolean framedCard = attemptPerspectiveCorrection && isCardAspectFrame(scaled);
-        Bitmap rectified = attemptPerspectiveCorrection && !framedCard ? rectifyCard(scaled) : null;
-        Bitmap boundedFallback = attemptPerspectiveCorrection && !framedCard && rectified == null
-                ? cropLikelyCardBounds(scaled)
-                : null;
+        Bitmap detectionBitmap = attemptPerspectiveCorrection ? scaleDown(scaled, 640) : null;
+        CardDetection smallDetection = detectionBitmap == null ? null : detectCard(detectionBitmap);
+        CardDetection detection = smallDetection == null ? null : scaleDetection(
+                smallDetection,
+                scaled.getWidth() / (float) Math.max(1, detectionBitmap.getWidth()),
+                scaled.getHeight() / (float) Math.max(1, detectionBitmap.getHeight())
+        );
+        if (detectionBitmap != null && !detectionBitmap.isRecycled()) detectionBitmap.recycle();
+        Bitmap rectified = detection == null ? null : rectifyCard(scaled, detection.quad, DETECTION_MARGIN);
+        // A weak axis-aligned guess can cut off title or collector number. When the four-edge
+        // evidence is insufficient, retain the generous search region instead.
+        Bitmap boundedFallback = null;
         Bitmap base = rectified != null ? rectified : boundedFallback != null ? boundedFallback : scaled;
         Bitmap oriented = base.getWidth() > base.getHeight() ? rotate(base, 90) : base;
+        int detectionWidth = scaled.getWidth();
+        int detectionHeight = scaled.getHeight();
 
-        Bitmap normalized = fitCardToCanvas(oriented, 378, 528);
+        Bitmap normalized = fitCardToCanvas(oriented, targetWidth, targetHeight);
         if (oriented != base && !oriented.isRecycled() && oriented != normalized) {
             oriented.recycle();
         }
@@ -245,25 +330,39 @@ public final class CardImageProcessor {
         if (scaled != source && !scaled.isRecycled() && scaled != normalized) {
             scaled.recycle();
         }
+        PointF[] sourceQuad = null;
+        if (detection != null) {
+            float sourceScaleX = source.getWidth() / (float) Math.max(1, detectionWidth);
+            float sourceScaleY = source.getHeight() / (float) Math.max(1, detectionHeight);
+            sourceQuad = copyPoints(detection.quad);
+            for (PointF point : sourceQuad) {
+                point.x *= sourceScaleX;
+                point.y *= sourceScaleY;
+            }
+        }
         return new VisualPreparation(
                 normalized,
-                !attemptPerspectiveCorrection || framedCard || rectified != null,
+                !attemptPerspectiveCorrection
+                        || (rectified != null && detection.confidence >= RELIABLE_DETECTION),
                 attemptPerspectiveCorrection
-                        ? framedCard
-                            ? "framed-card"
-                            : rectified != null
-                            ? "perspective"
-                            : boundedFallback != null ? "edge-fallback" : "center-fallback"
-                        : "reference"
+                        ? rectified != null
+                            ? "detected-perspective"
+                            : "search-region-fallback"
+                        : "reference-normalized",
+                !attemptPerspectiveCorrection ? 1f : detection == null ? 0.18f : detection.confidence,
+                detection == null ? 1f : detection.coverage,
+                attemptPerspectiveCorrection && rectified == null,
+                sourceQuad
         );
     }
 
-    /** True when the pixels already form a portrait card frame close to 63:88. */
-    private static boolean isCardAspectFrame(Bitmap bitmap) {
-        int shortEdge = Math.min(bitmap.getWidth(), bitmap.getHeight());
-        int longEdge = Math.max(bitmap.getWidth(), bitmap.getHeight());
-        float ratio = shortEdge / (float) Math.max(1, longEdge);
-        return ratio >= 0.69f && ratio <= 0.745f;
+    private static CardDetection scaleDetection(CardDetection detection, float scaleX, float scaleY) {
+        PointF[] quad = copyPoints(detection.quad);
+        for (PointF point : quad) {
+            point.x *= scaleX;
+            point.y *= scaleY;
+        }
+        return new CardDetection(quad, detection.confidence, detection.coverage);
     }
 
     /** Axis-aligned fallback that removes table/background even when four-point fitting is weak. */
@@ -332,8 +431,8 @@ public final class CardImageProcessor {
     /** Attempts a four-point document transform. Returns null when the edge evidence is weak. */
     public static Bitmap rectifyCard(Bitmap source) {
         Bitmap analysis = scaleDown(source, 520);
-        PointF[] smallQuad = findCardQuad(analysis);
-        if (smallQuad == null) {
+        CardDetection detection = detectCard(analysis);
+        if (detection == null) {
             if (analysis != source) {
                 analysis.recycle();
             }
@@ -344,18 +443,23 @@ public final class CardImageProcessor {
         float scaleY = source.getHeight() / (float) analysis.getHeight();
         PointF[] quad = new PointF[4];
         for (int i = 0; i < 4; i++) {
-            quad[i] = new PointF(smallQuad[i].x * scaleX, smallQuad[i].y * scaleY);
+            quad[i] = new PointF(detection.quad[i].x * scaleX, detection.quad[i].y * scaleY);
         }
-        expandQuad(quad, source.getWidth(), source.getHeight(), 0.018f);
         if (analysis != source) {
             analysis.recycle();
         }
+        return rectifyCard(source, quad, DETECTION_MARGIN);
+    }
+
+    private static Bitmap rectifyCard(Bitmap source, PointF[] detectedQuad, float safetyMargin) {
+        PointF[] quad = copyPoints(detectedQuad);
+        expandQuad(quad, source.getWidth(), source.getHeight(), safetyMargin);
 
         float width = (distance(quad[0], quad[1]) + distance(quad[3], quad[2])) / 2f;
         float height = (distance(quad[0], quad[3]) + distance(quad[1], quad[2])) / 2f;
         boolean portrait = width <= height;
-        int outputWidth = portrait ? 900 : 1260;
-        int outputHeight = portrait ? 1260 : 900;
+        int outputWidth = portrait ? NORMALIZED_WIDTH : NORMALIZED_HEIGHT;
+        int outputHeight = portrait ? NORMALIZED_HEIGHT : NORMALIZED_WIDTH;
 
         float[] from = {
                 quad[0].x, quad[0].y,
@@ -380,7 +484,11 @@ public final class CardImageProcessor {
         return output;
     }
 
-    private static PointF[] findCardQuad(Bitmap bitmap) {
+    /**
+     * Finds the printed card, not the guide frame. Several edge pairs are evaluated before the
+     * best rectangle is line-fitted, which avoids locking onto one strong artwork/text-box edge.
+     */
+    private static CardDetection detectCard(Bitmap bitmap) {
         int width = bitmap.getWidth();
         int height = bitmap.getHeight();
         if (width < 80 || height < 80) {
@@ -410,46 +518,373 @@ public final class CardImageProcessor {
         smooth(verticalEnergy, 4);
         smooth(horizontalEnergy, 4);
 
-        int left = peak(verticalEnergy, Math.round(width * 0.025f), Math.round(width * 0.46f));
-        int right = peak(verticalEnergy, Math.round(width * 0.54f), Math.round(width * 0.975f));
-        int top = peak(horizontalEnergy, Math.round(height * 0.025f), Math.round(height * 0.46f));
-        int bottom = peak(horizontalEnergy, Math.round(height * 0.54f), Math.round(height * 0.975f));
-        if (right - left < width * 0.32f || bottom - top < height * 0.32f) {
-            return null;
-        }
-        if (peakRatio(verticalEnergy, left, right) < 1.12f
-                || peakRatio(horizontalEnergy, top, bottom) < 1.12f) {
-            return null;
-        }
-
-        LinearLine topLine = fitHorizontal(luminance, width, height, left, right, top);
-        LinearLine bottomLine = fitHorizontal(luminance, width, height, left, right, bottom);
-        LinearLine leftLine = fitVertical(luminance, width, height, top, bottom, left);
-        LinearLine rightLine = fitVertical(luminance, width, height, top, bottom, right);
-        if (topLine == null || bottomLine == null || leftLine == null || rightLine == null) {
-            return null;
-        }
-
-        PointF topLeft = intersect(topLine, leftLine);
-        PointF topRight = intersect(topLine, rightLine);
-        PointF bottomRight = intersect(bottomLine, rightLine);
-        PointF bottomLeft = intersect(bottomLine, leftLine);
-        PointF[] quad = {topLeft, topRight, bottomRight, bottomLeft};
-        for (PointF point : quad) {
-            if (point == null || point.x < -width * 0.08f || point.y < -height * 0.08f
-                    || point.x > width * 1.08f || point.y > height * 1.08f) {
-                return null;
+        // Text boxes can contain more strong lines than the outer border. Keep enough separated
+        // hypotheses so a low-contrast rounded bottom/top edge is still evaluated.
+        int[] leftPeaks = strongestSeparatedPeaks(verticalEnergy, 1, Math.round(width * 0.49f), 11);
+        int[] rightPeaks = strongestSeparatedPeaks(verticalEnergy, Math.round(width * 0.51f), width - 2, 11);
+        int[] topPeaks = strongestSeparatedPeaks(horizontalEnergy, 1, Math.round(height * 0.49f), 11);
+        int[] bottomPeaks = strongestSeparatedPeaks(horizontalEnergy, Math.round(height * 0.51f), height - 2, 11);
+        List<RectCandidate> rectangles = new ArrayList<>();
+        float verticalMean = mean(verticalEnergy);
+        float horizontalMean = mean(horizontalEnergy);
+        for (int left : leftPeaks) {
+            for (int right : rightPeaks) {
+                for (int top : topPeaks) {
+                    for (int bottom : bottomPeaks) {
+                        float candidateWidth = right - left;
+                        float candidateHeight = bottom - top;
+                        float coverage = candidateWidth * candidateHeight / Math.max(1f, width * height);
+                        if (candidateWidth < width * 0.25f || candidateHeight < height * 0.25f
+                                || coverage < 0.12f) continue;
+                        float ratio = Math.min(candidateWidth, candidateHeight)
+                                / Math.max(candidateWidth, candidateHeight);
+                        if (ratio < 0.47f || ratio > 0.91f) continue;
+                        float aspectScore = clamp01(1f - Math.abs(ratio - CARD_RATIO) / 0.28f);
+                        float edgeScore = clamp01(((verticalEnergy[left] + verticalEnergy[right])
+                                / Math.max(1f, 2f * verticalMean) - 1f) / 2.3f);
+                        edgeScore = (edgeScore + clamp01(((horizontalEnergy[top] + horizontalEnergy[bottom])
+                                / Math.max(1f, 2f * horizontalMean) - 1f) / 2.3f)) / 2f;
+                        float coverageScore = clamp01((coverage - 0.10f) / 0.48f);
+                        float centerX = (left + right) / 2f;
+                        float centerY = (top + bottom) / 2f;
+                        float centerScore = clamp01(1f - (float) Math.hypot(
+                                (centerX - width / 2f) / width,
+                                (centerY - height / 2f) / height
+                        ) * 2.2f);
+                        insertRectangle(rectangles, new RectCandidate(
+                                left, top, right, bottom,
+                                aspectScore * 0.46f + edgeScore * 0.34f
+                                        + coverageScore * 0.10f + centerScore * 0.10f
+                        ), 24);
+                    }
+                }
             }
         }
 
-        float area = polygonArea(quad);
-        float averageWidth = (distance(topLeft, topRight) + distance(bottomLeft, bottomRight)) / 2f;
-        float averageHeight = (distance(topLeft, bottomLeft) + distance(topRight, bottomRight)) / 2f;
-        float aspect = averageWidth / Math.max(1f, averageHeight);
-        if (area < width * height * 0.18f || aspect < 0.42f || aspect > 2.35f) {
-            return null;
+        float baselineGradient = averageGradient(luminance, width, height);
+        CardDetection best = null;
+        float bestScore = 0f;
+        for (RectCandidate rectangle : rectangles) {
+            LinearLine topLine = fitHorizontal(
+                    luminance, width, height, rectangle.left, rectangle.right, rectangle.top);
+            LinearLine bottomLine = fitHorizontal(
+                    luminance, width, height, rectangle.left, rectangle.right, rectangle.bottom);
+            LinearLine leftLine = fitVertical(
+                    luminance, width, height, rectangle.top, rectangle.bottom, rectangle.left);
+            LinearLine rightLine = fitVertical(
+                    luminance, width, height, rectangle.top, rectangle.bottom, rectangle.right);
+            if (topLine == null || bottomLine == null || leftLine == null || rightLine == null) continue;
+
+            PointF[] quad = {
+                    intersect(topLine, leftLine),
+                    intersect(topLine, rightLine),
+                    intersect(bottomLine, rightLine),
+                    intersect(bottomLine, leftLine)
+            };
+            extendToSideEdgeEndpoints(
+                    luminance, width, height, quad, leftLine, rightLine, baselineGradient);
+            if (!plausibleQuad(quad, width, height)) continue;
+            float area = polygonArea(quad);
+            float averageWidth = (distance(quad[0], quad[1]) + distance(quad[3], quad[2])) / 2f;
+            float averageHeight = (distance(quad[0], quad[3]) + distance(quad[1], quad[2])) / 2f;
+            float ratio = Math.min(averageWidth, averageHeight) / Math.max(1f, Math.max(averageWidth, averageHeight));
+            float aspectScore = clamp01(1f - Math.abs(ratio - CARD_RATIO) / 0.24f);
+            EdgeEvidence evidence = edgeEvidence(
+                    pixels, luminance, width, height, quad, baselineGradient);
+            float coverage = area / Math.max(1f, width * height);
+            float coverageScore = clamp01((coverage - 0.11f) / 0.42f);
+            float geometryScore = quadGeometryScore(quad);
+            float score = aspectScore * 0.25f
+                    + evidence.strength * 0.21f
+                    + evidence.continuity * 0.17f
+                    + evidence.separation * 0.27f
+                    + coverageScore * 0.03f
+                    + geometryScore * 0.07f;
+            if (score > bestScore) {
+                bestScore = score;
+                best = new CardDetection(quad, score, coverage);
+            }
         }
-        return quad;
+        // Weak evidence must not trigger an aggressive four-corner crop.
+        return best != null && best.confidence >= 0.46f ? best : null;
+    }
+
+    /**
+     * An internal header/footer rule can look like an ideal 63:88 rectangle. If both real side
+     * borders visibly continue beyond that line, follow them to their endpoints so title and
+     * collector/copyright rows remain inside the quadrilateral.
+     */
+    private static void extendToSideEdgeEndpoints(
+            int[] luminance,
+            int width,
+            int height,
+            PointF[] quad,
+            LinearLine leftLine,
+            LinearLine rightLine,
+            float baselineGradient
+    ) {
+        if (quad == null || quad.length != 4) return;
+        float averageHeight = (distance(quad[0], quad[3]) + distance(quad[1], quad[2])) / 2f;
+        int maximum = Math.max(4, Math.round(averageHeight * 0.16f));
+        int minimumUseful = Math.max(3, Math.round(averageHeight * 0.035f));
+        float threshold = Math.max(8f, baselineGradient * 0.88f);
+
+        int leftBottomExtension = singleSideContinuation(
+                luminance, width, height, quad[3].y, leftLine, 1, maximum, threshold);
+        int rightBottomExtension = singleSideContinuation(
+                luminance, width, height, quad[2].y, rightLine, 1, maximum, threshold);
+        if (leftBottomExtension >= minimumUseful || rightBottomExtension >= minimumUseful) {
+            float leftY = Math.min(height - 1f, quad[3].y
+                    + (leftBottomExtension >= minimumUseful ? leftBottomExtension + 1f : 0f));
+            float rightY = Math.min(height - 1f, quad[2].y
+                    + (rightBottomExtension >= minimumUseful ? rightBottomExtension + 1f : 0f));
+            quad[3].set(leftLine.slope * leftY + leftLine.intercept, leftY);
+            quad[2].set(rightLine.slope * rightY + rightLine.intercept, rightY);
+        }
+    }
+
+    private static int singleSideContinuation(
+            int[] luminance,
+            int width,
+            int height,
+            float startY,
+            LinearLine line,
+            int direction,
+            int maximum,
+            float threshold
+    ) {
+        int lastSupported = 0;
+        int misses = 0;
+        int supported = 0;
+        for (int offset = 2; offset <= maximum; offset++) {
+            float y = startY + direction * offset;
+            if (y < 2 || y >= height - 2) break;
+            float x = line.slope * y + line.intercept;
+            float gradient = verticalBorderGradient(luminance, width, height, x, y);
+            boolean edgePresent = gradient >= threshold;
+            if (edgePresent) {
+                supported++;
+                lastSupported = offset;
+                misses = 0;
+            } else if (++misses > 3) {
+                break;
+            }
+        }
+        return supported >= Math.max(3, lastSupported / 3) ? lastSupported : 0;
+    }
+
+    private static float verticalBorderGradient(
+            int[] luminance, int width, int height, float x, float y
+    ) {
+        int sampleY = clamp(Math.round(y), 1, height - 2);
+        int sampleX = clamp(Math.round(x), 3, width - 4);
+        int row = sampleY * width;
+        return Math.abs(luminance[row + sampleX + 2] - luminance[row + sampleX - 2]);
+    }
+
+    private static boolean plausibleQuad(PointF[] quad, int width, int height) {
+        if (quad == null || quad.length != 4) return false;
+        for (PointF point : quad) {
+            if (point == null || point.x < -width * 0.06f || point.y < -height * 0.06f
+                    || point.x > width * 1.06f || point.y > height * 1.06f) return false;
+        }
+        float area = polygonArea(quad);
+        if (area < width * height * 0.12f) return false;
+        float top = distance(quad[0], quad[1]);
+        float right = distance(quad[1], quad[2]);
+        float bottom = distance(quad[2], quad[3]);
+        float left = distance(quad[3], quad[0]);
+        float ratio = Math.min((top + bottom) / 2f, (left + right) / 2f)
+                / Math.max(1f, Math.max((top + bottom) / 2f, (left + right) / 2f));
+        return ratio >= 0.45f && ratio <= 0.92f
+                && Math.min(top, bottom) / Math.max(1f, Math.max(top, bottom)) >= 0.56f
+                && Math.min(left, right) / Math.max(1f, Math.max(left, right)) >= 0.56f;
+    }
+
+    private static float quadGeometryScore(PointF[] quad) {
+        float score = 0f;
+        for (int i = 0; i < 4; i++) {
+            PointF previous = quad[(i + 3) % 4];
+            PointF center = quad[i];
+            PointF next = quad[(i + 1) % 4];
+            float ax = previous.x - center.x;
+            float ay = previous.y - center.y;
+            float bx = next.x - center.x;
+            float by = next.y - center.y;
+            float denominator = Math.max(1f, (float) Math.hypot(ax, ay) * (float) Math.hypot(bx, by));
+            float cosine = Math.abs((ax * bx + ay * by) / denominator);
+            score += clamp01(1f - cosine / 0.58f);
+        }
+        return score / 4f;
+    }
+
+    private static EdgeEvidence edgeEvidence(
+            int[] pixels,
+            int[] luminance,
+            int width,
+            int height,
+            PointF[] quad,
+            float baseline
+    ) {
+        float strength = 0f;
+        float continuity = 0f;
+        float separation = 0f;
+        int count = 0;
+        float centerX = 0f;
+        float centerY = 0f;
+        for (PointF point : quad) {
+            centerX += point.x;
+            centerY += point.y;
+        }
+        centerX /= 4f;
+        centerY /= 4f;
+        float separationStep = Math.max(3f, Math.min(width, height) / 150f);
+        for (int side = 0; side < 4; side++) {
+            PointF from = quad[side];
+            PointF to = quad[(side + 1) % 4];
+            float dx = to.x - from.x;
+            float dy = to.y - from.y;
+            float length = Math.max(1f, (float) Math.hypot(dx, dy));
+            float nx = -dy / length;
+            float ny = dx / length;
+            for (int sample = 2; sample <= 38; sample++) {
+                float position = sample / 40f;
+                float x = from.x + dx * position;
+                float y = from.y + dy * position;
+                int x1 = clamp(Math.round(x - nx * 2.2f), 0, width - 1);
+                int y1 = clamp(Math.round(y - ny * 2.2f), 0, height - 1);
+                int x2 = clamp(Math.round(x + nx * 2.2f), 0, width - 1);
+                int y2 = clamp(Math.round(y + ny * 2.2f), 0, height - 1);
+                float gradient = Math.abs(luminance[y1 * width + x1] - luminance[y2 * width + x2]);
+                strength += clamp01(gradient / Math.max(8f, baseline * 2.7f));
+                if (gradient >= Math.max(10f, baseline * 1.15f)) continuity += 1f;
+
+                // Wider inside/outside color separation distinguishes a true outer border from
+                // a sharp attack box, rule line or footer line inside the card.
+                float inwardX = centerX - x;
+                float inwardY = centerY - y;
+                float inwardLength = Math.max(1f, (float) Math.hypot(inwardX, inwardY));
+                inwardX /= inwardLength;
+                inwardY /= inwardLength;
+                float redInside = 0f;
+                float greenInside = 0f;
+                float blueInside = 0f;
+                float redOutside = 0f;
+                float greenOutside = 0f;
+                float blueOutside = 0f;
+                for (int offsetIndex = 1; offsetIndex <= 3; offsetIndex++) {
+                    float offset = separationStep * offsetIndex;
+                    int insideColor = colorAt(pixels, width, height,
+                            x + inwardX * offset, y + inwardY * offset);
+                    int outsideColor = colorAt(pixels, width, height,
+                            x - inwardX * offset, y - inwardY * offset);
+                    redInside += (insideColor >> 16) & 0xff;
+                    greenInside += (insideColor >> 8) & 0xff;
+                    blueInside += insideColor & 0xff;
+                    redOutside += (outsideColor >> 16) & 0xff;
+                    greenOutside += (outsideColor >> 8) & 0xff;
+                    blueOutside += outsideColor & 0xff;
+                }
+                float redDifference = (redInside - redOutside) / 3f;
+                float greenDifference = (greenInside - greenOutside) / 3f;
+                float blueDifference = (blueInside - blueOutside) / 3f;
+                float colorDistance = (float) Math.sqrt(
+                        redDifference * redDifference
+                                + greenDifference * greenDifference
+                                + blueDifference * blueDifference);
+                separation += clamp01(colorDistance / 115f);
+                count++;
+            }
+        }
+        return new EdgeEvidence(
+                strength / Math.max(1, count),
+                continuity / Math.max(1, count),
+                separation / Math.max(1, count));
+    }
+
+    private static int colorAt(int[] pixels, int width, int height, float x, float y) {
+        int sampleX = clamp(Math.round(x), 0, width - 1);
+        int sampleY = clamp(Math.round(y), 0, height - 1);
+        return pixels[sampleY * width + sampleX];
+    }
+
+    private static float averageGradient(int[] luminance, int width, int height) {
+        long total = 0L;
+        int count = 0;
+        for (int y = 3; y < height - 3; y += 4) {
+            int row = y * width;
+            for (int x = 3; x < width - 3; x += 4) {
+                total += Math.abs(luminance[row + x + 1] - luminance[row + x - 1]);
+                total += Math.abs(luminance[row + width + x] - luminance[row - width + x]);
+                count += 2;
+            }
+        }
+        return total / (float) Math.max(1, count);
+    }
+
+    private static int[] strongestSeparatedPeaks(float[] values, int start, int end, int count) {
+        int[] result = new int[count];
+        boolean[] selected = new boolean[values.length];
+        int separation = Math.max(4, values.length / 36);
+        for (int slot = 0; slot < count; slot++) {
+            int best = clamp(start, 0, values.length - 1);
+            float bestValue = -1f;
+            for (int index = Math.max(0, start); index <= Math.min(values.length - 1, end); index++) {
+                if (!selected[index] && values[index] > bestValue) {
+                    bestValue = values[index];
+                    best = index;
+                }
+            }
+            result[slot] = best;
+            for (int index = Math.max(0, best - separation);
+                 index <= Math.min(values.length - 1, best + separation); index++) selected[index] = true;
+        }
+        return result;
+    }
+
+    private static void insertRectangle(List<RectCandidate> values, RectCandidate candidate, int limit) {
+        int position = 0;
+        while (position < values.size() && values.get(position).score >= candidate.score) position++;
+        values.add(position, candidate);
+        if (values.size() > limit) values.remove(values.size() - 1);
+    }
+
+    private static float mean(float[] values) {
+        float sum = 0f;
+        for (float value : values) sum += value;
+        return sum / Math.max(1, values.length);
+    }
+
+    private static float clamp01(float value) {
+        return Math.max(0f, Math.min(1f, value));
+    }
+
+    private static final class RectCandidate {
+        final int left;
+        final int top;
+        final int right;
+        final int bottom;
+        final float score;
+
+        RectCandidate(int left, int top, int right, int bottom, float score) {
+            this.left = left;
+            this.top = top;
+            this.right = right;
+            this.bottom = bottom;
+            this.score = score;
+        }
+    }
+
+    private static final class EdgeEvidence {
+        final float strength;
+        final float continuity;
+        final float separation;
+
+        EdgeEvidence(float strength, float continuity, float separation) {
+            this.strength = strength;
+            this.continuity = continuity;
+            this.separation = separation;
+        }
     }
 
     /** Horizontal edge in y = slope * x + intercept form. */
@@ -462,7 +897,8 @@ public final class CardImageProcessor {
             int baseline
     ) {
         List<PointF> points = new ArrayList<>();
-        int band = Math.max(7, Math.round(height * 0.055f));
+        // Wide bands let an outer-border hypothesis snap to a stronger header/footer rule.
+        int band = Math.max(7, Math.round(height * 0.032f));
         int step = Math.max(3, (right - left) / 42);
         for (int x = left + step; x < right - step; x += step) {
             int bestY = -1;
@@ -478,7 +914,7 @@ public final class CardImageProcessor {
                 points.add(new PointF(x, bestY));
             }
         }
-        return robustFit(points, true, Math.max(5f, band * 0.55f));
+        return robustFit(points, true, Math.max(2.5f, band * 0.28f));
     }
 
     /** Vertical edge in x = slope * y + intercept form. */
@@ -491,7 +927,9 @@ public final class CardImageProcessor {
             int baseline
     ) {
         List<PointF> points = new ArrayList<>();
-        int band = Math.max(7, Math.round(width * 0.055f));
+        // Side borders can shift farther under perspective than horizontal edges; allow that
+        // slope without restoring the overly wide header/footer band.
+        int band = Math.max(7, Math.round(width * 0.045f));
         int step = Math.max(3, (bottom - top) / 42);
         for (int y = top + step; y < bottom - step; y += step) {
             int bestX = -1;
@@ -507,23 +945,55 @@ public final class CardImageProcessor {
                 points.add(new PointF(bestX, y));
             }
         }
-        return robustFit(points, false, Math.max(5f, band * 0.55f));
+        return robustFit(points, false, Math.max(2.5f, band * 0.28f));
     }
 
     private static LinearLine robustFit(List<PointF> points, boolean horizontal, float tolerance) {
-        LinearLine initial = leastSquares(points, horizontal);
-        if (initial == null) {
-            return null;
-        }
-        List<PointF> filtered = new ArrayList<>();
-        for (PointF point : points) {
-            float predicted = initial.slope * (horizontal ? point.x : point.y) + initial.intercept;
-            float actual = horizontal ? point.y : point.x;
-            if (Math.abs(predicted - actual) <= tolerance) {
-                filtered.add(point);
+        if (points.size() < 5) return null;
+        LinearLine best = null;
+        float bestScore = -1f;
+        List<PointF> bestInliers = null;
+        int minimumSeparation = Math.max(3, points.size() / 4);
+        for (int first = 0; first < points.size() - minimumSeparation; first++) {
+            for (int second = first + minimumSeparation; second < points.size(); second++) {
+                PointF a = points.get(first);
+                PointF b = points.get(second);
+                float independentA = horizontal ? a.x : a.y;
+                float independentB = horizontal ? b.x : b.y;
+                float dependentA = horizontal ? a.y : a.x;
+                float dependentB = horizontal ? b.y : b.x;
+                float denominator = independentB - independentA;
+                if (Math.abs(denominator) < 1f) continue;
+                float slope = (dependentB - dependentA) / denominator;
+                if (Math.abs(slope) > 0.55f) continue;
+                float intercept = dependentA - slope * independentA;
+                List<PointF> inliers = new ArrayList<>();
+                float residual = 0f;
+                for (PointF point : points) {
+                    float independent = horizontal ? point.x : point.y;
+                    float actual = horizontal ? point.y : point.x;
+                    float distance = Math.abs(slope * independent + intercept - actual);
+                    if (distance <= tolerance) {
+                        inliers.add(point);
+                        residual += distance;
+                    }
+                }
+                float spanBonus = inliers.isEmpty() ? 0f
+                        : Math.abs((horizontal ? inliers.get(inliers.size() - 1).x : inliers.get(inliers.size() - 1).y)
+                        - (horizontal ? inliers.get(0).x : inliers.get(0).y)) / 100f;
+                float score = inliers.size() * 2f + spanBonus - residual * 0.08f;
+                if (score > bestScore) {
+                    bestScore = score;
+                    best = new LinearLine(slope, intercept, horizontal);
+                    bestInliers = inliers;
+                }
             }
         }
-        return filtered.size() >= 8 ? leastSquares(filtered, horizontal) : initial;
+        if (best == null) return leastSquares(points, horizontal);
+        LinearLine refined = bestInliers != null && bestInliers.size() >= 6
+                ? leastSquares(bestInliers, horizontal)
+                : null;
+        return refined != null ? refined : best;
     }
 
     private static LinearLine leastSquares(List<PointF> points, boolean horizontal) {
@@ -622,11 +1092,39 @@ public final class CardImageProcessor {
         }
         centerX /= quad.length;
         centerY /= quad.length;
-        float factor = 1f + fraction;
+        // fraction is the requested guard band per side (3% left/right/top/bottom), therefore
+        // the full quadrilateral grows by twice that value.
+        float factor = 1f + fraction * 2f;
         for (PointF point : quad) {
             point.x = clamp(Math.round(centerX + (point.x - centerX) * factor), 0, width - 1);
             point.y = clamp(Math.round(centerY + (point.y - centerY) * factor), 0, height - 1);
         }
+    }
+
+    private static PointF[] copyPoints(PointF[] points) {
+        if (points == null) return null;
+        PointF[] copy = new PointF[points.length];
+        for (int index = 0; index < points.length; index++) {
+            copy[index] = new PointF(points[index].x, points[index].y);
+        }
+        return copy;
+    }
+
+    /** Debug-only visualization helper; never used as OCR or matching input. */
+    public static Bitmap drawDetectedQuad(Bitmap source, PointF[] quad, boolean reliable) {
+        Bitmap output = source.copy(Bitmap.Config.ARGB_8888, true);
+        if (quad == null || quad.length != 4) return output;
+        Canvas canvas = new Canvas(output);
+        Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        paint.setColor(reliable ? 0xff58d7aa : 0xffffb84d);
+        paint.setStyle(Paint.Style.STROKE);
+        paint.setStrokeWidth(Math.max(3f, Math.min(source.getWidth(), source.getHeight()) / 180f));
+        Path path = new Path();
+        path.moveTo(quad[0].x, quad[0].y);
+        for (int index = 1; index < quad.length; index++) path.lineTo(quad[index].x, quad[index].y);
+        path.close();
+        canvas.drawPath(path, paint);
+        return output;
     }
 
     private static void addCollectorOcrVariants(List<OcrVariant> variants, Bitmap card, int rotation) {

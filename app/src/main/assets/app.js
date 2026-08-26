@@ -40,6 +40,23 @@ const pendingHttp = new Map();
 const pendingVisual = new Map();
 const pendingPreparation = new Map();
 const previewUrls = new Map();
+const normalizedCaptureMetadata = new Map();
+
+/** The native normalized card is authoritative after detection; CSS must only contain it. */
+function displayNormalizedCard(id, prepared) {
+  if (!prepared || !prepared.dataUrl) return;
+  const previous = previewUrls.get(id);
+  if (previous && previous.startsWith('blob:')) URL.revokeObjectURL(previous);
+  previewUrls.set(id, prepared.dataUrl);
+  const image = $('#' + id + 'Img');
+  if (image) image.src = prepared.dataUrl;
+  if (id === 'front') $('#comparisonScanImg').src = prepared.dataUrl;
+  console.debug('[PokeFolio Crop] method=' + (prepared.method || 'unknown')
+    + ' confidence=' + Math.round((Number(prepared.confidence) || 0) * 100) + '%'
+    + ' coverage=' + Math.round((Number(prepared.cardCoverage) || 0) * 100) + '%'
+    + ' fallback=' + Boolean(prepared.fallbackUsed)
+    + ' final=' + (prepared.width || '?') + 'x' + (prepared.height || '?'));
+}
 
 $$('nav button').forEach(button => {
   button.onclick = () => {
@@ -160,6 +177,9 @@ function bindPhoto(id) {
   input.onchange = () => {
     const file = input.files[0];
     if (!file) return;
+    const captureMetadata = consumeNativeCaptureMetadata();
+    if (captureMetadata && captureMetadata.normalized) normalizedCaptureMetadata.set(id, captureMetadata);
+    else normalizedCaptureMetadata.delete(id);
     if (previewUrls.has(id)) URL.revokeObjectURL(previewUrls.get(id));
     const previewUrl = URL.createObjectURL(file);
     previewUrls.set(id, previewUrl);
@@ -175,6 +195,17 @@ function bindPhoto(id) {
       scheduleRecognition(180);
     }
   };
+}
+
+function consumeNativeCaptureMetadata() {
+  if (!window.PokeNative || !PokeNative.consumeCaptureMetadata) return null;
+  try {
+    const json = PokeNative.consumeCaptureMetadata();
+    return json ? JSON.parse(json) : null;
+  } catch (error) {
+    console.warn('[PokeFolio Crop] Aufnahmemetadaten konnten nicht gelesen werden: ' + error.message);
+    return null;
+  }
 }
 
 bindPhoto('front');
@@ -1942,7 +1973,7 @@ function commitBulkCandidate(candidate, trigger) {
 
 window.selectBulkCandidate = index => commitBulkCandidate(bulkCandidates[index], 'MANUAL_SELECTION');
 
-async function runBulkRecognition(dataUrl, previewUrl) {
+async function runBulkRecognition(dataUrl, previewUrl, normalizedCapture = null) {
   const run = ++recognitionRun;
   startBulkSession();
   bulkSourceDataUrl = dataUrl;
@@ -1959,12 +1990,21 @@ async function runBulkRecognition(dataUrl, previewUrl) {
   setBulkStatus('busy', 'Karte wird erkannt', 'OCR, Kartennummer und Set werden ausgewertet.');
   try {
     let prepared;
-    try {
-      prepared = await nativePrepareCard(dataUrl);
-    } catch (error) {
-      prepared = {dataUrl, reliable: false, method: 'bulk-fallback', prepared: false};
-      console.warn('[PokeFolio Bulk] Kartenkontur unsicher: ' + error.message);
+    if (normalizedCapture && normalizedCapture.normalized) {
+      prepared = {...normalizedCapture, dataUrl, prepared: true};
+      console.debug('[PokeFolio Crop] AUTHORITATIVE_CAMERA_CROP_REUSED mode=bulk method=' + prepared.method);
+    } else {
+      try {
+        prepared = await nativePrepareCard(dataUrl);
+      } catch (error) {
+        prepared = {dataUrl, reliable: false, method: 'bulk-fallback', prepared: false};
+        console.warn('[PokeFolio Bulk] Kartenkontur unsicher: ' + error.message);
+      }
     }
+    if (bulkPreviewUrl && bulkPreviewUrl.startsWith('blob:')) URL.revokeObjectURL(bulkPreviewUrl);
+    bulkSourceDataUrl = prepared.dataUrl || dataUrl;
+    bulkPreviewUrl = bulkSourceDataUrl;
+    $('#bulkPreview').src = bulkPreviewUrl;
     const ocrResult = await nativeOcr(prepared.dataUrl || dataUrl, activeRecognitionLanguage());
     if (run !== recognitionRun || scanMode !== 'bulk') return;
     bulkHints = Recognition.extractHints(ocrResult);
@@ -2044,7 +2084,7 @@ window.startBulkCamera = async () => {
       setBulkStatus('ready', 'Bereit zum Scannen', 'Kameraaufnahme wurde abgebrochen.');
       return;
     }
-    await runBulkRecognition(response.dataUrl, response.dataUrl);
+    await runBulkRecognition(response.dataUrl, response.dataUrl, response);
   } catch (error) {
     if (/nicht verfügbar/i.test(error.message || '')) {
       $('#bulkFile').click();
@@ -2097,9 +2137,11 @@ $('#bulkManualSearch').onclick = async () => {
     if (run !== recognitionRun) return;
     let found = mergeLocalOfflineCandidates(lookup.candidates || [], bulkLearningScan);
     if (bulkSourceDataUrl && found.some(candidate => candidate.tcg === 'pokemon' && (candidate.imageSmall || candidate.imageLarge))) {
-      let prepared;
-      try { prepared = await nativePrepareCard(bulkSourceDataUrl); } catch (_) {
-        prepared = {dataUrl: bulkSourceDataUrl, prepared: false, reliable: false, method: 'manual-fallback'};
+      let prepared = bulkLearningScan && bulkLearningScan.prepared;
+      if (!prepared) {
+        try { prepared = await nativePrepareCard(bulkSourceDataUrl); } catch (_) {
+          prepared = {dataUrl: bulkSourceDataUrl, prepared: false, reliable: false, method: 'manual-fallback'};
+        }
       }
       found = await enrichWithVisualSimilarity(found, prepared, run);
     }
@@ -2168,13 +2210,20 @@ async function runRecognition(manual = false) {
   try {
     const dataUrl = await ocrDataUrl(file);
     let prepared;
-    try {
-      prepared = await nativePrepareCard(dataUrl);
-    } catch (error) {
-      prepared = {dataUrl, reliable: false, method: 'single-fallback', prepared: false};
-      console.warn('[PokeFolio Learning] Kartenkontur unsicher: ' + error.message);
+    const normalizedCapture = normalizedCaptureMetadata.get('front');
+    if (normalizedCapture && normalizedCapture.normalized) {
+      prepared = {...normalizedCapture, dataUrl, prepared: true};
+      console.debug('[PokeFolio Crop] AUTHORITATIVE_CAMERA_CROP_REUSED mode=single method=' + prepared.method);
+    } else {
+      try {
+        prepared = await nativePrepareCard(dataUrl);
+      } catch (error) {
+        prepared = {dataUrl, reliable: false, method: 'single-fallback', prepared: false};
+        console.warn('[PokeFolio Learning] Kartenkontur unsicher: ' + error.message);
+      }
     }
-    const ocrResult = await nativeOcr(dataUrl, $('#lang').value);
+    displayNormalizedCard('front', prepared);
+    const ocrResult = await nativeOcr(prepared.dataUrl || dataUrl, $('#lang').value);
     if (run !== recognitionRun) return null;
     recognizedRotation = chooseRecognitionRotation(ocrResult);
     const hints = Recognition.extractHints(ocrResult);
@@ -2494,6 +2543,7 @@ function reset() {
     $('#' + id + 'Img').src = '';
     if (previewUrls.has(id)) URL.revokeObjectURL(previewUrls.get(id));
     previewUrls.delete(id);
+    normalizedCaptureMetadata.delete(id);
   });
   ['name', 'set', 'number'].forEach(id => $('#' + id).value = '');
   $('#result').innerHTML = '';
