@@ -29,7 +29,7 @@ test('schneidet und entzerrt den Scan genau einmal vor den Kandidatenvergleichen
   assert.doesNotMatch(processor, /isCardAspectFrame/);
   assert.match(processor, /detectCard\(detectionBitmap\)/);
   assert.match(processor, /"search-region-fallback"/);
-  assert.match(app, /nativeOcr\(prepared\.dataUrl \|\| dataUrl/);
+  assert.match(app, /recognizeCardFeatures\(prepared\.dataUrl \|\| dataUrl/);
   assert.match(app, /displayNormalizedCard\('front', prepared\)/);
   assert.match(app, /The native normalized card is authoritative/);
   assert.match(camera, /EXTRA_NORMALIZED_CARD/);
@@ -121,8 +121,11 @@ test('liefert gezielte Collector-Number-OCR in mehreren Bildvarianten', () => {
   assert.match(processor, /unterkante-grau-/);
   assert.match(processor, /unterkante-kontrast-/);
   assert.match(processor, /unterkante-scharf-/);
+  assert.match(processor, /unterkante-metadata-normal-/);
+  assert.match(processor, /unterkante-metadata-scharf-/);
   assert.match(processor, /sharpenForOcr/);
   assert.match(processor, /card\.getHeight\(\) \* 0\.80f/);
+  assert.match(processor, /card\.getHeight\(\) \* 0\.84f/);
 });
 
 test('liefert eine enge Kopfzeilen-OCR mit Original, Grau, Kontrast, Schärfe und Skalierungen', () => {

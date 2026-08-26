@@ -133,6 +133,9 @@
     return {
       cardType: text(source.cardType).slice(0, 24),
       name: text(source.name).slice(0, 100),
+      titleSource: text(source.titleSource).slice(0, 32),
+      manualTitleHint: text(source.manualTitleHint).slice(0, 100),
+      manualTitleSource: text(source.manualTitleSource).slice(0, 24),
       number: text(source.number).slice(0, 32),
       set: text(source.set).slice(0, 60),
       language: languageKey(source.language),
@@ -277,6 +280,9 @@
       predictedCardId: cardId(predicted),
       confirmedCardId: cardId(confirmed),
       eventType,
+      learningEventType: eventType === 'CORRECTED' ? 'USER_CORRECTION'
+        : eventType === 'CONFIRMED' ? 'USER_CONFIRMED' : 'USER_REJECTED',
+      correctionReason: text(input && input.correctionReason).slice(0, 40),
       confidenceBefore: clamp(input && input.confidenceBefore),
       confidenceAfter: clamp(input && input.confidenceAfter),
       source: text(input && input.source).slice(0, 40) || 'scan',

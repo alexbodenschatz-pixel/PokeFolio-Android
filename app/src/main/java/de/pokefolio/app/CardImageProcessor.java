@@ -1168,6 +1168,24 @@ public final class CardImageProcessor {
         sharpGray.recycle();
         if (sharpLarge != bottom) sharpLarge.recycle();
         if (bottom != card) bottom.recycle();
+
+        // A second, tighter 16% metadata ROI gives small collector numbers substantially
+        // more pixels without letting attack damage from the lower rule box dominate OCR.
+        int metadataTop = Math.max(0, Math.round(card.getHeight() * 0.84f));
+        Bitmap metadata = Bitmap.createBitmap(
+                card, 0, metadataTop, card.getWidth(), card.getHeight() - metadataTop);
+        int metadataWidth = 1800;
+        Bitmap metadataLarge = Bitmap.createScaledBitmap(
+                metadata,
+                metadataWidth,
+                Math.max(2, Math.round(metadata.getHeight() * metadataWidth / (float) metadata.getWidth())),
+                true
+        );
+        variants.add(new OcrVariant("unterkante-metadata-normal-" + rotation, metadataLarge));
+        Bitmap metadataGray = grayscaleForOcr(metadataLarge);
+        variants.add(new OcrVariant("unterkante-metadata-scharf-" + rotation, sharpenForOcr(metadataGray)));
+        metadataGray.recycle();
+        metadata.recycle();
     }
 
     /** Stage/evolution line below the title. Kept separate so it cannot become the main title. */

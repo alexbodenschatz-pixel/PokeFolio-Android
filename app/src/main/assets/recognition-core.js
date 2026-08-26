@@ -25,6 +25,10 @@
     ? PokemonNames.entries
     : [];
   const pokemonVariantOrder = ['VMAX', 'VSTAR', 'GX', 'EX', 'ex', 'V'];
+  const structuralTitleLabels = new Set([
+    'hp', 'kp', 'basic', 'basis', 'phase 1', 'phase 2', 'stage 1', 'stage 2',
+    'trainer', 'energy', 'energie', 'pokemon', 'pokémon'
+  ]);
   const OFFICIAL_VALIDATION_POLICY = Object.freeze({
     networkAccess: 'DISABLED',
     htmlScraping: false,
@@ -151,7 +155,9 @@
         if (Math.abs(phrase.length - alias.key.length) > (alias.key.length >= 9 ? 2 : 1)) continue;
         if (phrase[0] !== alias.key[0]) continue;
         const score = similarity(phrase, alias.key);
-        const threshold = alias.key.length >= 8 ? 0.84 : alias.key.length >= 5 ? 0.86 : 0.9;
+        // A single substituted glyph in a six-letter header (for example Roichu/Raichu)
+        // scores 0.833. Header consensus and known-species validation provide the safety net.
+        const threshold = alias.key.length >= 8 ? 0.84 : alias.key.length >= 5 ? 0.83 : 0.9;
         if (score >= threshold && (!best || score > best.confidence)) {
           best = {...alias, confidence: score, exact: false};
         }
@@ -358,6 +364,25 @@
     return match[1] + String(parseInt(match[2], 10)) + match[3];
   }
 
+  /**
+   * Parses only complete, contextually valid printed-card identifiers. Bare numbers are
+   * deliberately rejected because they are far more likely to be HP, damage or retreat costs.
+   */
+  function parsePokemonCollectorText(value, context) {
+    const text = String(value || '').replace(/\s+/g, ' ').trim();
+    if (!text || /\b(?:pok[eé]dex|national(?:er)?\s+pok[eé]dex|nr\.?|no\.?)\s*[:#-]?\s*0*\d{1,4}\b/i.test(text)) {
+      return null;
+    }
+    const fraction = text.match(/\b([A-Z]{0,4}\s*-?\s*[0-9OIL|SB]{1,3}[A-Z]?)\s*[\/／]\s*([A-Z]{0,4}\s*-?\s*[0-9OIL|SB]{1,3})\b/i);
+    if (fraction) return parsePokemonCollector(fraction[1], fraction[2], {...(context || {}), text});
+    const promo = text.match(/\b((?:SWSH|SVP|HGSS|SM|XY|BW|DP|PR)\s*-?\s*[0-9OIL|SB]{1,3})\b/i);
+    if (!promo || !(context && (context.simpleInput || Number(context.y) >= 0.68))) return null;
+    const normalized = normalizeCollectorOcrToken(promo[1]);
+    const parsed = normalized.match(/^([A-Z]{1,4})(\d{1,3})$/);
+    if (!parsed || !pokemonCollectorPrefixes.has(parsed[1])) return null;
+    return {number: parsed[1] + parsed[2], total: '', prefix: parsed[1]};
+  }
+
   function parsePokemonCollector(numberValue, totalValue, context) {
     const line = String(context && context.text || '');
     const y = Number(context && context.y);
@@ -389,6 +414,35 @@
       number: numberPrefix + digits + numberMatch[3],
       total,
       prefix: numberPrefix || totalPrefix || ''
+    };
+  }
+
+  function isStructuralCardLabel(value) {
+    const normalized = norm(String(value || '')
+      .replace(/\b(?:KP|HP)\s*[0-9OIL|]{1,3}\b/ig, ' ')
+      .replace(/\s+/g, ' '));
+    return !normalized || structuralTitleLabels.has(normalized)
+      || /^(?:hp|kp)\s*\d{1,3}$/.test(norm(value));
+  }
+
+  /** Keeps a user's search term separate from immutable OCR evidence. */
+  function withManualTitleHint(hints, value) {
+    const base = hints && typeof hints === 'object' ? hints : extractHints('');
+    const manualTitleHint = String(value || '').replace(/\s+/g, ' ').trim();
+    const known = bestKnownPokemonName(manualTitleHint, true);
+    return {
+      ...base,
+      manualTitleHint,
+      manualTitleSource: manualTitleHint ? 'USER_HINT' : '',
+      manualTitleConfidence: manualTitleHint ? (known ? clamp(known.confidence * 0.96, 0, 0.96) : 0.72) : 0,
+      manualPokemonIdentity: known ? {
+        speciesId: known.id,
+        baseName: known.display,
+        englishName: known.entry.en,
+        germanName: known.entry.de,
+        variant: extractPokemonVariant(manualTitleHint),
+        source: 'USER_HINT'
+      } : null
     };
   }
 
@@ -734,6 +788,7 @@
     const setCodeVotes = new Map();
     const onePieceVotes = new Map();
     const hpVotes = new Map();
+    const rarityVotes = new Map();
 
     passes.forEach((pass, passIndex) => {
       const text = String(pass.text || '').replace(/\r/g, '');
@@ -776,7 +831,7 @@
         const collectorPattern = /\b([A-Z]{0,4}\s*-?\s*[0-9OIL|SB]{1,3}[A-Z]?)\s*[\/／]\s*([A-Z]{0,4}\s*-?\s*[0-9OIL|SB]{1,3})\b/gi;
         let collectorMatch;
         while ((collectorMatch = collectorPattern.exec(line.text)) !== null) {
-          const collector = parsePokemonCollector(collectorMatch[1], collectorMatch[2], {
+          const collector = parsePokemonCollectorText(collectorMatch[0], {
             text: line.text,
             y: line.y,
             simpleInput: line.variant === 'einfach'
@@ -810,6 +865,18 @@
               seenCollectors.add(key);
               addVote(collectorVotes, key, item, line.region === 'BOTTOM_METADATA' ? 1.8 : 1.2);
             }
+          }
+        }
+
+        if (line.region === 'BOTTOM_METADATA' || line.y >= 0.82) {
+          const rarityPattern = /(?:^|\s)(SAR|AR|SR|RRR|RR|R|U|C)(?=\s|$|[·•])/gi;
+          let rarityMatch;
+          while ((rarityMatch = rarityPattern.exec(line.text)) !== null) {
+            const rarity = rarityMatch[1].toUpperCase();
+            const containsCollector = /[0-9OIL|SB]{1,3}\s*[\/／]\s*[0-9OIL|SB]{1,3}/i.test(line.text);
+            const shortMetadataLine = line.text.length <= 32;
+            if (!containsCollector && !shortMetadataLine) continue;
+            addVote(rarityVotes, rarity, rarity, line.region === 'BOTTOM_METADATA' ? 1.8 : 1.1);
           }
         }
       });
@@ -856,7 +923,8 @@
       const normalized = norm(value);
       const letters = (value.match(/[\p{L}]/gu) || []).length;
       const digits = (value.match(/\d/g) || []).length;
-      if (value.length < 2 || value.length > 48 || letters < 2 || digits > letters) return;
+      if (value.length < 2 || value.length > 48 || letters < 2 || digits > letters
+        || isStructuralCardLabel(value)) return;
       if (bannedNameTerms.some(term => normalized.includes(norm(term)))) return;
       if (/^[A-Z0-9-]{5,}$/.test(value) || /\d+\s*[\/／]\s*\d+/.test(value)) return;
       if (/\b(?:pok[eé]dex|nr\.?|no\.?)\s*[:#-]?\s*0*\d{1,4}\b/i.test(value)) return;
@@ -881,11 +949,12 @@
     const completeText = textPasses.join('\n');
     const orientedText = activeLines.map(line => line.text).join('\n') || completeText;
     const lower = completeText.toLocaleLowerCase();
-    const rarityTerms = [
+    const rarityTerms = [...rarityVotes.values()].sort((left, right) => right.votes - left.votes)
+      .map(entry => entry.value).concat([
       'illustration rare', 'special illustration rare', 'hyper rare', 'ultra rare',
       'double rare', 'rare', 'uncommon', 'common', 'holo', 'promo',
       'selten', 'häufig', 'reverse holo'
-    ].filter(term => lower.includes(term));
+    ].filter(term => lower.includes(term)));
     const stageTerms = ['basic', 'basis', 'stage 1', 'stage 2', 'phase 1', 'phase 2']
       .filter(term => lower.includes(term));
     const artistMatch = completeText.match(/(?:illus(?:trator)?\.?|illustration)\s*[:.]?\s*([\p{L} .'-]{3,38})/iu);
@@ -947,7 +1016,7 @@
       lines: lineEntries,
       cardType: cardTypeResult.value,
       cardTypeConfidence: cardTypeResult.confidence,
-      mainTitle: nonPokemonTitle.title || identityName,
+      mainTitle: isStructuralCardLabel(nonPokemonTitle.title || identityName) ? '' : nonPokemonTitle.title || identityName,
       titleConfidence: nonPokemonTitle.title ? nonPokemonTitle.confidence : pokemonIdentity.nameConfidence,
       titleSource: nonPokemonTitle.title ? nonPokemonTitle.source
         : /^kopfzeile-/.test(pokemonIdentity.source) ? 'TOP_HEADER' : pokemonIdentity.source,
@@ -987,6 +1056,7 @@
           .map(line => line.text).join('\n')
       },
       rarityHints: rarityTerms,
+      rarity: rarityTerms[0] || '',
       stageHints: stageTerms,
       artistHint: artistMatch ? artistMatch[1].trim() : ''
     };
@@ -1022,12 +1092,13 @@
     if (!manual && reliableDetectedName && candidateIdentity) {
       return detectedIdentity.speciesId === candidateIdentity.speciesId ? 1 : 0;
     }
-    const manualMatch = manual ? bestKnownPokemonName(manual, true) : null;
+    const manualHint = String(manual || hints && hints.manualTitleHint || '');
+    const manualMatch = manualHint ? bestKnownPokemonName(manualHint, true) : null;
     if (manualMatch && candidateIdentity) {
       return manualMatch.id === candidateIdentity.speciesId ? 1 : 0;
     }
-    const values = manual
-      ? [{value: manual, votes: 4}]
+    const values = manualHint
+      ? [{value: manualHint, votes: 4}]
       : (hints.nameHints || []).length
         ? hints.nameHints
         : [{value: hints.nameHint || '', votes: 1}];
@@ -1132,7 +1203,9 @@
     const collectorStatus = matchingCollector
       ? 'match'
       : collectors.length && candidateNumber ? 'mismatch' : 'unknown';
-    const nameScore = clamp(bestNameSimilarity(hints, candidate.name, manual), 0, 1);
+    const manualHint = String(manual || hints && hints.manualTitleHint || '').trim();
+    const nameSource = manualHint ? 'USER_HINT' : 'OCR';
+    const nameScore = clamp(bestNameSimilarity(hints, candidate.name, manualHint), 0, 1);
     if (nameScore >= 0.78) evidence.push('Name');
     const detectedVariant = normalizePokemonVariant(hints && hints.pokemonIdentity && hints.pokemonIdentity.variant);
     const candidateVariant = normalizePokemonVariant(extractPokemonVariant(candidate.name));
@@ -1239,8 +1312,13 @@
     } else if (languageStatus === 'fallback') {
       evidence.push('Referenzbild andere Sprache');
     }
+    const detectedCardType = normalizedPokemonCardType(hints && hints.cardType);
+    const actualCardType = candidateCardType(candidate);
+    const typeStatus = detectedCardType !== 'unknown' && actualCardType !== 'unknown'
+      ? detectedCardType === actualCardType ? 'match' : 'mismatch'
+      : 'unknown';
 
-    const titleReliable = Boolean(manual)
+    const titleReliable = Boolean(manualHint)
       || Boolean(hints && hints.pokemonIdentity && hints.pokemonIdentity.reliable)
       || Number(hints && hints.pokemonIdentity && hints.pokemonIdentity.nameConfidence) >= 0.82;
     const nameStatus = nameScore >= 0.88
@@ -1249,13 +1327,17 @@
     const signals = [
       {key: 'collector', status: collectorStatus, weight: 0.30, penalty: 0.42},
       {key: 'set', status: setStatus, weight: 0.20, value: Math.max(setScore, setNumberMatches ? 1 : 0), penalty: 0.26},
-      {key: 'name', status: nameStatus, weight: 0.20, value: nameScore, penalty: 0.38,
-        reliability: Number(hints && hints.pokemonIdentity && hints.pokemonIdentity.nameConfidence) || (manual ? 1 : 0.7)},
+      {key: 'name', status: nameStatus, weight: manualHint ? 0.14 : 0.20, value: nameScore,
+        penalty: manualHint ? 0.24 : 0.38,
+        reliability: manualHint
+          ? Number(hints && hints.manualTitleConfidence) || 0.74
+          : Number(hints && hints.pokemonIdentity && hints.pokemonIdentity.nameConfidence) || 0.7},
       {key: 'hp', status: hpStatus, weight: 0.09, penalty: 0.13},
       {key: 'variant', status: variantStatus, weight: 0.045, penalty: 0.12},
       {key: 'attack', status: attack.attackStatus, weight: 0.075, value: attack.attackScore, penalty: 0.09},
       {key: 'damage', status: attack.damageStatus, weight: 0.04, penalty: 0.06},
       {key: 'language', status: languageStatus === 'fallback' ? 'unknown' : languageStatus, weight: 0.025, penalty: 0.04},
+      {key: 'type', status: typeStatus, weight: 0.025, penalty: 0.18},
       {key: 'rarity', status: rarityStatus, weight: 0.01, penalty: 0.015}
     ];
     let identificationScore = scoreFromSignals(signals);
@@ -1291,12 +1373,15 @@
       visualVariantScore: null,
       dataConfidence,
       finalConfidence: confidence,
-      scoreModelVersion: 2,
+      scoreModelVersion: 3,
       evidence: Array.from(new Set(evidence)),
       matchDetails: {
         name: nameScore,
+        nameSource,
+        manualHint: manualHint ? nameScore : null,
         variant: variantStatus,
         collector: collectorStatus,
+        numberScore: collectorStatus === 'match' ? 1 : collectorStatus === 'mismatch' ? 0 : null,
         collectorDetected: collectors.map(item => item.number).filter(Boolean),
         set: setStatus,
         setNumber: setNumberStatus,
@@ -1308,13 +1393,18 @@
         textFeatures: attack.attackStatus === 'match' || attack.damageStatus === 'match' ? 'match'
           : attack.attackStatus === 'mismatch' && attack.damageStatus === 'mismatch' ? 'mismatch' : 'unknown',
         language: languageStatus,
+        languageScore: languageStatus === 'match' ? 1 : languageStatus === 'mismatch' ? 0 : null,
+        cardType: typeStatus,
+        typeScore: typeStatus === 'match' ? 1 : typeStatus === 'mismatch' ? 0 : null,
         rarity: rarityStatus,
         artwork: null,
         wholeImage: null,
         headerImage: null,
         footerImage: null,
         textImage: null,
-        visualReliable: null
+        visualReliable: null,
+        layoutScore: null,
+        finalIdentityScore: confidence
       }
     };
   }
@@ -1656,6 +1746,8 @@
       ? Number(visualInput.footer) : normalizedVisual, 0, 1);
     const textImage = clamp(Number.isFinite(Number(visualInput.text))
       ? Number(visualInput.text) : (whole + footer) / 2, 0, 1);
+    const layout = clamp(Number.isFinite(Number(visualInput.layout))
+      ? Number(visualInput.layout) : whole * 0.52 + header * 0.20 + footer * 0.16 + textImage * 0.12, 0, 1);
     const visualReliable = visualInput.reliable !== false;
     let identificationScore = clamp(Number.isFinite(Number(candidate.identificationScore))
       ? Number(candidate.identificationScore) : Number(candidate.textConfidence) || Number(candidate.confidence) || 0, 0, 0.99);
@@ -1691,6 +1783,7 @@
     const corroboratedIdentity = nameScore >= 0.88
       && hpStatus === 'match'
       && (attackStatus === 'match' || damageStatus === 'match' || setStatus === 'match');
+    const userHintIdentity = details.nameSource === 'USER_HINT' && nameScore >= 0.94;
 
     // Artwork confirms card identity, not a reflective finish. Holo/Reverse detection is
     // resolved separately by variant-core; therefore it can never drag a proven identity down.
@@ -1700,9 +1793,14 @@
       identificationScore = Math.max(identificationScore, 0.965);
     } else if (corroboratedIdentity && strongVisual) {
       identificationScore = Math.max(identificationScore, 0.88);
+    } else if (userHintIdentity && strongVisual && layout >= 0.74) {
+      // A manually supplied species name focuses retrieval but does not become OCR truth.
+      // Only candidate-specific artwork plus layout can turn that hint into a strong result.
+      identificationScore = Math.max(identificationScore, 0.84);
     }
     if (strongVisual && !exactPrintedIdentity) {
-      identificationScore = clamp(identificationScore + 0.05, 0, collectorStatus === 'match' ? 0.94 : 0.79);
+      identificationScore = clamp(identificationScore + 0.05, 0,
+        collectorStatus === 'match' ? 0.94 : userHintIdentity ? 0.88 : 0.79);
     }
     if (severeArtworkMismatch && !exactPrintedIdentity) {
       identificationScore = Math.min(identificationScore - 0.20, collectorStatus === 'match' ? 0.70 : 0.42);
@@ -1759,7 +1857,7 @@
         ? clamp(Number(candidate.printVariantScore), 0, 1) : null,
       dataConfidence,
       finalConfidence: confidence,
-      scoreModelVersion: 2,
+      scoreModelVersion: 3,
       visualSimilarity: normalizedVisual,
       visualResult: {
         similarity: normalizedVisual,
@@ -1768,6 +1866,7 @@
         header,
         text: textImage,
         footer,
+        layout,
         reliable: visualReliable,
         method: String(visualInput.method || '')
       },
@@ -1779,6 +1878,9 @@
         headerImage: header,
         textImage,
         footerImage: footer,
+        layoutImage: layout,
+        layoutScore: layout,
+        finalIdentityScore: confidence,
         visualReliable,
         crossLanguageReference,
         variantUncertain: Boolean(candidate.variantResolution && !candidate.variantResolution.confirmed)
@@ -1888,7 +1990,7 @@
     const reliableLanguage = detectedLanguage && Number(hints && hints.languageConfidence) >= 0.70;
     let languagePool = input.slice();
     let usedLanguageFallback = false;
-    if (!manual && reliableLanguage) {
+    if (reliableLanguage) {
       const localized = languagePool.filter(candidate => candidateLanguageValues(candidate).includes(detectedLanguage));
       if (localized.length) {
         const compatibleLanguage = detectedLanguage === 'zh-CN' ? 'zh-TW'
@@ -1947,6 +2049,53 @@
       number,
       norm(candidate.language || (candidate.languages || [])[0])
     ].join('|');
+  }
+
+  function candidateDedupKey(candidate) {
+    if (!candidate) return '';
+    const set = norm(candidate.setId || candidate.setCode || candidate.set);
+    const number = numberKey(candidate.number);
+    const language = normalizeCardLanguage(candidate.language || (candidate.languages || [])[0]) || 'unknown';
+    const variant = norm(candidate.printingVariant || candidate.variant || candidate.finish || 'unknown') || 'unknown';
+    if (!set || !number) return [norm(candidate.tcg || 'pokemon'), norm(candidate.id || candidate.name), language, variant].join('|');
+    return [norm(candidate.tcg || 'pokemon'), set, number, language, variant].join('|');
+  }
+
+  function deduplicateCandidates(candidates) {
+    const unique = new Map();
+    (Array.isArray(candidates) ? candidates : []).forEach(candidate => {
+      const key = candidateDedupKey(candidate);
+      if (!key) return;
+      const current = unique.get(key);
+      if (!current) {
+        unique.set(key, candidate);
+        return;
+      }
+      const completeness = value => [value.imageSmall || value.imageLarge, value.setId || value.set,
+        value.number, value.hp, value.rarity, value.attacks && value.attacks.length].filter(Boolean).length;
+      const preferred = completeness(candidate) > completeness(current) ? candidate : current;
+      const secondary = preferred === candidate ? current : candidate;
+      unique.set(key, {
+        ...secondary,
+        ...preferred,
+        imagesByLanguage: {...(secondary.imagesByLanguage || {}), ...(preferred.imagesByLanguage || {})},
+        languages: [...new Set([...(secondary.languages || []), ...(preferred.languages || [])])],
+        source: [...new Set(String(secondary.source || '').split(' + ')
+          .concat(String(preferred.source || '').split(' + ')).filter(Boolean))].join(' + ')
+      });
+    });
+    return [...unique.values()];
+  }
+
+  function visualCandidatePriority(candidate) {
+    const details = candidate && candidate.matchDetails || {};
+    const artwork = Number.isFinite(Number(details.artwork)) ? Number(details.artwork) : 0.5;
+    const layout = Number.isFinite(Number(details.layoutImage)) ? Number(details.layoutImage) : 0.5;
+    const whole = Number.isFinite(Number(details.wholeImage)) ? Number(details.wholeImage) : 0.5;
+    const identity = clamp(Number(candidate && candidate.identificationScore) || 0, 0, 1);
+    const numberBonus = details.collector === 'match' ? 0.08 : details.collector === 'mismatch' ? -0.20 : 0;
+    const setBonus = details.set === 'match' ? 0.04 : details.set === 'mismatch' ? -0.10 : 0;
+    return clamp(artwork * 0.52 + layout * 0.18 + whole * 0.10 + identity * 0.20 + numberBonus + setBonus, 0, 1);
   }
 
   function confidenceLevel(value) {
@@ -2068,6 +2217,9 @@
     candidatePokemonIdentity,
     numberKey,
     parsePokemonCollector,
+    parsePokemonCollectorText,
+    isStructuralCardLabel,
+    withManualTitleHint,
     detectCardLanguage,
     extractHints,
     classifyTcg,
@@ -2082,6 +2234,9 @@
     applyOfficialValidation,
     OFFICIAL_VALIDATION_POLICY,
     combineVisualSimilarity,
+    candidateDedupKey,
+    deduplicateCandidates,
+    visualCandidatePriority,
     confidenceLevel,
     confidenceDecision,
     isConfident,

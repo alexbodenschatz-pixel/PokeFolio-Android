@@ -63,7 +63,8 @@ test('stellt normalisierten Scan und lokalisierte Referenz direkt gegenüber', (
 });
 
 test('reduziert Kandidaten visuell zweistufig auf Top-K vor dem Detailvergleich', () => {
-  assert.match(app, /const visualLimit = Math\.min\(40, list\.length\)/);
+  assert.match(app, /const visualLimit = Math\.min\(80, list\.length\)/);
+  assert.match(app, /Recognition\.visualCandidatePriority/);
   assert.match(app, /\.slice\(0, 20\)/);
   assert.match(app, /index >= 12/);
   assert.match(app, /VISUAL_TOP_K/);
