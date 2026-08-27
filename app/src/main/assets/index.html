@@ -9,7 +9,7 @@
 <body>
 <header>
   <div class="brand"><b>PokéFolio</b><small>Dein TCG-Portfolio</small></div>
-  <div class="header-actions"><span class="currency-pill">EUR</span><span class="pill">v0.14.2</span></div>
+  <div class="header-actions"><span class="currency-pill">EUR</span><span class="pill">v0.15.0</span></div>
 </header>
 <main>
   <section id="home" class="page active">
@@ -273,7 +273,7 @@
 
     <section id="gradingWorkspace" class="grading-workspace" hidden>
       <article id="gradingTarget" class="card grading-target"></article>
-      <div class="card grading-specimen-row"><label>Physisches Exemplar<select id="gradingSpecimen"></select></label><p id="gradingSpecimenHint" class="muted"></p></div>
+      <div class="card grading-specimen-row"><label>Physisches Exemplar<select id="gradingSpecimen"></select></label><label>Druckvariante bestätigen<select id="gradingVariant"></select></label><p id="gradingSpecimenHint" class="muted"></p></div>
       <div class="photos grading-photos">
         <label class="photo-card">
           <input id="gradingFront" type="file" accept="image/*" capture="environment">
@@ -286,6 +286,31 @@
           <img id="gradingBackImg" alt="Rückseite für PokéFolio Vorgrading">
         </label>
       </div>
+      <section class="grading-angle-section card" aria-labelledby="gradingAnglesTitle">
+        <div><span class="section-kicker">Mehrwinkelanalyse</span><h2 id="gradingAnglesTitle">Surface-Aufnahmen</h2><p>Optional, aber empfohlen: Reflexionen wandern mit dem Winkel, echte Kratzer und Print Lines bleiben lokal nachvollziehbar.</p></div>
+        <div class="grading-angle-photos">
+          <label class="photo-card compact-photo">
+            <input id="gradingFrontLeft" type="file" accept="image/*" capture="environment">
+            <div class="photo-placeholder"><b>Front links</b><span>leicht kippen</span></div>
+            <img id="gradingFrontLeftImg" alt="Vorderseite leicht nach links gekippt">
+          </label>
+          <label class="photo-card compact-photo">
+            <input id="gradingFrontRight" type="file" accept="image/*" capture="environment">
+            <div class="photo-placeholder"><b>Front rechts</b><span>leicht kippen</span></div>
+            <img id="gradingFrontRightImg" alt="Vorderseite leicht nach rechts gekippt">
+          </label>
+          <label class="photo-card compact-photo">
+            <input id="gradingFrontTop" type="file" accept="image/*" capture="environment">
+            <div class="photo-placeholder"><b>Front oben</b><span>optional</span></div>
+            <img id="gradingFrontTopImg" alt="Vorderseite von oben gekippt">
+          </label>
+          <label class="photo-card compact-photo">
+            <input id="gradingBackAngle" type="file" accept="image/*" capture="environment">
+            <div class="photo-placeholder"><b>Back Winkel</b><span>optional</span></div>
+            <img id="gradingBackAngleImg" alt="Rückseite als Winkelaufnahme">
+          </label>
+        </div>
+      </section>
       <div id="gradingQuality" class="grading-quality card"><b>Aufnahmequalität</b><span>Vorder- und Rückseite aufnehmen. Ungeeignete Bilder werden nicht bewertet.</span></div>
       <button id="gradingAnalyze" type="button" class="primary">PokéFolio Vorgrading starten</button>
       <div id="gradingResult"></div>
@@ -299,7 +324,7 @@
 
   <section id="settings" class="page">
     <h1>System</h1>
-    <div class="card"><b>Erkennung v0.14.2</b><p>Footer-Nummer, Artwork und Layout lösen Karten auch bei schwacher Titel-OCR auf. Manuelle Namen bleiben klar gekennzeichnete Hinweise und bestätigte Korrekturen verbessern die lokale Erkennung.</p></div>
+    <div class="card"><b>PokéFolio v0.15.0</b><p>Die robuste Kartenerkennung bleibt erhalten. Das eigenständige Vorgrading ergänzt geometrisches Centering, regionale Corner-/Edge-Analyse, Mehrwinkel-Surface und nachvollziehbare Confidence.</p></div>
     <section class="card learning-settings" aria-labelledby="learningTitle">
       <span class="section-kicker">KI &amp; Erkennung</span>
       <div class="learning-title"><div><h2 id="learningTitle">PokéFolio Lernsystem</h2><p>Bestätigte Scans und eindeutige Korrekturen verbessern die Erkennung ausschließlich lokal auf diesem Gerät.</p></div><span id="learningStatus" class="status good">Lokales Lernen aktiv</span></div>

@@ -43,7 +43,10 @@ let learningState = loadLearningState();
 let gradingState = loadGradingState();
 let learningScan = null;
 let bulkLearningScan = null;
-let gradingDraft = {card: null, source: '', frontDataUrl: '', frontMetadata: null, frontRotation: 0};
+let gradingDraft = {
+  card: null, source: '', frontDataUrl: '', frontMetadata: null, frontRotation: 0,
+  analysis: null
+};
 const pendingOcr = new Map();
 const pendingHttp = new Map();
 const pendingVisual = new Map();
@@ -240,7 +243,7 @@ function bindPhoto(id) {
       renderCandidates(false);
       renderIdentificationActions();
       scheduleRecognition(180);
-    } else if (id === 'gradingFront' || id === 'gradingBack') {
+    } else if (/^grading(?:Front|Back)/.test(id)) {
       $('#gradingResult').innerHTML = '';
       renderGradingQualityMessage('neutral', 'Aufnahme bereit', 'Beide Seiten werden vor dem Vorgrading auf Schärfe, Belichtung, Reflexion, Crop und Perspektive geprüft.');
     }
@@ -261,6 +264,10 @@ function consumeNativeCaptureMetadata() {
 bindPhoto('front');
 bindPhoto('gradingFront');
 bindPhoto('gradingBack');
+bindPhoto('gradingFrontLeft');
+bindPhoto('gradingFrontRight');
+bindPhoto('gradingFrontTop');
+bindPhoto('gradingBackAngle');
 
 function scheduleRecognition(delay = 220) {
   clearTimeout(recognitionTimer);
@@ -2889,6 +2896,8 @@ function regionScore(data, width, height, x0, y0, x1, y1) {
   let luminance = 0;
   let luminanceSquared = 0;
   let difference = 0;
+  let bright = 0;
+  let dark = 0;
   let count = 0;
   const step = Math.max(1, Math.floor(width / 220));
   for (let y = Math.floor(height * y0); y < Math.floor(height * y1); y += step) {
@@ -2897,9 +2906,16 @@ function regionScore(data, width, height, x0, y0, x1, y1) {
       const value = 0.2126 * data[pixel] + 0.7152 * data[pixel + 1] + 0.0722 * data[pixel + 2];
       luminance += value;
       luminanceSquared += value * value;
+      if (value >= 246) bright++;
+      if (value <= 24) dark++;
       count++;
       if (x + step < width) {
         const next = (y * width + x + step) * 4;
+        const nextValue = 0.2126 * data[next] + 0.7152 * data[next + 1] + 0.0722 * data[next + 2];
+        difference += Math.abs(value - nextValue);
+      }
+      if (y + step < height) {
+        const next = ((y + step) * width + x) * 4;
         const nextValue = 0.2126 * data[next] + 0.7152 * data[next + 1] + 0.0722 * data[next + 2];
         difference += Math.abs(value - nextValue);
       }
@@ -2907,10 +2923,165 @@ function regionScore(data, width, height, x0, y0, x1, y1) {
   }
   const mean = luminance / Math.max(count, 1);
   const contrast = Math.sqrt(Math.max(0, luminanceSquared / Math.max(count, 1) - mean * mean));
-  return {mean, contrast, difference: difference / Math.max(count, 1)};
+  return {
+    mean,
+    contrast,
+    difference: difference / Math.max(count * 2, 1),
+    brightRatio: bright / Math.max(count, 1),
+    darkRatio: dark / Math.max(count, 1),
+    count
+  };
 }
 
-async function analyzeSide(source, rotation = 0, metadata = null) {
+function median(values) {
+  const ordered = values.filter(Number.isFinite).sort((left, right) => left - right);
+  if (!ordered.length) return 0;
+  const middle = Math.floor(ordered.length / 2);
+  return ordered.length % 2 ? ordered[middle] : (ordered[middle - 1] + ordered[middle]) / 2;
+}
+
+function luminanceAt(data, width, x, y) {
+  const index = (y * width + x) * 4;
+  return 0.2126 * data[index] + 0.7152 * data[index + 1] + 0.0722 * data[index + 2];
+}
+
+function strongestFrameTransition(data, width, height, axis, from, to) {
+  const values = [];
+  const limit = axis === 'x' ? width : height;
+  const crossLimit = axis === 'x' ? height : width;
+  const start = Math.max(3, Math.floor(limit * from));
+  const end = Math.min(limit - 4, Math.ceil(limit * to));
+  const crossStart = Math.floor(crossLimit * 0.16);
+  const crossEnd = Math.ceil(crossLimit * 0.84);
+  const crossStep = Math.max(2, Math.floor(crossLimit / 150));
+  for (let position = start; position <= end; position += 2) {
+    let gradient = 0;
+    let samples = 0;
+    for (let cross = crossStart; cross < crossEnd; cross += crossStep) {
+      const before = axis === 'x'
+        ? luminanceAt(data, width, position - 2, cross)
+        : luminanceAt(data, width, cross, position - 2);
+      const after = axis === 'x'
+        ? luminanceAt(data, width, position + 2, cross)
+        : luminanceAt(data, width, cross, position + 2);
+      gradient += Math.abs(after - before);
+      samples++;
+    }
+    values.push({position: position / limit, strength: gradient / Math.max(1, samples)});
+  }
+  const baseline = median(values.map(value => value.strength));
+  const best = values.sort((left, right) => right.strength - left.strength)[0] || {position: (from + to) / 2, strength: 0};
+  return {
+    position: best.position,
+    strength: best.strength,
+    confidence: clamp((best.strength - baseline) / Math.max(8, best.strength) * 1.5, 0.12, 0.96)
+  };
+}
+
+function estimateCenteringGeometry(data, width, height) {
+  const left = strongestFrameTransition(data, width, height, 'x', 0.025, 0.23);
+  const right = strongestFrameTransition(data, width, height, 'x', 0.77, 0.975);
+  const top = strongestFrameTransition(data, width, height, 'y', 0.025, 0.20);
+  const bottom = strongestFrameTransition(data, width, height, 'y', 0.80, 0.975);
+  const leftMargin = left.position;
+  const rightMargin = 1 - right.position;
+  const topMargin = top.position;
+  const bottomMargin = 1 - bottom.position;
+  const horizontalTotal = Math.max(0.001, leftMargin + rightMargin);
+  const verticalTotal = Math.max(0.001, topMargin + bottomMargin);
+  return {
+    left: Math.round(leftMargin / horizontalTotal * 1000) / 10,
+    right: Math.round(rightMargin / horizontalTotal * 1000) / 10,
+    top: Math.round(topMargin / verticalTotal * 1000) / 10,
+    bottom: Math.round(bottomMargin / verticalTotal * 1000) / 10,
+    confidence: clamp((left.confidence + right.confidence + top.confidence + bottom.confidence) / 4, 0, 1),
+    method: 'PRINT_FRAME_TRANSITION'
+  };
+}
+
+const gradingRegionBoxes = {
+  topLeft: {x: 0, y: 0, width: 0.15, height: 0.15},
+  topRight: {x: 0.85, y: 0, width: 0.15, height: 0.15},
+  bottomRight: {x: 0.85, y: 0.85, width: 0.15, height: 0.15},
+  bottomLeft: {x: 0, y: 0.85, width: 0.15, height: 0.15},
+  top: {x: 0.14, y: 0, width: 0.72, height: 0.075},
+  right: {x: 0.925, y: 0.14, width: 0.075, height: 0.72},
+  bottom: {x: 0.14, y: 0.925, width: 0.72, height: 0.075},
+  left: {x: 0, y: 0.14, width: 0.075, height: 0.72}
+};
+
+function scoreBoundaryRegions(data, width, height, names, side) {
+  const measured = names.map(name => {
+    const box = gradingRegionBoxes[name];
+    const stats = regionScore(data, width, height, box.x, box.y, box.x + box.width, box.y + box.height);
+    const signal = stats.difference * 1.25 + stats.brightRatio * 38 + stats.darkRatio * 12;
+    return {name, box, stats, signal};
+  });
+  const baseline = median(measured.map(value => value.signal));
+  const details = {};
+  const defects = [];
+  measured.forEach(value => {
+    const outlier = Math.max(0, value.signal - baseline);
+    const penalty = clamp(outlier * 1.45 + Math.max(0, value.stats.difference - 20) * 0.45, 0, 48);
+    const score = Math.round(clamp(97 - penalty, 45, 98));
+    const confidence = clamp(0.42 + outlier / 35 + value.stats.difference / 180, 0.35, 0.88);
+    details[value.name] = {score, confidence, signal: Math.round(value.signal * 10) / 10};
+    if (score < 84 && confidence >= 0.48) {
+      const corner = /Left|Right/.test(value.name);
+      defects.push({
+        side,
+        region: value.name,
+        type: corner ? 'CORNER_WEAR' : 'EDGE_WEAR',
+        severity: score < 66 ? 'HIGH' : score < 76 ? 'MEDIUM' : 'LOW',
+        confidence,
+        label: corner
+          ? `Möglicher Abrieb/Whitening ${Grading.REGION_LABELS && Grading.REGION_LABELS[value.name] || value.name}`
+          : `Kantenauffälligkeit ${Grading.REGION_LABELS && Grading.REGION_LABELS[value.name] || value.name}`,
+        box: value.box
+      });
+    }
+  });
+  const values = Object.values(details).map(value => value.score);
+  return {
+    score: Math.round(values.reduce((sum, value) => sum + value, 0) / Math.max(1, values.length)),
+    details,
+    defects
+  };
+}
+
+function analyzeSurfaceGrid(data, width, height, side) {
+  const cells = [];
+  for (let row = 0; row < 5; row++) {
+    for (let column = 0; column < 4; column++) {
+      const x = 0.06 + column * 0.22;
+      const y = 0.06 + row * 0.176;
+      const box = {x, y, width: 0.22, height: 0.176};
+      const stats = regionScore(data, width, height, x, y, x + box.width, y + box.height);
+      cells.push({row, column, box, stats, signal: stats.difference + stats.contrast * 0.24});
+    }
+  }
+  const baseline = median(cells.map(cell => cell.signal));
+  const deviations = cells.map(cell => Math.abs(cell.signal - baseline));
+  const spread = median(deviations) || 1;
+  const defects = cells.filter(cell => cell.signal > baseline + Math.max(14, spread * 3.4)
+      && cell.stats.brightRatio < 0.22)
+    .slice(0, 4).map(cell => ({
+      side,
+      region: 'center',
+      type: 'SURFACE_ANOMALY',
+      severity: cell.signal > baseline + Math.max(25, spread * 5) ? 'MEDIUM' : 'LOW',
+      confidence: clamp(0.42 + (cell.signal - baseline) / 80, 0.42, 0.76),
+      label: `Möglicher Kratzer oder Print-Line im ${cell.row < 2 ? 'oberen' : cell.row > 2 ? 'unteren' : 'mittleren'} Kartenbereich`,
+      box: cell.box
+    }));
+  return {
+    cells: cells.map(cell => ({row: cell.row, column: cell.column, signal: Math.round(cell.signal * 10) / 10})),
+    defects,
+    anomalyPenalty: clamp(defects.reduce((sum, defect) => sum + (defect.severity === 'MEDIUM' ? 5 : 2.5), 0), 0, 20)
+  };
+}
+
+async function analyzeSide(source, rotation = 0, metadata = null, side = 'front') {
   if (!source) return null;
   let originalWidth = 0;
   let originalHeight = 0;
@@ -2938,24 +3109,19 @@ async function analyzeSide(source, rotation = 0, metadata = null) {
   context.drawImage(image, 0, 0, canvas.width, canvas.height);
   const data = context.getImageData(0, 0, canvas.width, canvas.height).data;
   const full = regionScore(data, canvas.width, canvas.height, 0, 0, 1, 1);
-  const edge = regionScore(data, canvas.width, canvas.height, 0, 0.04, 1, 0.96);
-  const corners = [
-    regionScore(data, canvas.width, canvas.height, 0, 0, 0.14, 0.14),
-    regionScore(data, canvas.width, canvas.height, 0.86, 0, 1, 0.14),
-    regionScore(data, canvas.width, canvas.height, 0, 0.86, 0.14, 1),
-    regionScore(data, canvas.width, canvas.height, 0.86, 0.86, 1, 1)
-  ];
-  const exposure = 100 - clamp(Math.abs(full.mean - 132) * 0.42, 0, 36);
-  const sharpness = clamp(58 + full.difference * 0.95, 55, 98);
-  const contrast = clamp(65 + full.contrast * 0.45, 58, 98);
-  const surface = clamp(exposure * 0.32 + sharpness * 0.40 + contrast * 0.28, 55, 98);
-  const cornerConsistency = 100 - clamp(
-    Math.max(...corners.map(item => item.mean)) - Math.min(...corners.map(item => item.mean)),
-    0,
-    28
+  const centering = estimateCenteringGeometry(data, canvas.width, canvas.height);
+  const cornerAnalysis = scoreBoundaryRegions(
+    data, canvas.width, canvas.height,
+    ['topLeft', 'topRight', 'bottomRight', 'bottomLeft'], side
   );
-  const cornerScore = clamp(surface * 0.72 + cornerConsistency * 0.28, 55, 98);
-  const edgeScore = clamp(surface * 0.76 + clamp(62 + edge.contrast * 0.48, 55, 98) * 0.24, 55, 98);
+  const edgeAnalysis = scoreBoundaryRegions(
+    data, canvas.width, canvas.height,
+    ['top', 'right', 'bottom', 'left'], side
+  );
+  const surfaceGrid = analyzeSurfaceGrid(data, canvas.width, canvas.height, side);
+  const exposure = 100 - clamp(Math.abs(full.mean - 132) * 0.42, 0, 36);
+  const sharpness = clamp(42 + full.difference * 2.05, 30, 98);
+  const contrast = clamp(65 + full.contrast * 0.45, 58, 98);
   let reflected = 0;
   let shadowed = 0;
   let sampled = 0;
@@ -2968,6 +3134,12 @@ async function analyzeSide(source, rotation = 0, metadata = null) {
       sampled++;
     }
   }
+  const reflectionRatio = reflected / Math.max(1, sampled);
+  const shadowRatio = shadowed / Math.max(1, sampled);
+  const captureClarity = clamp(exposure * 0.30 + sharpness * 0.42 + contrast * 0.28, 35, 98);
+  // Surface anomalies are only a bounded part of the score. Capture reflections primarily lower
+  // confidence; they must not be mistaken for real scratches.
+  const surface = Math.round(clamp(captureClarity - surfaceGrid.anomalyPenalty, 40, 98));
   const cropReliable = metadata
     ? metadata.fallbackUsed !== true && metadata.reliable !== false
       && (metadata.confidence == null || Number(metadata.confidence) >= 0.42)
@@ -2976,31 +3148,58 @@ async function analyzeSide(source, rotation = 0, metadata = null) {
     ? Number(metadata.cardCoverage) >= 0.28 : true;
   const perspectiveConfidence = metadata && metadata.confidence != null
     ? Number(metadata.confidence) : 0.74;
+  const compact = document.createElement('canvas');
+  compact.width = 315;
+  compact.height = 440;
+  compact.getContext('2d').drawImage(canvas, 0, 0, compact.width, compact.height);
   return {
-    centering: Math.round(clamp(86 + contrast * 0.07, 70, 96)),
-    corners: Math.round(cornerScore),
-    edges: Math.round(edgeScore),
-    surface: Math.round(surface),
+    centering,
+    centeringScore: Grading.centeringScore(centering),
+    corners: cornerAnalysis.score,
+    edges: edgeAnalysis.score,
+    surface,
+    cornerDetails: cornerAnalysis.details,
+    edgeDetails: edgeAnalysis.details,
+    surfaceGrid: surfaceGrid.cells,
+    defects: [...cornerAnalysis.defects, ...edgeAnalysis.defects, ...surfaceGrid.defects],
     quality: Math.round((exposure + sharpness + contrast) / 3),
     sharpness,
     mean: full.mean,
-    reflectionRatio: reflected / Math.max(1, sampled),
-    shadowRatio: shadowed / Math.max(1, sampled),
+    reflectionRatio,
+    shadowRatio,
     originalWidth,
     originalHeight,
     cropReliable,
     cardComplete,
     perspectiveConfidence,
-    preview: canvas.toDataURL('image/jpeg', 0.78)
+    preview: canvas.toDataURL('image/jpeg', 0.78),
+    compactPreview: compact.toDataURL('image/jpeg', 0.62)
   };
 }
 
-function metrics(side, labelText) {
+function gradingScore(value) {
+  return (Math.round((Number(value) || 0)) / 10).toFixed(1).replace('.', ',');
+}
+
+function formatPregrade(value) {
+  return (Math.round((Number(value) || 0) * 10) / 10).toFixed(1).replace('.', ',');
+}
+
+function confidenceText(value) {
+  const confidence = Number(value) || 0;
+  if (confidence >= 0.86) return 'hohe Sicherheit';
+  if (confidence >= 0.66) return 'gute Sicherheit';
+  if (confidence >= 0.46) return 'mittlere Sicherheit';
+  return 'eingeschränkt';
+}
+
+function metrics(side, confidence) {
   if (!side) return '';
-  return `<div class="metric"><b>${labelText} Centering</b><br>${side.centering}/100</div>
-    <div class="metric"><b>${labelText} Ecken</b><br>${side.corners}/100</div>
-    <div class="metric"><b>${labelText} Kanten</b><br>${side.edges}/100</div>
-    <div class="metric"><b>${labelText} Oberfläche</b><br>${side.surface}/100</div>`;
+  return ['centering', 'corners', 'edges', 'surface'].map(key => {
+    const labels = {centering: 'Centering', corners: 'Corners', edges: 'Edges', surface: 'Surface'};
+    const certainty = confidence && confidence[key];
+    return `<div class="metric"><span>${labels[key]}<small>${confidenceText(certainty)}</small></span><b>${gradingScore(side[key])}</b></div>`;
+  }).join('');
 }
 
 function renderGradingQualityMessage(kind, title, text) {
@@ -3033,7 +3232,8 @@ function gradingIdentity(card) {
 }
 
 function clearGradingPhotos(keepFront = false) {
-  ['gradingFront', 'gradingBack'].forEach(id => {
+  ['gradingFront', 'gradingBack', 'gradingFrontLeft', 'gradingFrontRight',
+    'gradingFrontTop', 'gradingBackAngle'].forEach(id => {
     const input = $('#' + id);
     input.value = '';
     input.parentElement.classList.remove('has');
@@ -3073,6 +3273,16 @@ function renderGradingTarget() {
     || Grading.nextUngradedSpecimen(gradingState, card)));
   select.value = String(preferred);
   gradingDraft.specimenIndex = preferred;
+  const variantSelect = $('#gradingVariant');
+  const variantOptions = card.tcg === 'pokemon'
+    ? ['normal', 'holo', 'reverse-holo', 'full-art', 'alternate-art',
+      'illustration-rare', 'special-illustration-rare', 'secret-rare', 'promo']
+    : Variants.possibleVariants(card);
+  const activeVariant = Variants.normalize(card.printingVariant);
+  variantSelect.innerHTML = [...new Set([activeVariant, ...variantOptions])]
+    .filter(value => value && value !== 'unknown')
+    .map(value => `<option value="${esc(value)}">${esc(Variants.label(value))}</option>`).join('');
+  if (activeVariant !== 'unknown') variantSelect.value = activeVariant;
   $('#gradingSpecimenHint').textContent = count > 1
     ? `${graded.size} von ${count} physischen Exemplaren besitzen ein Vorgrading. Jede Zustandsprüfung bleibt separat.`
     : graded.size ? 'Für dieses Exemplar existiert bereits ein Vorgrading. Eine neue Prüfung wird als weiterer Historieneintrag gespeichert.'
@@ -3144,24 +3354,66 @@ function gradingRecordCard(record) {
   });
 }
 
+function renderDefectOverlay(record, side) {
+  const image = side === 'back' ? record.backImage : record.frontImage;
+  if (!image) return '';
+  const overlays = (record.defects || []).filter(item => item.side === side && item.positioned).map(item => {
+    const box = item.box || {};
+    const style = `left:${(Number(box.x) || 0) * 100}%;top:${(Number(box.y) || 0) * 100}%;width:${(Number(box.width) || .16) * 100}%;height:${(Number(box.height) || .16) * 100}%`;
+    return `<span class="defect-marker ${String(item.severity || 'LOW').toLowerCase()}" style="${style}" title="${esc(item.label)}"></span>`;
+  }).join('');
+  return `<figure class="grading-overlay-card"><figcaption>${side === 'back' ? 'Rückseite' : 'Vorderseite'}</figcaption><div><img src="${esc(image)}" alt="${side === 'back' ? 'Rückseite' : 'Vorderseite'} mit Defektmarkierungen">${overlays}</div></figure>`;
+}
+
+function renderQualityDetails(record) {
+  const quality = record.quality || {};
+  const front = quality.front || {};
+  const back = quality.back || {};
+  const item = (label, good, value) => `<div><span>${label}</span><b>${good == null ? 'unbekannt' : good ? 'gut' : 'eingeschränkt'}</b>${value ? `<small>${value}</small>` : ''}</div>`;
+  return `<section class="grading-confidence"><div class="grading-confidence-head"><span>Analysequalität</span><b>${Math.round((Number(record.analysisConfidence) || 0) * 100)} %</b><small>${esc(record.analysisQualityLabel || confidenceText(record.analysisConfidence))}</small></div><div class="grading-quality-grid">
+    ${item('Schärfe', front.checks && front.checks.sharpness && back.checks && back.checks.sharpness, `V ${Math.round(front.sharpness || 0)} · R ${Math.round(back.sharpness || 0)}`)}
+    ${item('Belichtung', front.checks && front.checks.exposure && back.checks && back.checks.exposure, '')}
+    ${item('Reflexion', front.checks && front.checks.reflection && back.checks && back.checks.reflection, '')}
+    ${item('Karten-Crop', front.checks && front.checks.completeCard && back.checks && back.checks.completeCard, '')}
+  </div></section>`;
+}
+
+function renderExternalForecast(record) {
+  const forecast = record.externalGradeForecast;
+  if (!forecast || !forecast.psa) return '<section class="grading-forecast"><h3>PSA / CGC / BGS-Prognose</h3><p>Analysequalität für eine belastbare Prognose zu niedrig.</p></section>';
+  return `<section class="grading-forecast"><h3>Nicht-offizielle Grade-Prognose</h3><div>${['10', '9', '8'].map(value => `<span><b>PSA ${value}</b>${Math.max(0, Number(forecast.psa[value]) || 0)} %</span>`).join('')}</div><small>${esc(forecast.disclaimer)}</small></section>`;
+}
+
 function renderStoredGrading(record, saved = true) {
   if (!record) return '';
   const authenticity = ({
-    LIKELY_ORIGINAL: 'Keine offensichtlichen Auffälligkeiten erkannt',
-    SUSPICIOUS: 'Auffälligkeiten erkannt – fachlich prüfen lassen',
-    INCONCLUSIVE: 'Per Smartphone nicht eindeutig beurteilbar'
+    LIKELY_ORIGINAL: 'Original wahrscheinlich',
+    SUSPICIOUS: 'Auffällig / verdächtig – fachlich prüfen lassen',
+    INCONCLUSIVE: 'Nicht eindeutig bestimmbar'
   })[record.authenticity && record.authenticity.status] || 'Nicht beurteilt';
   const defects = (record.defects || []).length
-    ? record.defects.map(item => `<li>${esc(typeof item === 'string' ? item : item.label || item.type)}</li>`).join('')
-    : '<li>Keine automatisch belastbaren Einzeldefekte erkannt.</li>';
+    ? record.defects.map(item => `<li class="${String(item.severity || 'LOW').toLowerCase()}"><b>${esc(item.label || item.type)}</b><span>${Math.round((Number(item.confidence) || 0) * 100)} % Lokalisierungs-Confidence</span></li>`).join('')
+    : '<li><b>Keine belastbaren lokalen Auffälligkeiten erkannt.</b><span>Dies ist keine Garantie für Defektfreiheit.</span></li>';
+  const confidence = record.categoryConfidence || {front: {}, back: {}};
+  const aggregate = record.aggregateSubgrades || Grading.aggregateSubgrades(record.subscores);
+  const frontCentering = Grading.normalizeCentering(record.centerings && record.centerings.front);
+  const backCentering = Grading.normalizeCentering(record.centerings && record.centerings.back);
+  const surfaceLimited = record.surfaceAnalysis && (record.surfaceAnalysis.front && record.surfaceAnalysis.front.limited
+    || record.surfaceAnalysis.back && record.surfaceAnalysis.back.limited);
   return `<article class="grading-result-card">
-    <div class="grading-result-heading"><div><span class="section-kicker">PokéFolio Vorgrading</span><h2>${String(record.pregrade).replace('.', ',')} / 10</h2><p>${esc(record.gradeLabel)}</p></div><strong>${Math.round(record.conditionScore)}<small>/1000</small></strong></div>
-    <p class="grading-legal">Smartphone-basierte Zustandsschätzung – kein offizielles Grading und keine Garantie für eine Bewertung durch PSA, CGC, BGS oder TAG.</p>
-    <div class="grading-sides"><section><h3>Vorderseite</h3>${metrics(record.subscores.front, 'Vorne')}</section><section><h3>Rückseite</h3>${metrics(record.subscores.back, 'Hinten')}</section></div>
-    <section class="grading-authenticity"><span>Echtheits-Screening · separat vom Zustand</span><b>${esc(authenticity)}</b><small>Keine Echtheitsgarantie; im Zweifel professionelle Prüfung nutzen.</small></section>
-    <section class="grading-defects"><h3>Hinweise</h3><ul>${defects}</ul></section>
-    <section class="grading-market-snapshot"><div><small>Raw-Preis</small><b>${record.marketSnapshot && record.marketSnapshot.rawValue ? formatMoney(record.marketSnapshot.rawValue) : 'nicht verfügbar'}</b><span>${esc(record.marketSnapshot && record.marketSnapshot.rawSource || 'Keine belastbare Quelle')}</span></div><div><small>Grading-Marktwerte</small><b>${record.marketSnapshot && record.marketSnapshot.gradedValue ? formatMoney(record.marketSnapshot.gradedValue) : 'nicht verfügbar'}</b><span>${esc(record.marketSnapshot && record.marketSnapshot.gradedSource || 'Keine belastbare PSA-/CGC-/BGS-Zuordnung')}</span></div></section>
-    ${saved ? `<small class="grading-saved-note">Gespeichert am ${new Date(record.createdAt).toLocaleString('de-DE')} · Exemplar ${record.specimenIndex}</small>` : '<button id="saveGradingRecord" type="button" class="primary">Vorgrading in Historie speichern</button>'}
+    <div class="grading-result-heading"><div><span class="section-kicker">PokéFolio Vorgrading</span><h2>${formatPregrade(record.pregrade)} / 10</h2><p>${esc(record.gradeLabel)}</p></div><strong>${Math.round(record.conditionScore)}<small>/1000</small></strong></div>
+    <p class="grading-legal">PokéFolio Vorgrading – kein offizielles PSA-, CGC-, BGS- oder TAG-Grading. Smartphone-basierte Schätzung ohne Garantie.</p>
+    <div class="grading-subgrade-grid">${Object.entries({centering: 'Centering', corners: 'Corners', edges: 'Edges', surface: 'Surface'}).map(([key, label]) => `<div><span>${label}</span><b>${gradingScore(aggregate[key])}</b></div>`).join('')}</div>
+    <div class="grading-centering"><div><span>Front L/R</span><b>${Math.round(frontCentering.left)}/${Math.round(frontCentering.right)}</b><small>Front T/B ${Math.round(frontCentering.top)}/${Math.round(frontCentering.bottom)}</small></div><div><span>Back L/R</span><b>${Math.round(backCentering.left)}/${Math.round(backCentering.right)}</b><small>Back T/B ${Math.round(backCentering.top)}/${Math.round(backCentering.bottom)}</small></div></div>
+    <div class="grading-sides"><section><h3>Vorderseite</h3>${metrics(record.subscores.front, confidence.front)}</section><section><h3>Rückseite</h3>${metrics(record.subscores.back, confidence.back)}</section></div>
+    ${renderQualityDetails(record)}
+    ${surfaceLimited ? '<p class="grading-surface-warning">Surface eingeschränkt beurteilbar – eine weitere reflexionsarme Winkelaufnahme verbessert die Sicherheit.</p>' : ''}
+    <section class="grading-visual-review"><h3>Defekt-Overlay</h3><div>${renderDefectOverlay(record, 'front')}${renderDefectOverlay(record, 'back')}</div><small>Gelb markiert leichte, Rot stärkere Auffälligkeiten. Bei unsicherer Pixelposition wird bewusst nur ein Sektor markiert.</small></section>
+    <section class="grading-authenticity"><span>Echtheits-Screening · separat vom Zustand</span><b>${esc(authenticity)}</b><small>Sprach- und Regionsunterschiede werden nicht als Fälschungsmerkmal bewertet. Im Zweifel professionelle Prüfung nutzen.</small></section>
+    <section class="grading-defects"><h3>Erkannte Auffälligkeiten</h3><ul>${defects}</ul></section>
+    ${renderExternalForecast(record)}
+    <section class="grading-market-snapshot"><div><small>Raw · Cardmarket bevorzugt</small><b>${record.marketSnapshot && record.marketSnapshot.rawValue ? formatMoney(record.marketSnapshot.rawValue) : 'Keine aktuellen Marktdaten'}</b><span>${esc(record.marketSnapshot && record.marketSnapshot.rawSource || 'Keine belastbare Quelle')}</span></div><div><small>Graded · PriceCharting</small><b>${record.marketSnapshot && record.marketSnapshot.gradedValue ? formatMoney(record.marketSnapshot.gradedValue) : 'Keine aktuellen Marktdaten'}</b><span>${esc(record.marketSnapshot && record.marketSnapshot.gradedSource || 'Nur bei belastbarer Zuordnung')}</span></div></section>
+    ${saved ? `<small class="grading-saved-note">Gespeichert am ${new Date(record.createdAt).toLocaleString('de-DE')} · Exemplar ${record.specimenIndex} · ${record.captures && record.captures.length || 2} Aufnahmen</small>` : '<button id="saveGradingRecord" type="button" class="primary">Vorgrading in Historie speichern</button>'}
   </article>`;
 }
 
@@ -3170,7 +3422,7 @@ function renderGradingHistory() {
   $('#gradingHistoryList').innerHTML = records.length ? records.map(record => {
     const card = gradingRecordCard(record);
     const image = card.imageSmall || card.imageLarge || '';
-    return `<article class="grading-history-row"><span>${image ? `<img loading="lazy" decoding="async" src="${esc(image)}" alt="${esc(card.name)}">` : '◇'}</span><div><b>${esc(card.name)}</b><small>${esc(card.set || 'Set unbekannt')} · ${esc(card.number || 'Nummer unbekannt')} · Exemplar ${record.specimenIndex}</small><em>${String(record.pregrade).replace('.', ',')} / 10 · ${new Date(record.createdAt).toLocaleDateString('de-DE')}</em></div><button type="button" onclick="openGradingRecord('${encodeURIComponent(record.id)}')">Details</button></article>`;
+    return `<article class="grading-history-row"><span>${image ? `<img loading="lazy" decoding="async" src="${esc(image)}" alt="${esc(card.name)}">` : '◇'}</span><div><b>${esc(card.name)}</b><small>${esc(card.set || 'Set unbekannt')} · ${esc(card.number || 'Nummer unbekannt')} · Exemplar ${record.specimenIndex}</small><em>${formatPregrade(record.pregrade)} / 10 · ${new Date(record.createdAt).toLocaleDateString('de-DE')}</em></div><button type="button" onclick="openGradingRecord('${encodeURIComponent(record.id)}')">Details</button></article>`;
   }).join('') : '<p class="muted">Noch kein PokéFolio Vorgrading gespeichert.</p>';
 }
 
@@ -3204,7 +3456,7 @@ function renderGradingPage() {
   if (!$('#gradingHistory').hidden) renderGradingHistory();
 }
 
-async function normalizedGradingSide(id, carriedDataUrl, carriedMetadata, rotation = 0) {
+async function normalizedGradingSide(id, carriedDataUrl, carriedMetadata, rotation = 0, side = 'front') {
   const file = $('#' + id).files[0];
   let dataUrl = carriedDataUrl || '';
   let originalWidth = 0;
@@ -3231,19 +3483,18 @@ async function normalizedGradingSide(id, carriedDataUrl, carriedMetadata, rotati
     ...prepared,
     width: originalWidth || prepared.width,
     height: originalHeight || prepared.height
-  });
+  }, side);
   return {prepared, analysis};
 }
 
-function gradingDefects(front, back) {
-  const defects = [];
-  [['Vorderseite', front], ['Rückseite', back]].forEach(([side, value]) => {
-    if (value.centering < 75) defects.push(`${side}: Zentrierung auffällig`);
-    if (value.corners < 75) defects.push(`${side}: Ecken auffällig`);
-    if (value.edges < 75) defects.push(`${side}: Kanten auffällig`);
-    if (value.surface < 75) defects.push(`${side}: Oberfläche auffällig`);
-  });
-  return defects;
+async function optionalGradingSide(id, side) {
+  if (!$('#' + id).files[0]) return null;
+  try {
+    return await normalizedGradingSide(id, '', null, 0, side);
+  } catch (error) {
+    console.warn('[PokeFolio Grading] Zusatzaufnahme ' + id + ' verworfen: ' + error.message);
+    return null;
+  }
 }
 
 $('#gradingSelectCollection').onclick = () => {
@@ -3276,6 +3527,11 @@ $('#gradingSpecimen').onchange = event => {
   gradingDraft.specimenIndex = Number(event.target.value) || 1;
   renderGradingTarget();
 };
+$('#gradingVariant').onchange = event => {
+  if (!gradingDraft.card) return;
+  gradingDraft.card = Variants.selectVariant(gradingDraft.card, event.target.value, 'GRADING_USER_CONFIRMED');
+  renderGradingTarget();
+};
 
 $('#gradingAnalyze').onclick = async () => {
   if (!gradingDraft.card) {
@@ -3292,8 +3548,8 @@ $('#gradingAnalyze').onclick = async () => {
   renderGradingQualityMessage('busy', 'Aufnahmequalität wird geprüft …', 'Crop, Auflösung, Schärfe, Belichtung, Reflexion und Perspektive werden vor der Zustandsanalyse geprüft.');
   try {
     const [front, back] = await Promise.all([
-      normalizedGradingSide('gradingFront', gradingDraft.frontDataUrl, gradingDraft.frontMetadata, gradingDraft.frontRotation),
-      normalizedGradingSide('gradingBack', '', null, 0)
+      normalizedGradingSide('gradingFront', gradingDraft.frontDataUrl, gradingDraft.frontMetadata, gradingDraft.frontRotation, 'front'),
+      normalizedGradingSide('gradingBack', '', null, 0, 'back')
     ]);
     const frontQuality = Grading.evaluateImageQuality(front.analysis);
     const backQuality = Grading.evaluateImageQuality(back.analysis);
@@ -3304,8 +3560,26 @@ $('#gradingAnalyze').onclick = async () => {
       renderGradingQualityMessage('bad', 'Aufnahme für zuverlässiges Grading ungeeignet', reasons.join(' · ') || 'Bitte beide Seiten erneut fotografieren.');
       return;
     }
-    const subscores = Grading.normalizeSubscores({front: front.analysis, back: back.analysis});
-    const conditionScore = Grading.scoreFromSubscores(subscores);
+    const optionalFrames = await Promise.all([
+      optionalGradingSide('gradingFrontLeft', 'front'),
+      optionalGradingSide('gradingFrontRight', 'front'),
+      optionalGradingSide('gradingFrontTop', 'front'),
+      optionalGradingSide('gradingBackAngle', 'back')
+    ]);
+    const frontAngles = optionalFrames.slice(0, 3).filter(Boolean).map(frame => frame.analysis);
+    const backAngles = optionalFrames.slice(3).filter(Boolean).map(frame => frame.analysis);
+    const assessment = Grading.buildAssessment({
+      front: front.analysis,
+      back: back.analysis,
+      frontAngles,
+      backAngles
+    });
+    console.debug('[PokeFolio Grading] QUALITY=' + Math.round(assessment.analysisConfidence * 100)
+      + ' GRADE=' + assessment.pregrade
+      + ' CENTERING_FRONT=' + Math.round(assessment.centerings.front.left) + '/' + Math.round(assessment.centerings.front.right)
+      + ' CENTERING_BACK=' + Math.round(assessment.centerings.back.left) + '/' + Math.round(assessment.centerings.back.right)
+      + ' SURFACE_FRAMES=' + (assessment.surfaceAnalysis.front.framesUsed + assessment.surfaceAnalysis.back.framesUsed)
+      + ' DEFECTS=' + assessment.defects.length);
     const card = gradingDraft.card;
     const rawValue = Number(card.estimatedUnitValue) || Collection.estimatedUnitValue(card);
     const analysis = Grading.normalizeRecord({
@@ -3315,17 +3589,37 @@ $('#gradingAnalyze').onclick = async () => {
       collectionId: card.id != null ? String(card.id) : '',
       collectionKey: card.collectionKey || '',
       specimenIndex: gradingDraft.specimenIndex || 1,
-      conditionScore,
-      subscores,
+      conditionScore: assessment.conditionScore,
+      subscores: assessment.subscores,
+      aggregateSubgrades: assessment.aggregateSubgrades,
+      centerings: assessment.centerings,
+      categoryConfidence: assessment.categoryConfidence,
+      analysisConfidence: assessment.analysisConfidence,
+      analysisQualityLabel: assessment.analysisQualityLabel,
+      surfaceAnalysis: assessment.surfaceAnalysis,
+      cornerDetails: assessment.cornerDetails,
+      edgeDetails: assessment.edgeDetails,
       frontImage: front.analysis.preview,
       backImage: back.analysis.preview,
+      captures: [
+        {type: 'FRONT_STRAIGHT', side: 'front', preview: front.analysis.preview, qualityScore: frontQuality.qualityScore, accepted: true},
+        {type: 'BACK_STRAIGHT', side: 'back', preview: back.analysis.preview, qualityScore: backQuality.qualityScore, accepted: true},
+        ...optionalFrames.flatMap((frame, index) => frame ? [{
+          type: ['FRONT_LEFT', 'FRONT_RIGHT', 'FRONT_TOP', 'BACK_ANGLE'][index],
+          side: index === 3 ? 'back' : 'front',
+          preview: frame.analysis.compactPreview || frame.analysis.preview,
+          qualityScore: Grading.evaluateImageQuality(frame.analysis).qualityScore,
+          accepted: Grading.evaluateImageQuality(frame.analysis).qualityScore >= 0.52
+        }] : [])
+      ],
       authenticity: {
         status: 'INCONCLUSIVE',
         confidence: 0,
         reasons: ['Smartphone-Fotos reichen nicht für eine Echtheitsgarantie.']
       },
-      defects: gradingDefects(subscores.front, subscores.back),
-      quality: {front: frontQuality, back: backQuality},
+      defects: assessment.defects,
+      quality: assessment.quality,
+      externalGradeForecast: assessment.externalGradeForecast,
       marketSnapshot: {
         rawValue: rawValue || null,
         rawSource: card.price && card.price.source || '',
@@ -3345,7 +3639,14 @@ $('#gradingAnalyze').onclick = async () => {
       renderGradingPage();
       renderGradingQualityMessage('good', 'Vorgrading gespeichert', `Exemplar ${result.record.specimenIndex} wurde getrennt von Kartenidentität und Stückzahl dokumentiert.`);
     };
-    renderGradingQualityMessage('good', 'Aufnahmen geeignet', 'Beide Seiten erfüllen die Mindestanforderungen. Prüfe die Schätzung und speichere sie bewusst in der Historie.');
+    const usedAngles = assessment.surfaceAnalysis.front.framesUsed + assessment.surfaceAnalysis.back.framesUsed - 2;
+    const surfaceLimited = assessment.surfaceAnalysis.front.limited || assessment.surfaceAnalysis.back.limited;
+    renderGradingQualityMessage(
+      surfaceLimited ? 'warn' : 'good',
+      surfaceLimited ? 'Grading möglich – Surface eingeschränkt' : 'Aufnahmen für Vorgrading geeignet',
+      `Analysequalität ${Math.round(assessment.analysisConfidence * 100)} %. ${usedAngles} Zusatzwinkel verwendet.`
+        + (surfaceLimited ? ' Für eine belastbarere Surface-Bewertung weitere reflexionsarme Winkelaufnahme ergänzen.' : '')
+    );
   } catch (error) {
     console.error('[PokeFolio Grading] ' + error.message);
     renderGradingQualityMessage('bad', 'Vorgrading fehlgeschlagen', error.message || 'Unbekannter Fehler.');
@@ -3588,7 +3889,7 @@ function renderCollectionCard(card) {
       </span>
       <span class="collection-entry-info"><small>${esc(label(card.tcg))}</small><b>${esc(card.name || 'Unbenannte Karte')}</b>
         <span>${esc(card.number || 'Nummer unbekannt')}</span><span class="collection-set-name">${esc(card.set || 'Set unbekannt')}</span>
-        <span class="collection-entry-meta">${languageLabel(card.lang || card.language)} · ${esc(Collection.variantLabel(card.printingVariant))}${grade ? ` · ${latestGrading ? String(latestGrading.pregrade).replace('.', ',') + '/10' : 'Grading'}` : ''}</span>
+        <span class="collection-entry-meta">${languageLabel(card.lang || card.language)} · ${esc(Collection.variantLabel(card.printingVariant))}${grade ? ` · ${latestGrading ? formatPregrade(latestGrading.pregrade) + '/10' : 'Grading'}` : ''}</span>
         ${unitValue ? `<strong class="collection-value">${formatMoney(unitValue * card.quantity)}</strong>` : ''}
       </span>
     </button>
@@ -3664,10 +3965,10 @@ window.openCollectionDetail = encodedId => {
   const latestGrading = gradingRecords[0];
   const variantOptions = [...new Set([card.printingVariant, ...Variants.possibleVariants(card)].filter(Boolean))];
   const pregradeNotice = latestGrading || card.grade || card.score
-    ? `<p><b>PokéFolio Vorgrading:</b> ${esc(latestGrading ? String(latestGrading.pregrade).replace('.', ',') + ' / 10' : card.grade || card.score)}<br><small>Schätzung – kein offizielles PSA-/CGC-/BGS-Grading und kein automatisch abgeleiteter Grading-Marktwert.</small></p>`
+    ? `<p><b>PokéFolio Vorgrading:</b> ${esc(latestGrading ? formatPregrade(latestGrading.pregrade) + ' / 10' : card.grade || card.score)}<br><small>Schätzung – kein offizielles PSA-/CGC-/BGS-Grading und kein automatisch abgeleiteter Grading-Marktwert.</small></p>`
     : '';
   const scanDetails = specimens.map((copy, index) => `<div class="specimen-row"><b>Einzelexemplar ${index + 1}</b><span>${esc(copy.grade || copy.pregrade || 'Raw / ohne Pregrade')}</span>${copy.notes ? `<small>${esc(copy.notes)}</small>` : ''}</div>`).join('');
-  const gradingDetails = gradingRecords.map(record => `<button type="button" class="specimen-row grading-detail-row" onclick="openGradingFromCollectionDetail('${encodeURIComponent(record.id)}')"><b>Exemplar ${record.specimenIndex}</b><span>${String(record.pregrade).replace('.', ',')} / 10</span><small>${new Date(record.createdAt).toLocaleString('de-DE')} · ${esc(record.gradeLabel)}</small></button>`).join('');
+  const gradingDetails = gradingRecords.map(record => `<button type="button" class="specimen-row grading-detail-row" onclick="openGradingFromCollectionDetail('${encodeURIComponent(record.id)}')"><b>Exemplar ${record.specimenIndex}</b><span>${formatPregrade(record.pregrade)} / 10</span><small>${new Date(record.createdAt).toLocaleString('de-DE')} · ${esc(record.gradeLabel)}</small></button>`).join('');
   $('#collectionDetailBody').innerHTML = `<article class="card-detail-card">
     <div class="card-detail-image">${image ? `<img loading="lazy" decoding="async" src="${esc(image)}" alt="${esc(card.name)}">` : '<span class="collection-image-placeholder">Kein Kartenbild</span>'}</div>
     <div class="card-detail-info"><span class="section-kicker">${esc(label(card.tcg))}</span><h2 id="collectionDetailTitle">${esc(card.name)}</h2><p>${esc(card.set || 'Set unbekannt')} · ${esc(card.number || 'Nummer unbekannt')}</p><div class="item-meta"><span>${languageLabel(card.lang || card.language)}</span><span>${esc(Collection.variantLabel(card.printingVariant))}</span></div>

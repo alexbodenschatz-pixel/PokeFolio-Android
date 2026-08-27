@@ -9,6 +9,7 @@ const Grading = require('../app/src/main/assets/grading-core.js');
 const assets = path.join(__dirname, '..', 'app', 'src', 'main', 'assets');
 const index = fs.readFileSync(path.join(assets, 'index.html'), 'utf8');
 const app = fs.readFileSync(path.join(assets, 'app.js'), 'utf8');
+const styles = fs.readFileSync(path.join(assets, 'styles.css'), 'utf8');
 
 function card(overrides = {}) {
   return {
@@ -52,6 +53,27 @@ function assessment(specimenIndex = 1, changes = {}) {
     authenticity: {status: 'INCONCLUSIVE', confidence: 0},
     quality: {front: Grading.evaluateImageQuality(goodMetrics()), back: Grading.evaluateImageQuality(goodMetrics())},
     ...changes
+  };
+}
+
+function visionMetrics(overrides = {}) {
+  return {
+    ...goodMetrics(),
+    centering: {left: 52, right: 48, top: 51, bottom: 49, confidence: 0.9},
+    corners: 94,
+    edges: 92,
+    surface: 91,
+    cornerDetails: {
+      topLeft: {score: 94, confidence: 0.8}, topRight: {score: 95, confidence: 0.8},
+      bottomRight: {score: 92, confidence: 0.82}, bottomLeft: {score: 94, confidence: 0.8}
+    },
+    edgeDetails: {
+      top: {score: 93, confidence: 0.78}, right: {score: 92, confidence: 0.78},
+      bottom: {score: 91, confidence: 0.8}, left: {score: 93, confidence: 0.78}
+    },
+    defects: [],
+    preview: 'data:image/jpeg;base64,preview',
+    ...overrides
   };
 }
 
@@ -170,4 +192,103 @@ test('Legacy-Pregrades migrieren separat und Sammlung sowie quantity bleiben unv
   const repeated = Grading.migrateLegacyCollection(migration.state, collection);
   assert.equal(repeated.migratedCount, 0);
   assert.equal(repeated.state.records.length, 1);
+});
+
+test('berechnet gutes und deutlich schlechtes Centering geometrisch statt pauschal', () => {
+  assert.ok(Grading.centeringScore({left: 52, right: 48, top: 51, bottom: 49}) >= 93);
+  assert.ok(Grading.centeringScore({left: 64, right: 36, top: 58, bottom: 42}) <= 66);
+});
+
+test('erstellt nachvollziehbare Gesamt- und Subgrades aus Front und Back', () => {
+  const result = Grading.buildAssessment({front: visionMetrics(), back: visionMetrics({surface: 88})});
+  assert.ok(result.pregrade >= 8.8);
+  assert.deepEqual(Object.keys(result.aggregateSubgrades), ['centering', 'corners', 'edges', 'surface']);
+  assert.ok(result.analysisConfidence >= 0.7);
+  assert.equal(result.defects.length, 0);
+});
+
+test('abgeschnittene Karte wird vor jeder Grade-Ausgabe abgelehnt', () => {
+  const quality = Grading.evaluateImageQuality(visionMetrics({cardComplete: false, cropReliable: false}));
+  assert.equal(quality.eligible, false);
+  assert.ok(quality.reasons.some(reason => reason.includes('vollständig')));
+});
+
+test('starke Reflexion senkt Surface-Confidence und erzwingt keine Defektbehauptung', () => {
+  const reflected = Grading.buildAssessment({
+    front: visionMetrics({reflectionRatio: 0.19}),
+    back: visionMetrics({reflectionRatio: 0.18})
+  });
+  const clear = Grading.buildAssessment({front: visionMetrics(), back: visionMetrics()});
+  assert.ok(reflected.categoryConfidence.front.surface < clear.categoryConfidence.front.surface);
+  assert.equal(reflected.surfaceAnalysis.front.limited, true);
+});
+
+test('Mehrwinkelaufnahmen erhöhen Surface-Sicherheit ohne das Hauptbild zu überschreiben', () => {
+  const single = Grading.buildAssessment({front: visionMetrics(), back: visionMetrics()});
+  const multi = Grading.buildAssessment({
+    front: visionMetrics(), back: visionMetrics(),
+    frontAngles: [visionMetrics({surface: 90}), visionMetrics({surface: 89})],
+    backAngles: [visionMetrics({surface: 90})]
+  });
+  assert.ok(multi.surfaceAnalysis.front.confidence > single.surfaceAnalysis.front.confidence);
+  assert.equal(multi.surfaceAnalysis.front.framesUsed, 3);
+  assert.ok(multi.subscores.front.surface <= 91);
+});
+
+test('Corner-, Edge- und Surface-Defekte bleiben lokalisiert und nach Schwere sortiert', () => {
+  const result = Grading.buildAssessment({
+    front: visionMetrics({defects: [
+      {side: 'front', region: 'bottomRight', type: 'CORNER_WEAR', severity: 'HIGH', confidence: 0.91, label: 'Whitening unten rechts', box: {x: .85, y: .85, width: .15, height: .15}},
+      {side: 'front', region: 'center', type: 'SURFACE_ANOMALY', severity: 'LOW', confidence: 0.62, label: 'Kratzer im Holo-Bereich', box: {x: .3, y: .3, width: .2, height: .2}}
+    ]}),
+    back: visionMetrics({defects: [
+      {side: 'back', region: 'bottom', type: 'EDGE_WEAR', severity: 'MEDIUM', confidence: 0.78, label: 'Untere Kante auffällig', box: {x: .14, y: .925, width: .72, height: .075}}
+    ]})
+  });
+  assert.equal(result.defects.length, 3);
+  assert.equal(result.defects[0].severity, 'HIGH');
+  assert.equal(result.defects[0].positioned, true);
+});
+
+test('Gesamtgrade wird durch einen schweren Einzelbereich begrenzt', () => {
+  const score = Grading.scoreFromSubscores({
+    front: {centering: 98, corners: 45, edges: 96, surface: 96},
+    back: {centering: 98, corners: 48, edges: 96, surface: 96}
+  });
+  assert.ok(score <= 620);
+});
+
+test('nicht-offizielle PSA-Prognose erscheint nur bei ausreichender Analysequalität', () => {
+  assert.equal(Grading.externalGradeForecast(9.2, 0.4), null);
+  const forecast = Grading.externalGradeForecast(9.2, 0.9);
+  assert.equal(Object.values(forecast.psa).reduce((sum, value) => sum + value, 0), 100);
+  assert.match(forecast.disclaimer, /kein offizielles/);
+});
+
+test('Schema 2 speichert Aufnahmen, Confidence und Detailregionen getrennt von quantity', () => {
+  const original = card({quantity: 5});
+  const model = Grading.buildAssessment({front: visionMetrics(), back: visionMetrics()});
+  const result = Grading.addRecord(Grading.createState(), original, {
+    ...model,
+    captures: [
+      {type: 'FRONT_STRAIGHT', side: 'front', preview: 'front', qualityScore: .9},
+      {type: 'BACK_STRAIGHT', side: 'back', preview: 'back', qualityScore: .9},
+      {type: 'FRONT_LEFT', side: 'front', preview: 'angle', qualityScore: .8}
+    ]
+  });
+  assert.equal(Grading.SCHEMA_VERSION, 2);
+  assert.equal(result.record.captures.length, 3);
+  assert.ok(result.record.analysisConfidence > 0);
+  assert.equal(original.quantity, 5);
+});
+
+test('Grading-UI besitzt Pflichtseiten, Mehrwinkelaufnahme, Defekt-Overlay und Variantenbestätigung', () => {
+  for (const id of ['gradingFront', 'gradingBack', 'gradingFrontLeft', 'gradingFrontRight', 'gradingFrontTop', 'gradingBackAngle', 'gradingVariant']) {
+    assert.match(index, new RegExp(`id="${id}"`));
+  }
+  assert.match(app, /Grading\.buildAssessment/);
+  assert.match(app, /defect-marker/);
+  assert.match(app, /Analysequalität/);
+  assert.match(styles, /grading-angle-photos/);
+  assert.match(styles, /grading-overlay-card/);
 });
