@@ -6,11 +6,16 @@ import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.Color;
+import android.graphics.PointF;
+import android.graphics.Rect;
 import android.graphics.RectF;
 import android.net.Uri;
 import android.os.Bundle;
 import android.provider.MediaStore;
 import android.util.Log;
+import android.util.LayoutDirection;
+import android.util.Rational;
+import android.util.Size;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
@@ -29,6 +34,8 @@ import androidx.camera.core.FocusMeteringAction;
 import androidx.camera.core.FocusMeteringResult;
 import androidx.camera.core.ImageCapture;
 import androidx.camera.core.ImageCaptureException;
+import androidx.camera.core.ImageAnalysis;
+import androidx.camera.core.ImageProxy;
 import androidx.camera.core.MeteringPoint;
 import androidx.camera.core.Preview;
 import androidx.camera.core.TorchState;
@@ -47,10 +54,12 @@ import com.google.common.util.concurrent.ListenableFuture;
 import java.io.File;
 import java.io.OutputStream;
 import java.text.SimpleDateFormat;
+import java.nio.ByteBuffer;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /** Native CameraX scanner with a card-sized region of interest. */
 public final class CameraActivity extends ComponentActivity {
@@ -60,6 +69,12 @@ public final class CameraActivity extends ComponentActivity {
     public static final String EXTRA_CROP_CONFIDENCE = "de.pokefolio.app.extra.CROP_CONFIDENCE";
     public static final String EXTRA_CROP_COVERAGE = "de.pokefolio.app.extra.CROP_COVERAGE";
     public static final String EXTRA_CROP_FALLBACK = "de.pokefolio.app.extra.CROP_FALLBACK";
+    public static final String EXTRA_CROP_ASPECT_RATIO = "de.pokefolio.app.extra.CROP_ASPECT_RATIO";
+    public static final String EXTRA_CROP_MARGIN = "de.pokefolio.app.extra.CROP_MARGIN";
+    public static final String EXTRA_CROP_ROTATION = "de.pokefolio.app.extra.CROP_ROTATION";
+    public static final String EXTRA_CROP_FOUR_CORNERS = "de.pokefolio.app.extra.CROP_FOUR_CORNERS";
+    public static final String EXTRA_CROP_PERSPECTIVE = "de.pokefolio.app.extra.CROP_PERSPECTIVE";
+    public static final String EXTRA_CROP_BORDER_COMPLETE = "de.pokefolio.app.extra.CROP_BORDER_COMPLETE";
     private static final String TAG = "PokeFolioCamera";
     private static final int CAMERA_PERMISSION_REQUEST = 44;
 
@@ -79,6 +94,9 @@ public final class CameraActivity extends ComponentActivity {
     private LinearLayout cameraControls;
     private FrameLayout.LayoutParams hintLayoutParams;
     private final Runnable focusCenterRunnable = this::focusFrameCenter;
+    private final AtomicBoolean liveAnalysisBusy = new AtomicBoolean(false);
+    private final CardDetectionTracker detectionTracker = new CardDetectionTracker();
+    private volatile CardDetectionTracker.Snapshot liveDetection;
 
     private int dp(int value) {
         return Math.round(value * getResources().getDisplayMetrics().density);
@@ -277,6 +295,13 @@ public final class CameraActivity extends ComponentActivity {
                     .setJpegQuality(95)
                     .build();
 
+            ImageAnalysis imageAnalysis = new ImageAnalysis.Builder()
+                    .setTargetResolution(new Size(480, 640))
+                    .setTargetRotation(rotation)
+                    .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                    .build();
+            imageAnalysis.setAnalyzer(cameraExecutor, this::analyzePreviewFrame);
+
             CameraSelector selector;
             if (cameraProvider.hasCamera(CameraSelector.DEFAULT_BACK_CAMERA)) {
                 selector = CameraSelector.DEFAULT_BACK_CAMERA;
@@ -288,13 +313,29 @@ public final class CameraActivity extends ComponentActivity {
 
             UseCaseGroup.Builder useCases = new UseCaseGroup.Builder()
                     .addUseCase(preview)
+                    .addUseCase(imageAnalysis)
                     .addUseCase(imageCapture);
             ViewPort viewPort = previewView.getViewPort();
-            if (viewPort != null) {
-                useCases.setViewPort(viewPort);
+            if (viewPort == null && previewView.getWidth() > 0 && previewView.getHeight() > 0) {
+                viewPort = new ViewPort.Builder(
+                        new Rational(previewView.getWidth(), previewView.getHeight()),
+                        rotation
+                ).setScaleType(ViewPort.FILL_CENTER)
+                        .setLayoutDirection(previewView.getLayoutDirection() == View.LAYOUT_DIRECTION_RTL
+                                ? LayoutDirection.RTL : LayoutDirection.LTR)
+                        .build();
+                Log.w(TAG, "PreviewView ViewPort unavailable; using measured FILL_CENTER ViewPort "
+                        + previewView.getWidth() + "x" + previewView.getHeight());
             }
+            if (viewPort == null) {
+                throw new IllegalStateException("Die Kamera-Geometrie ist noch nicht bereit.");
+            }
+            useCases.setViewPort(viewPort);
 
             cameraProvider.unbindAll();
+            detectionTracker.reset();
+            liveDetection = null;
+            overlay.clearDetectedCard();
             camera = cameraProvider.bindToLifecycle(this, selector, useCases.build());
             boolean hasFlash = camera.getCameraInfo().hasFlashUnit();
             torchButton.setVisibility(hasFlash ? View.VISIBLE : View.GONE);
@@ -323,6 +364,108 @@ public final class CameraActivity extends ComponentActivity {
             shootButton.setEnabled(false);
             Toast.makeText(this, R.string.camera_start_failed, Toast.LENGTH_LONG).show();
         }
+    }
+
+    /** Low-resolution, latest-frame-only analysis of the outer physical card contour. */
+    private void analyzePreviewFrame(ImageProxy image) {
+        if (!liveAnalysisBusy.compareAndSet(false, true)) {
+            image.close();
+            return;
+        }
+        Bitmap frame = null;
+        Bitmap upright = null;
+        Bitmap search = null;
+        try {
+            frame = luminanceBitmap(image);
+            int rotation = image.getImageInfo().getRotationDegrees();
+            upright = CardImageProcessor.rotateForAnalysis(frame, rotation);
+            RectF guide = overlay.getCardRect();
+            int viewWidth = Math.max(1, previewView.getWidth());
+            int viewHeight = Math.max(1, previewView.getHeight());
+            if (guide.isEmpty() || upright.getWidth() < 20 || upright.getHeight() < 20) return;
+
+            int left = clamp(Math.round(guide.left / viewWidth * upright.getWidth()), 0, upright.getWidth() - 2);
+            int top = clamp(Math.round(guide.top / viewHeight * upright.getHeight()), 0, upright.getHeight() - 2);
+            int right = clamp(Math.round(guide.right / viewWidth * upright.getWidth()), left + 2, upright.getWidth());
+            int bottom = clamp(Math.round(guide.bottom / viewHeight * upright.getHeight()), top + 2, upright.getHeight());
+            search = Bitmap.createBitmap(upright, left, top, right - left, bottom - top);
+            CardImageProcessor.PhysicalCardDetection detection =
+                    CardImageProcessor.analyzePhysicalCard(search);
+            PointF[] viewQuad = null;
+            float confidence = 0f;
+            if (detection != null) {
+                confidence = detection.confidence;
+                viewQuad = new PointF[4];
+                for (int index = 0; index < 4; index++) {
+                    float frameX = left + detection.quad[index].x;
+                    float frameY = top + detection.quad[index].y;
+                    viewQuad[index] = new PointF(
+                            frameX / upright.getWidth() * viewWidth,
+                            frameY / upright.getHeight() * viewHeight);
+                }
+            }
+            CardDetectionTracker.Snapshot snapshot = detectionTracker.update(
+                    viewQuad, confidence, viewWidth, viewHeight, android.os.SystemClock.uptimeMillis());
+            liveDetection = snapshot;
+            runOnUiThread(() -> applyLiveDetection(snapshot));
+        } catch (Exception error) {
+            Log.w(TAG, "CARD_DETECTION frame analysis failed", error);
+        } finally {
+            if (search != null && search != upright && !search.isRecycled()) search.recycle();
+            if (upright != null && upright != frame && !upright.isRecycled()) upright.recycle();
+            if (frame != null && !frame.isRecycled()) frame.recycle();
+            image.close();
+            liveAnalysisBusy.set(false);
+        }
+    }
+
+    private void applyLiveDetection(CardDetectionTracker.Snapshot snapshot) {
+        if (snapshot == null || snapshot.quad == null) {
+            overlay.clearDetectedCard();
+            if (previewStreaming) hint.setText(R.string.camera_find_card);
+            return;
+        }
+        overlay.setDetectedCard(snapshot.quad, snapshot.confidence, snapshot.stability);
+        RectF guide = overlay.getCardRect();
+        float coverage = polygonBounds(snapshot.quad).width() * polygonBounds(snapshot.quad).height()
+                / Math.max(1f, guide.width() * guide.height());
+        if (coverage < 0.22f) hint.setText(R.string.camera_move_closer);
+        else if (snapshot.ready) hint.setText(R.string.camera_ready);
+        else if (snapshot.confidence >= 0.60f) hint.setText(R.string.camera_hold_still);
+        else hint.setText(R.string.camera_keep_card_visible);
+    }
+
+    private static RectF polygonBounds(PointF[] points) {
+        RectF bounds = new RectF(points[0].x, points[0].y, points[0].x, points[0].y);
+        for (int index = 1; index < points.length; index++) {
+            bounds.union(points[index].x, points[index].y);
+        }
+        return bounds;
+    }
+
+    private static Bitmap luminanceBitmap(ImageProxy image) {
+        ImageProxy.PlaneProxy plane = image.getPlanes()[0];
+        ByteBuffer buffer = plane.getBuffer();
+        Rect crop = image.getCropRect();
+        int width = crop.width();
+        int height = crop.height();
+        int rowStride = plane.getRowStride();
+        int pixelStride = plane.getPixelStride();
+        int[] pixels = new int[width * height];
+        for (int y = 0; y < height; y++) {
+            int row = (crop.top + y) * rowStride + crop.left * pixelStride;
+            for (int x = 0; x < width; x++) {
+                int value = buffer.get(row + x * pixelStride) & 0xff;
+                pixels[y * width + x] = 0xff000000 | value << 16 | value << 8 | value;
+            }
+        }
+        Bitmap bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+        bitmap.setPixels(pixels, 0, width, 0, 0, width, height);
+        return bitmap;
+    }
+
+    private static int clamp(int value, int min, int max) {
+        return Math.max(min, Math.min(max, value));
     }
 
     private boolean handlePreviewTouch(View view, MotionEvent event) {
@@ -414,6 +557,11 @@ public final class CameraActivity extends ComponentActivity {
         RectF frame = overlay.getCardRect();
         int previewWidth = previewView.getWidth();
         int previewHeight = previewView.getHeight();
+        CardDetectionTracker.Snapshot capturedLiveDetection = liveDetection;
+        PointF[] capturedPreviewQuad = capturedLiveDetection == null
+                ? null : capturedLiveDetection.quad;
+        float capturedLiveConfidence = capturedLiveDetection == null ? 0f
+                : capturedLiveDetection.confidence * (0.72f + capturedLiveDetection.stability * 0.28f);
 
         final File temporary;
         try {
@@ -439,15 +587,41 @@ public final class CameraActivity extends ComponentActivity {
                             previewHeight
                     );
                     region = previewCrop.bitmap;
-                    preparation = CardImageProcessor.prepareCapturedCardDetailed(region);
+                    PointF[] liveQuadInRegion = CardImageProcessor.mapPreviewQuadToCrop(
+                            capturedPreviewQuad,
+                            previewWidth,
+                            previewHeight,
+                            oriented.getWidth(),
+                            oriented.getHeight(),
+                            previewCrop);
+                    preparation = CardImageProcessor.prepareCapturedCardDetailed(
+                            region, liveQuadInRegion, capturedLiveConfidence);
+                    if (preparation.fourCornersDetected && preparation.cardCoverage < 0.14f) {
+                        showCaptureGuidance("Karte näher an die Kamera halten");
+                        return;
+                    }
+                    if (preparation.fourCornersDetected && !preparation.borderComplete) {
+                        showCaptureGuidance("Karte etwas weiter von der Kamera entfernen");
+                        return;
+                    }
                     Log.i(TAG, "CARD_CROP overlay=" + frame
                             + " preview=" + previewWidth + "x" + previewHeight
                             + " capture=" + oriented.getWidth() + "x" + oriented.getHeight()
                             + " captureRoi=" + previewCrop.sourceRect
                             + " detectedQuad=" + formatQuad(preparation.detectedQuad)
+                            + " liveQuad=" + formatQuad(liveQuadInRegion)
+                            + " liveConfidence=" + String.format(Locale.US, "%.3f", capturedLiveConfidence)
+                            + " stability=" + String.format(Locale.US, "%.3f",
+                                capturedLiveDetection == null ? 0f : capturedLiveDetection.stability)
                             + " final=" + preparation.bitmap.getWidth() + "x" + preparation.bitmap.getHeight()
                             + " confidence=" + String.format(Locale.US, "%.3f", preparation.confidence)
                             + " coverage=" + String.format(Locale.US, "%.3f", preparation.cardCoverage)
+                            + " aspect=" + String.format(Locale.US, "%.3f", preparation.detectedAspectRatio)
+                            + " rotation=" + String.format(Locale.US, "%.2f", preparation.correctedRotationDegrees)
+                            + " safetyMargin=" + String.format(Locale.US, "%.3f", preparation.safetyMargin)
+                            + " fourCorners=" + preparation.fourCornersDetected
+                            + " perspective=" + preparation.perspectiveCorrected
+                            + " borderComplete=" + preparation.borderComplete
                             + " fallback=" + preparation.fallbackUsed
                             + " method=" + preparation.method);
                     if (isDebugBuild()) {
@@ -463,6 +637,12 @@ public final class CameraActivity extends ComponentActivity {
                     resultIntent.putExtra(EXTRA_CROP_CONFIDENCE, preparation.confidence);
                     resultIntent.putExtra(EXTRA_CROP_COVERAGE, preparation.cardCoverage);
                     resultIntent.putExtra(EXTRA_CROP_FALLBACK, preparation.fallbackUsed);
+                    resultIntent.putExtra(EXTRA_CROP_ASPECT_RATIO, preparation.detectedAspectRatio);
+                    resultIntent.putExtra(EXTRA_CROP_MARGIN, preparation.safetyMargin);
+                    resultIntent.putExtra(EXTRA_CROP_ROTATION, preparation.correctedRotationDegrees);
+                    resultIntent.putExtra(EXTRA_CROP_FOUR_CORNERS, preparation.fourCornersDetected);
+                    resultIntent.putExtra(EXTRA_CROP_PERSPECTIVE, preparation.perspectiveCorrected);
+                    resultIntent.putExtra(EXTRA_CROP_BORDER_COMPLETE, preparation.borderComplete);
                     runOnUiThread(() -> {
                         setResult(RESULT_OK, resultIntent);
                         finish();
@@ -571,6 +751,16 @@ public final class CameraActivity extends ComponentActivity {
         runOnUiThread(() -> {
             shootButton.setEnabled(true);
             shootButton.setText(R.string.capture_card);
+            Toast.makeText(CameraActivity.this, message, Toast.LENGTH_LONG).show();
+        });
+    }
+
+    private void showCaptureGuidance(String message) {
+        Log.w(TAG, "CARD_CROP_RETRY reason=" + message);
+        runOnUiThread(() -> {
+            shootButton.setEnabled(true);
+            shootButton.setText(R.string.capture_card);
+            hint.setText(message);
             Toast.makeText(CameraActivity.this, message, Toast.LENGTH_LONG).show();
         });
     }

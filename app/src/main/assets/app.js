@@ -66,8 +66,33 @@ function displayNormalizedCard(id, prepared) {
   console.debug('[PokeFolio Crop] method=' + (prepared.method || 'unknown')
     + ' confidence=' + Math.round((Number(prepared.confidence) || 0) * 100) + '%'
     + ' coverage=' + Math.round((Number(prepared.cardCoverage) || 0) * 100) + '%'
+    + ' aspect=' + (Number(prepared.detectedAspectRatio) || 0).toFixed(3)
+    + ' rotation=' + (Number(prepared.correctedRotationDegrees) || 0).toFixed(1) + '°'
+    + ' fourCorners=' + Boolean(prepared.fourCornersDetected)
+    + ' perspective=' + Boolean(prepared.perspectiveCorrected)
+    + ' borderComplete=' + Boolean(prepared.borderComplete)
     + ' fallback=' + Boolean(prepared.fallbackUsed)
     + ' final=' + (prepared.width || '?') + 'x' + (prepared.height || '?'));
+}
+
+function attachCropMetadata(hints, prepared) {
+  return Object.assign({}, hints || {}, {
+    cardCrop: {
+      fourCornersDetected: Boolean(prepared && (prepared.fourCornersDetected
+        || prepared.detectedQuad && prepared.detectedQuad.length === 4)),
+      detectedAspectRatio: Number(prepared && prepared.detectedAspectRatio) || 0,
+      normalizedAspectRatio: Number(prepared && prepared.width) > 0 && Number(prepared && prepared.height) > 0
+        ? Number(prepared.width) / Number(prepared.height)
+        : 63 / 88,
+      perspectiveCorrected: Boolean(prepared && prepared.perspectiveCorrected),
+      correctedRotationDegrees: Number(prepared && prepared.correctedRotationDegrees) || 0,
+      confidence: Number(prepared && prepared.confidence) || 0,
+      safetyMargin: Number(prepared && prepared.safetyMargin) || 0,
+      borderComplete: Boolean(prepared && prepared.borderComplete),
+      fallbackUsed: Boolean(prepared && prepared.fallbackUsed),
+      method: String(prepared && prepared.method || 'unknown')
+    }
+  });
 }
 
 function navigateToPage(page) {
@@ -293,6 +318,7 @@ function renderRecognitionFeatures(hints) {
   const setCode = hints.pokemonSetCodes && hints.pokemonSetCodes[0];
   const confidence = Number(identity.nameConfidence);
   const titleConfidence = Number(hints.titleConfidence);
+  const crop = hints.cardCrop || {};
   const cardTypeLabel = ({pokemon: 'Pokémon', trainer: 'Trainer', energy: 'Energie', unknown: 'Unbekannt'})[
     hints.cardType || 'unknown'
   ];
@@ -321,7 +347,17 @@ function renderRecognitionFeatures(hints) {
     ['OCR-Sicherheit Name', Number.isFinite(confidence) ? Math.round(confidence * 100) + ' %' : '0 %'],
     ['Namensquelle', identity.source || 'keine validierte Pokémon-Kopfzeile'],
     ['Titelquelle', hints.titleSource || identity.source || 'keine validierte Kopfzeile'],
-    ['Official Validation', hints.officialValidationStatus || 'Nicht verfügbar']
+    ['Official Validation', hints.officialValidationStatus || 'Nicht verfügbar'],
+    ['CARD CROP · 4 Ecken', crop.fourCornersDetected ? 'JA' : 'NEIN'],
+    ['CARD CROP · Aspect Ratio final', Number(crop.normalizedAspectRatio || 63 / 88).toFixed(3)],
+    ['CARD CROP · Quellkontur', crop.detectedAspectRatio
+      ? crop.detectedAspectRatio.toFixed(3) : 'nicht sicher'],
+    ['CARD CROP · Perspective', crop.perspectiveCorrected ? 'korrigiert' : 'nicht angewendet'],
+    ['CARD CROP · Rotation', `${crop.correctedRotationDegrees >= 0 ? '+' : ''}${(crop.correctedRotationDegrees || 0).toFixed(1)}°`],
+    ['CARD CROP · Confidence', Math.round((crop.confidence || 0) * 100) + ' %'],
+    ['CARD CROP · Sicherheitsrand', Math.round((crop.safetyMargin || 0) * 1000) / 10 + ' %'],
+    ['CARD CROP · Rand vollständig', crop.borderComplete ? 'JA' : 'NICHT SICHER'],
+    ['CARD CROP · Fallback', crop.fallbackUsed ? `JA · ${crop.method}` : 'NEIN']
   ];
   list.innerHTML = rows.map(([name, value]) => `<dt>${esc(name)}</dt><dd>${esc(value)}</dd>`).join('');
   details.hidden = false;
@@ -349,7 +385,13 @@ function debugRecognitionFeatures(hints) {
     + ` WholeOCR=${JSON.stringify(hints && hints.ocrByRegion && hints.ocrByRegion.whole || '').slice(0, 500)}`
     + ` TopOCR=${JSON.stringify(hints && hints.ocrByRegion && hints.ocrByRegion.top || '').slice(0, 500)}`
     + ` BottomOCR=${JSON.stringify(hints && hints.ocrByRegion && hints.ocrByRegion.bottom || '').slice(0, 500)}`
-    + ` Titelsicherheit=${Math.round((Number(hints && hints.titleConfidence) || 0) * 100)}%`);
+    + ` Titelsicherheit=${Math.round((Number(hints && hints.titleConfidence) || 0) * 100)}%`
+    + ` CropCorners=${hints && hints.cardCrop && hints.cardCrop.fourCornersDetected ? 'YES' : 'NO'}`
+    + ` CropAspect=${Number(hints && hints.cardCrop && hints.cardCrop.detectedAspectRatio || 0).toFixed(3)}`
+    + ` CropFinalAspect=${Number(hints && hints.cardCrop && hints.cardCrop.normalizedAspectRatio || 63 / 88).toFixed(3)}`
+    + ` CropPerspective=${hints && hints.cardCrop && hints.cardCrop.perspectiveCorrected ? 'CORRECTED' : 'NO'}`
+    + ` CropConfidence=${Math.round(Number(hints && hints.cardCrop && hints.cardCrop.confidence || 0) * 100)}%`
+    + ` CropFallback=${hints && hints.cardCrop && hints.cardCrop.fallbackUsed ? 'YES' : 'NO'}`);
 }
 
 function debugRecognitionCandidates(stage, candidatesToLog) {
@@ -999,6 +1041,28 @@ function drawRotated(image, rotation) {
   return canvas;
 }
 
+async function correctPreparedOrientation(prepared, ocrRotation) {
+  const normalized = ((Number(ocrRotation) % 360) + 360) % 360;
+  // Native geometry always returns a portrait canvas. OCR therefore only needs to resolve the
+  // remaining upright/upside-down ambiguity; 90° values are kept as diagnostics instead of
+  // shrinking a portrait card into a landscape letterbox.
+  if (!prepared || !prepared.dataUrl || normalized !== 180) return prepared;
+  const image = await new Promise((resolve, reject) => {
+    const value = new Image();
+    value.onload = () => resolve(value);
+    value.onerror = () => reject(new Error('Die Kartenorientierung konnte nicht korrigiert werden.'));
+    value.src = prepared.dataUrl;
+  });
+  const rotated = drawRotated(image, 180);
+  console.debug('[PokeFolio Crop] OCR_ORIENTATION_CORRECTED rotation=180');
+  return {
+    ...prepared,
+    dataUrl: rotated.toDataURL('image/jpeg', 0.92),
+    correctedRotationDegrees: (Number(prepared.correctedRotationDegrees) || 0) + 180,
+    orientationCorrectedByOcr: true
+  };
+}
+
 async function canonicalDataUrl(file, quality = 0.9, rotation = 0) {
   const image = await imageFromFile(file);
   const oriented = drawRotated(image, rotation);
@@ -1337,14 +1401,18 @@ function nativeGet(url) {
 
 function chooseRecognitionRotation(ocrResult) {
   let best = {rotation: 0, score: -1};
-  (ocrResult.passes || []).forEach(pass => {
-    const hints = Recognition.extractHints({passes: [pass]});
-    const score = (hints.collectorNumbers.length * 6)
-      + (hints.hp ? 2 : 0)
-      + (hints.nameHints[0] ? hints.nameHints[0].votes : 0)
-      + (pass.text || '').length / 500;
-    const match = String(pass.variant || '').match(/-(0|90|180|270)$/);
-    if (score > best.score && match) best = {rotation: Number(match[1]), score};
+  [0, 90, 180, 270].forEach(rotation => {
+    const passes = (ocrResult.passes || []).filter(pass =>
+      String(pass.variant || '').endsWith('-' + rotation));
+    if (!passes.length) return;
+    const hints = Recognition.extractHints({passes});
+    const kind = selectedTcg && selectedTcg !== 'auto'
+      ? selectedTcg : Recognition.classifyTcg(hints, 'auto');
+    const probabilities = Recognition.tcgProbabilities(hints);
+    const score = Recognition.orientationScore(kind, hints)
+      + Number(probabilities[kind] || 0) * 2
+      + passes.reduce((sum, pass) => sum + String(pass.text || '').length, 0) / 1600;
+    if (score > best.score) best = {rotation, score};
   });
   return best.rotation;
 }
@@ -1710,6 +1778,10 @@ function recoveryState(status) {
     return {title: 'Netzwerkfehler beim Kartendienst', message: 'Die Kartendienste konnten über das Netzwerk nicht erreicht werden.' + manual};
   }
   if (summary.kind === 'http') {
+    if (String(status.primarySource || '').startsWith('ygoprodeck')) {
+      return {title: 'Yu-Gi-Oh!-Kartensuche nicht verfügbar',
+        message: 'Die Yu-Gi-Oh!-Kartensuche konnte nicht abgeschlossen werden.' + manual};
+    }
     const statusText = summary.statuses.length ? ` (HTTP ${summary.statuses.join('/')})` : '';
     return {title: 'Kartendienst meldet einen HTTP-Fehler', message: 'Beide Datenquellen haben die Anfrage abgelehnt' + statusText + '.' + manual};
   }
@@ -1791,6 +1863,11 @@ function parseOnePieceCard(response, id) {
     set: card.set_name || card.set || '',
     setId: card.set_id || String(card.card_id || id || '').split('-')[0],
     rarity: card.rarity || card.card_rarity || '',
+    cardType: card.card_type || card.type || '',
+    cost: card.cost != null ? card.cost : card.card_cost,
+    power: card.power != null ? card.power : card.card_power,
+    counter: card.counter != null ? card.counter : card.counter_amount,
+    subtype: card.subtype || card.traits || card.card_traits || '',
     language: activeRecognitionLanguage(),
     imageSmall: image,
     imageLarge: card.image_url_large || card.card_image_large || image,
@@ -1818,10 +1895,80 @@ async function onePieceSearch(hints, manual = '') {
   return [];
 }
 
+function yugiohCandidateFromApi(card, features, language) {
+  if (!card) return null;
+  const sets = Array.isArray(card.card_sets) ? card.card_sets : [];
+  const exactSet = sets.find(set => Recognition.norm(set.set_code) === Recognition.norm(features.setCode));
+  const firstSet = exactSet || sets[0] || card;
+  const images = Array.isArray(card.card_images) ? card.card_images : [];
+  const image = images[0] || {};
+  const id = card.id || image.id;
+  const deterministicLarge = id ? `https://images.ygoprodeck.com/images/cards/${id}.jpg` : '';
+  const deterministicSmall = id ? `https://images.ygoprodeck.com/images/cards_small/${id}.jpg` : '';
+  return {
+    tcg: 'yugioh', id, passcode: String(id || ''), name: card.name || '',
+    number: firstSet.set_code || card.set_code || '', setCode: firstSet.set_code || card.set_code || '',
+    setCodes: sets.map(set => set.set_code).filter(Boolean),
+    set: firstSet.set_name || card.set_name || '',
+    setId: String(firstSet.set_code || card.set_code || '').replace(/-[A-Z]*\d+$/i, ''),
+    rarity: firstSet.set_rarity || card.set_rarity || '', language,
+    atk: card.atk, def: card.def, level: card.level, attribute: card.attribute || '',
+    cardType: card.type || '',
+    imageSmall: image.image_url_small || image.image_url || deterministicSmall,
+    imageLarge: image.image_url || image.image_url_small || deterministicLarge,
+    imageLanguage: 'en', imageLanguageFallback: language === 'de',
+    source: 'YGOPRODeck', evidence: []
+  };
+}
+
+async function yugiohSearchProfiled(hints, manual = '') {
+  const language = activeRecognitionLanguage();
+  const features = Recognition.parseYuGiOhFeatures(hints);
+  if (manual) features.name = manual;
+  hints.yugiohFeatures = features;
+  const urls = Api.buildYuGiOhUrls(features, manual, language);
+  const status = await Api.settleSearchVariants(urls, nativeGetOnce, {
+    attempts: 3, backoffMs: [250, 650], logger: message => console.error(message)
+  });
+  const rawCards = [];
+  status.values.forEach(result => {
+    const value = result.value;
+    if (Array.isArray(value)) rawCards.push(...value);
+    else if (Array.isArray(value && value.data)) rawCards.push(...value.data);
+    else if (value && !value.error) rawCards.push(value);
+  });
+  status.errors.forEach(error => console.warn('[PokeFolio YGOPRODeck] '
+    + Api.formatHttpFailure(error)));
+  const mapped = rawCards.map(card => yugiohCandidateFromApi(card, features, language)).filter(Boolean);
+  return {candidates: Recognition.rankYuGiOhCandidates(mapped, hints, manual, 30), status: {
+    primarySource: 'ygoprodeck-v7', fallbackSource: 'local-learning',
+    primary: status, fallback: {requestedCount: 0, successCount: 0, resultCount: 0, errors: []}
+  }};
+}
+
+async function onePieceSearchProfiled(hints, manual = '') {
+  const features = Recognition.parseOnePieceFeatures(hints);
+  if (manual && !features.name) features.name = manual;
+  hints.onePieceFeatures = features;
+  const urls = Api.buildOnePieceUrls(features, manual);
+  const status = await Api.settleSearchVariants(urls, nativeGetOnce, {
+    attempts: 3, backoffMs: [250, 650], logger: message => console.error(message)
+  });
+  status.errors.forEach(error => console.warn('[PokeFolio OnePiece API] '
+    + Api.formatHttpFailure(error)));
+  const mapped = status.values.map(result => parseOnePieceCard(result.value, features.cardCode)).filter(Boolean)
+    .map(card => ({...card, cardType: card.cardType || features.cardType,
+      cost: card.cost, power: card.power, counter: card.counter}));
+  return {candidates: Recognition.rankOnePieceCandidates(mapped, hints, manual, 30), status: {
+    primarySource: 'optcgapi-sets', fallbackSource: 'optcgapi-decks/local-learning',
+    primary: status, fallback: {requestedCount: 0, successCount: 0, resultCount: 0, errors: []}
+  }};
+}
+
 async function lookupCandidates(kind, hints, manual = '', runToken) {
   if (kind === 'pokemon') return pokemonSearch(hints, manual, runToken);
-  if (kind === 'yugioh') return {candidates: await yugiohSearch(hints, manual), status: emptyLookupStatus()};
-  if (kind === 'onepiece') return {candidates: await onePieceSearch(hints, manual), status: emptyLookupStatus()};
+  if (kind === 'yugioh') return yugiohSearchProfiled(hints, manual);
+  if (kind === 'onepiece') return onePieceSearchProfiled(hints, manual);
   return {candidates: [], status: emptyLookupStatus()};
 }
 
@@ -1834,7 +1981,6 @@ async function enrichWithVisualSimilarity(list, preparedCard, runToken) {
   let consecutiveFailures = 0;
   const coarse = await mapWithConcurrency(list.slice(0, visualLimit), 4, async candidate => {
     if (runToken !== undefined && runToken !== recognitionRun) return candidate;
-    if (candidate.tcg !== 'pokemon') return candidate;
     const imageUrl = candidate.imageSmall || candidate.imageLarge;
     if (!imageUrl) return candidate;
     if (consecutiveFailures >= 6) return candidate;
@@ -1854,7 +2000,7 @@ async function enrichWithVisualSimilarity(list, preparedCard, runToken) {
   console.debug('[PokeFolio Recognition] VISUAL_TOP_K input=' + list.length
     + ' coarseChecked=' + Math.min(visualLimit, list.length) + ' selected=' + visualTopK.length);
   const detailed = await mapWithConcurrency(visualTopK, 3, async (candidate, index) => {
-    if (index >= 12 || candidate.tcg !== 'pokemon') return candidate;
+    if (index >= 12) return candidate;
     if (runToken !== undefined && runToken !== recognitionRun) return candidate;
     const imageUrl = candidate.imageLarge || candidate.imageSmall;
     if (!imageUrl || imageUrl === candidate.imageSmall && candidate.coarseVisualChecked) return candidate;
@@ -2397,7 +2543,14 @@ async function runBulkRecognition(dataUrl, previewUrl, normalizedCapture = null)
     const ocrAnalysis = await recognizeCardFeatures(prepared.dataUrl || dataUrl, activeRecognitionLanguage());
     const ocrResult = ocrAnalysis.result;
     if (run !== recognitionRun || scanMode !== 'bulk') return;
-    bulkHints = ocrAnalysis.hints;
+    const bulkRotation = chooseRecognitionRotation(ocrResult);
+    prepared = await correctPreparedOrientation(prepared, bulkRotation);
+    if (prepared.orientationCorrectedByOcr) {
+      bulkSourceDataUrl = prepared.dataUrl;
+      bulkPreviewUrl = prepared.dataUrl;
+      $('#bulkPreview').src = prepared.dataUrl;
+    }
+    bulkHints = attachCropMetadata(ocrAnalysis.hints, prepared);
     renderBulkFeatures(bulkHints);
     const kind = Recognition.classifyTcg(bulkHints, bulkSelectedTcg);
     recognizedTcg = kind;
@@ -2739,7 +2892,12 @@ async function runRecognition(manual = false) {
     const ocrResult = ocrAnalysis.result;
     if (run !== recognitionRun) return null;
     recognizedRotation = chooseRecognitionRotation(ocrResult);
-    const hints = ocrAnalysis.hints;
+    prepared = await correctPreparedOrientation(prepared, recognizedRotation);
+    if (prepared.orientationCorrectedByOcr) {
+      recognizedRotation = 0;
+      displayNormalizedCard('front', prepared);
+    }
+    const hints = attachCropMetadata(ocrAnalysis.hints, prepared);
     renderRecognitionFeatures(hints);
     debugRecognitionFeatures(hints);
     const kind = Recognition.classifyTcg(hints, manual ? selectedTcg : selectedTcg);
@@ -2755,7 +2913,7 @@ async function runRecognition(manual = false) {
     }
     if (run !== recognitionRun) return null;
     let foundCandidates = mergeLocalOfflineCandidates(lookup.candidates, learningScan);
-    if (foundCandidates.some(candidate => candidate.tcg === 'pokemon' && (candidate.imageSmall || candidate.imageLarge))) {
+    if (foundCandidates.some(candidate => candidate.imageSmall || candidate.imageLarge)) {
       setRecState('busy', 'Vergleiche Kartenbilder …', 'Artwork und Bildstruktur werden lokal mit den besten Treffern abgeglichen.');
       foundCandidates = await enrichWithVisualSimilarity(foundCandidates, prepared, run);
       if (run !== recognitionRun) return null;
@@ -2763,6 +2921,10 @@ async function runRecognition(manual = false) {
     foundCandidates = applyLocalLearning(foundCandidates, learningScan);
     foundCandidates = resolveCandidateVariants(foundCandidates);
     if (kind === 'pokemon') foundCandidates = Recognition.filterPlausibleCandidates(foundCandidates);
+    else if (kind === 'yugioh') foundCandidates = Recognition.rankYuGiOhCandidates(foundCandidates, hints, '', 7)
+      .filter(candidate => candidate.confidence >= 0.45);
+    else if (kind === 'onepiece') foundCandidates = Recognition.rankOnePieceCandidates(foundCandidates, hints, '', 7)
+      .filter(candidate => candidate.confidence >= 0.45);
     if (!foundCandidates.length && serviceError) throw serviceError;
     debugRecognitionCandidates('FinalRanking', foundCandidates);
     candidates = foundCandidates;
@@ -2859,14 +3021,17 @@ $('#manualSearch').onclick = async () => {
     if (run !== recognitionRun) return;
     let foundCandidates = mergeLocalOfflineCandidates(lookup.candidates, learningScan);
     const frontFile = $('#front').files[0];
-    if (frontFile && foundCandidates.some(candidate => candidate.tcg === 'pokemon' && (candidate.imageSmall || candidate.imageLarge))) {
+    if (frontFile && foundCandidates.some(candidate => candidate.imageSmall || candidate.imageLarge)) {
       const prepared = learningScan && learningScan.prepared || await visualComparisonDataUrl(frontFile);
       foundCandidates = await enrichWithVisualSimilarity(foundCandidates, prepared, run);
       if (run !== recognitionRun) return;
     }
     foundCandidates = applyLocalLearning(foundCandidates, learningScan);
     foundCandidates = resolveCandidateVariants(foundCandidates);
-    candidates = kind === 'pokemon' ? Recognition.filterPlausibleCandidates(foundCandidates) : foundCandidates;
+    candidates = kind === 'pokemon' ? Recognition.filterPlausibleCandidates(foundCandidates)
+      : kind === 'yugioh' ? Recognition.rankYuGiOhCandidates(foundCandidates, hints, query, 7)
+      : Recognition.rankOnePieceCandidates(foundCandidates, hints, query, 7);
+    candidates = candidates.filter(candidate => candidate.confidence >= 0.45 && !candidate.hardRejected);
     debugRecognitionCandidates('ManualUserHintRanking', candidates);
     renderCandidates(!candidates.length);
     const recovery = !candidates.length && recoveryState(lookup.status);

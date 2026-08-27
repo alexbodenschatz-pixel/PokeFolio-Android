@@ -5,6 +5,7 @@ import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.Path;
+import android.graphics.PointF;
 import android.graphics.RectF;
 import android.view.View;
 
@@ -17,6 +18,7 @@ public final class CardOverlayView extends View {
     private final Paint corner = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint guide = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint focus = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint detectedBorder = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final RectF cardRect = new RectF();
     private final Path cutout = new Path();
 
@@ -26,6 +28,9 @@ public final class CardOverlayView extends View {
     private boolean focusSucceeded;
     private float reservedTop;
     private float reservedBottom;
+    private PointF[] detectedQuad;
+    private float detectionConfidence;
+    private float stabilityScore;
 
     public CardOverlayView(Context context) {
         super(context);
@@ -49,6 +54,11 @@ public final class CardOverlayView extends View {
 
         focus.setStyle(Paint.Style.STROKE);
         focus.setStrokeWidth(dp(2.5f));
+
+        detectedBorder.setStyle(Paint.Style.STROKE);
+        detectedBorder.setStrokeWidth(dp(3f));
+        detectedBorder.setStrokeJoin(Paint.Join.ROUND);
+        detectedBorder.setStrokeCap(Paint.Cap.ROUND);
     }
 
     private float dp(float value) {
@@ -61,6 +71,38 @@ public final class CardOverlayView extends View {
 
     public boolean contains(float x, float y) {
         return cardRect.contains(x, y);
+    }
+
+    /** Updates the TCG-independent polygon around the physical outer card edge. */
+    public void setDetectedCard(PointF[] quad, float confidence, float stability) {
+        detectedQuad = copyPoints(quad);
+        detectionConfidence = clamp01(confidence);
+        stabilityScore = clamp01(stability);
+        invalidate();
+    }
+
+    public void clearDetectedCard() {
+        detectedQuad = null;
+        detectionConfidence = 0f;
+        stabilityScore = 0f;
+        invalidate();
+    }
+
+    public PointF[] getDetectedQuad() {
+        return copyPoints(detectedQuad);
+    }
+
+    private static PointF[] copyPoints(PointF[] points) {
+        if (points == null || points.length != 4) return null;
+        PointF[] copy = new PointF[4];
+        for (int index = 0; index < 4; index++) {
+            copy[index] = new PointF(points[index].x, points[index].y);
+        }
+        return copy;
+    }
+
+    private static float clamp01(float value) {
+        return Math.max(0f, Math.min(1f, value));
     }
 
     /** Areas occupied by the inset-aware hint and camera controls. */
@@ -138,6 +180,23 @@ public final class CardOverlayView extends View {
         canvas.drawLine(x1, y2, x1, y2 - length, corner);
         canvas.drawLine(x2, y2, x2 - length, y2, corner);
         canvas.drawLine(x2, y2, x2, y2 - length, corner);
+
+        if (detectedQuad != null && detectedQuad.length == 4) {
+            // Orange: partial/weak. Yellow: complete but moving. Green: stable and ready.
+            int color = detectionConfidence < 0.55f
+                    ? Color.rgb(255, 151, 66)
+                    : stabilityScore < 0.82f
+                        ? Color.rgb(255, 207, 84)
+                        : Color.rgb(88, 215, 170);
+            detectedBorder.setColor(color);
+            Path polygon = new Path();
+            polygon.moveTo(detectedQuad[0].x, detectedQuad[0].y);
+            for (int index = 1; index < detectedQuad.length; index++) {
+                polygon.lineTo(detectedQuad[index].x, detectedQuad[index].y);
+            }
+            polygon.close();
+            canvas.drawPath(polygon, detectedBorder);
+        }
 
         if (focusVisible) {
             focus.setColor(focusSucceeded ? Color.rgb(88, 215, 170) : Color.WHITE);

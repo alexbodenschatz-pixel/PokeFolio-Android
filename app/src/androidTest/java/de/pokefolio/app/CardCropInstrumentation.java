@@ -33,9 +33,10 @@ public final class CardCropInstrumentation extends Instrumentation {
     public void onStart() {
         Bundle result = new Bundle();
         try {
-            runCropCases();
+            int syntheticCases = runCropCases();
+            int geometryCases = runPreviewMappingCase() + runSafeFallbackCase() + runTrackingCase();
             int externalCases = runExternalPhotoCases();
-            int total = 8 + externalCases;
+            int total = syntheticCases + geometryCases + externalCases;
             result.putString("stream", "\nCardCropInstrumentation: " + total + "/" + total
                     + " crop cases passed\n");
             finish(Activity.RESULT_OK, result);
@@ -70,8 +71,18 @@ public final class CardCropInstrumentation extends Instrumentation {
         if (!input.isFile()) return 0;
         Bitmap source = BitmapFactory.decodeFile(input.getAbsolutePath());
         assertTrue(input.getName() + " decoded", source != null);
+        CardImageProcessor.PhysicalCardDetection rawDetection =
+                CardImageProcessor.analyzePhysicalCard(source);
         CardImageProcessor.VisualPreparation preparation =
                 CardImageProcessor.prepareCapturedCardDetailed(source);
+        Log.i(TAG, "REAL_PHOTO " + input.getName()
+                + " rawConfidence=" + (rawDetection == null ? "none"
+                    : String.format(Locale.US, "%.3f", rawDetection.confidence))
+                + " method=" + preparation.method
+                + " confidence=" + String.format(Locale.US, "%.3f", preparation.confidence)
+                + " coverage=" + String.format(Locale.US, "%.3f", preparation.cardCoverage)
+                + " fallback=" + preparation.fallbackUsed
+                + " quad=" + quadText(preparation.detectedQuad));
         assertTrue(input.getName() + " normalized width", preparation.bitmap.getWidth() == 900);
         assertTrue(input.getName() + " normalized height", preparation.bitmap.getHeight() == 1257);
         if (requireReliable) {
@@ -83,13 +94,7 @@ public final class CardCropInstrumentation extends Instrumentation {
             assertTrue(input.getName() + " result written",
                     preparation.bitmap.compress(Bitmap.CompressFormat.JPEG, 94, stream));
         }
-        Log.i(TAG, "REAL_PHOTO " + input.getName()
-                + " method=" + preparation.method
-                + " confidence=" + String.format(Locale.US, "%.3f", preparation.confidence)
-                + " coverage=" + String.format(Locale.US, "%.3f", preparation.cardCoverage)
-                + " fallback=" + preparation.fallbackUsed
-                + " quad=" + quadText(preparation.detectedQuad)
-                + " output=" + output.getAbsolutePath());
+        Log.i(TAG, "REAL_PHOTO output=" + output.getAbsolutePath());
         preparation.bitmap.recycle();
         source.recycle();
         return 1;
@@ -105,7 +110,7 @@ public final class CardCropInstrumentation extends Instrumentation {
         return text.append(']').toString();
     }
 
-    private void runCropCases() {
+    private int runCropCases() {
         Case[] cases = {
                 new Case("center-light", Color.rgb(226, 226, 222), false,
                         quad(250, 210, 950, 210, 950, 1188, 250, 1188)),
@@ -122,7 +127,19 @@ public final class CardCropInstrumentation extends Instrumentation {
                 new Case("holo-reflection", Color.rgb(55, 65, 56), true,
                         quad(265, 225, 940, 218, 960, 1160, 248, 1175), true),
                 new Case("dark-background", Color.rgb(8, 9, 12), false,
-                        quad(275, 230, 930, 230, 930, 1145, 275, 1145))
+                        quad(275, 230, 930, 230, 930, 1145, 275, 1145)),
+                new Case("bright-background", Color.rgb(247, 245, 238), false,
+                        quad(270, 225, 935, 232, 928, 1155, 266, 1148)),
+                new Case("dark-card-border", Color.rgb(135, 138, 143), false,
+                        quad(275, 225, 930, 235, 945, 1155, 260, 1148)),
+                new Case("card-in-hand", Color.rgb(187, 139, 112), true,
+                        quad(260, 220, 925, 245, 950, 1160, 248, 1148)),
+                new Case("german-card", Color.rgb(71, 65, 58), false,
+                        quad(292, 245, 905, 210, 955, 1128, 275, 1165)),
+                new Case("chinese-card", Color.rgb(36, 43, 51), true,
+                        quad(305, 245, 900, 230, 940, 1125, 270, 1155)),
+                new Case("japanese-card", Color.rgb(215, 211, 201), false,
+                        quad(292, 205, 918, 258, 1000, 1155, 220, 1118))
         };
 
         for (Case testCase : cases) {
@@ -132,26 +149,150 @@ public final class CardCropInstrumentation extends Instrumentation {
             assertTrue(testCase.name + " width", preparation.bitmap.getWidth() == 900);
             assertTrue(testCase.name + " height", preparation.bitmap.getHeight() == 1257);
             assertTrue(testCase.name + " detected", !preparation.fallbackUsed);
+            assertTrue(testCase.name + " four corners", preparation.fourCornersDetected);
+            assertTrue(testCase.name + " perspective", preparation.perspectiveCorrected);
+            assertTrue(testCase.name + " border complete", preparation.borderComplete);
             assertTrue(testCase.name + " reliable confidence=" + preparation.confidence,
                     preparation.confidence >= 0.61f);
+            assertTrue(testCase.name + " normalized ratio",
+                    Math.abs(preparation.bitmap.getWidth() / (float) preparation.bitmap.getHeight()
+                            - 63f / 88f) < 0.002f);
+            assertTrue(testCase.name + " adaptive safety margin=" + preparation.safetyMargin,
+                    preparation.safetyMargin >= 0.018f && preparation.safetyMargin <= 0.030f);
             assertTrue(testCase.name + " actual card coverage=" + preparation.cardCoverage,
                     preparation.cardCoverage >= 0.20f && preparation.cardCoverage <= 0.78f);
-            int center = preparation.bitmap.getPixel(450, 620);
-            assertTrue(testCase.name + " card content", Color.blue(center) > 55);
-            assertTrue(testCase.name + " complete top border",
-                    containsYellowBorder(preparation.bitmap, 0));
-            assertTrue(testCase.name + " complete right border",
-                    containsYellowBorder(preparation.bitmap, 1));
-            assertTrue(testCase.name + " complete bottom border",
-                    containsYellowBorder(preparation.bitmap, 2));
-            assertTrue(testCase.name + " complete left border",
-                    containsYellowBorder(preparation.bitmap, 3));
             Log.i(TAG, testCase.name + " method=" + preparation.method
                     + " confidence=" + String.format(Locale.US, "%.3f", preparation.confidence)
-                    + " coverage=" + String.format(Locale.US, "%.3f", preparation.cardCoverage));
+                    + " coverage=" + String.format(Locale.US, "%.3f", preparation.cardCoverage)
+                    + " aspect=" + String.format(Locale.US, "%.3f", preparation.detectedAspectRatio)
+                    + " quad=" + quadText(preparation.detectedQuad));
+            writeSyntheticDiagnostic(testCase.name, "source", source);
+            writeSyntheticDiagnostic(testCase.name, "normalized", preparation.bitmap);
+            assertQuadTracksPhysicalCard(testCase, preparation.detectedQuad);
+            int center = preparation.bitmap.getPixel(450, 620);
+            assertTrue(testCase.name + " card content", Color.blue(center) > 55);
+            if (!testCase.name.contains("dark-card-border")) {
+                assertTrue(testCase.name + " complete top border",
+                        containsYellowBorder(preparation.bitmap, 0));
+                assertTrue(testCase.name + " complete right border",
+                        containsYellowBorder(preparation.bitmap, 1));
+                assertTrue(testCase.name + " complete bottom border",
+                        containsYellowBorder(preparation.bitmap, 2));
+                assertTrue(testCase.name + " complete left border",
+                        containsYellowBorder(preparation.bitmap, 3));
+            }
             preparation.bitmap.recycle();
             source.recycle();
         }
+        return cases.length;
+    }
+
+    private void writeSyntheticDiagnostic(String caseName, String stage, Bitmap bitmap) {
+        try {
+            File directory = new File(getTargetContext().getExternalFilesDir(null), "qa-crop-synthetic");
+            if (!directory.exists() && !directory.mkdirs()) return;
+            try (FileOutputStream stream = new FileOutputStream(
+                    new File(directory, caseName + "-" + stage + ".jpg"))) {
+                bitmap.compress(Bitmap.CompressFormat.JPEG, 91, stream);
+            }
+        } catch (Exception error) {
+            Log.w(TAG, "Could not persist synthetic diagnostic " + caseName, error);
+        }
+    }
+
+    private void assertQuadTracksPhysicalCard(Case testCase, PointF[] detected) {
+        assertTrue(testCase.name + " detected quad exists", detected != null && detected.length == 4);
+        float expectedTop = (testCase.quad[0].y + testCase.quad[1].y) / 2f;
+        float expectedRight = (testCase.quad[1].x + testCase.quad[2].x) / 2f;
+        float expectedBottom = (testCase.quad[2].y + testCase.quad[3].y) / 2f;
+        float expectedLeft = (testCase.quad[3].x + testCase.quad[0].x) / 2f;
+        float actualTop = (detected[0].y + detected[1].y) / 2f;
+        float actualRight = (detected[1].x + detected[2].x) / 2f;
+        float actualBottom = (detected[2].y + detected[3].y) / 2f;
+        float actualLeft = (detected[3].x + detected[0].x) / 2f;
+        float height = Math.max(1f, expectedBottom - expectedTop);
+        float width = Math.max(1f, expectedRight - expectedLeft);
+        float verticalTolerance = Math.max(32f, height * 0.05f);
+        float horizontalTolerance = Math.max(28f, width * 0.05f);
+        assertTrue(testCase.name + " top is complete", actualTop <= expectedTop + 30f);
+        assertTrue(testCase.name + " bottom is complete", actualBottom >= expectedBottom - 30f);
+        assertTrue(testCase.name + " left is complete", actualLeft <= expectedLeft + 30f);
+        assertTrue(testCase.name + " right is complete", actualRight >= expectedRight - 30f);
+        assertTrue(testCase.name + " no excessive top background", actualTop >= expectedTop - verticalTolerance);
+        assertTrue(testCase.name + " no excessive bottom background", actualBottom <= expectedBottom + verticalTolerance);
+        assertTrue(testCase.name + " no excessive left background", actualLeft >= expectedLeft - horizontalTolerance);
+        assertTrue(testCase.name + " no excessive right background", actualRight <= expectedRight + horizontalTolerance);
+    }
+
+    private int runPreviewMappingCase() {
+        Bitmap capture = Bitmap.createBitmap(1600, 1200, Bitmap.Config.ARGB_8888);
+        Canvas canvas = new Canvas(capture);
+        canvas.drawColor(Color.DKGRAY);
+        // A square FILL_CENTER preview shows the central 1200x1200 pixels of this 4:3 capture.
+        CardImageProcessor.PreviewCrop crop = CardImageProcessor.cropPreviewRegionDetailed(
+                capture,
+                new android.graphics.RectF(150, 100, 850, 900),
+                1000,
+                1000
+        );
+        assertTrue("preview mapping left", Math.abs(crop.sourceRect.left - 359f) <= 3f);
+        assertTrue("preview mapping top", Math.abs(crop.sourceRect.top - 96f) <= 3f);
+        assertTrue("preview mapping right", Math.abs(crop.sourceRect.right - 1241f) <= 3f);
+        assertTrue("preview mapping bottom", Math.abs(crop.sourceRect.bottom - 1104f) <= 3f);
+        assertTrue("guide remains search ROI", crop.bitmap.getWidth() > 800
+                && crop.bitmap.getHeight() > 980);
+        PointF[] previewQuad = quad(260, 190, 740, 190, 740, 830, 260, 830);
+        PointF[] mapped = CardImageProcessor.mapPreviewQuadToCrop(
+                previewQuad, 1000, 1000, 1600, 1200, crop);
+        assertTrue("live quad mapped", mapped != null && mapped.length == 4);
+        assertTrue("live quad left maps inside capture ROI", mapped[0].x > 100 && mapped[0].x < 300);
+        assertTrue("live quad right maps inside capture ROI", mapped[1].x > 600 && mapped[1].x < 800);
+        crop.bitmap.recycle();
+        capture.recycle();
+        return 1;
+    }
+
+    private int runTrackingCase() {
+        CardDetectionTracker tracker = new CardDetectionTracker();
+        CardDetectionTracker.Snapshot snapshot = null;
+        for (int frame = 0; frame < 12; frame++) {
+            PointF[] measured = quad(
+                    220 + frame % 2, 300, 820, 295 + frame % 2,
+                    825 - frame % 2, 1120, 215, 1115 - frame % 2);
+            snapshot = tracker.update(measured, 0.92f, 1080, 1920, frame * 66L);
+        }
+        assertTrue("stable physical quad becomes ready", snapshot != null && snapshot.ready);
+        assertTrue("stable score", snapshot.stability >= 0.82f);
+        CardDetectionTracker.Snapshot moved = tracker.update(
+                quad(340, 410, 940, 405, 945, 1230, 335, 1225),
+                0.92f, 1080, 1920, 900L);
+        assertTrue("moving card is no longer ready", !moved.ready);
+        assertTrue("smoothed corner does not jump", moved.quad[0].x < 340f);
+        return 1;
+    }
+
+    private int runSafeFallbackCase() {
+        Bitmap source = Bitmap.createBitmap(1200, 1400, Bitmap.Config.ARGB_8888);
+        Canvas canvas = new Canvas(source);
+        canvas.drawColor(Color.rgb(86, 88, 91));
+        Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        paint.setColor(Color.rgb(92, 94, 97));
+        for (int y = 30; y < 1400; y += 64) canvas.drawLine(0, y, 1200, y + 18, paint);
+        CardImageProcessor.VisualPreparation preparation =
+                CardImageProcessor.prepareCapturedCardDetailed(source);
+        Log.i(TAG, "ambiguous method=" + preparation.method
+                + " confidence=" + String.format(Locale.US, "%.3f", preparation.confidence)
+                + " coverage=" + String.format(Locale.US, "%.3f", preparation.cardCoverage)
+                + " aspect=" + String.format(Locale.US, "%.3f", preparation.detectedAspectRatio)
+                + " quad=" + quadText(preparation.detectedQuad));
+        assertTrue("ambiguous scene is fallback", preparation.fallbackUsed);
+        assertTrue("ambiguous scene is not perspective warped", !preparation.perspectiveCorrected);
+        assertTrue("ambiguous scene is low confidence", !preparation.reliable);
+        assertTrue("fallback still preserves normalized geometry",
+                preparation.bitmap.getWidth() == 900 && preparation.bitmap.getHeight() == 1257);
+        preparation.bitmap.recycle();
+        source.recycle();
+        return 1;
     }
 
     private boolean containsYellowBorder(Bitmap bitmap, int side) {
@@ -185,8 +326,12 @@ public final class CardCropInstrumentation extends Instrumentation {
                 canvas.drawLine(offset, 0, offset + 1400, 1400, paint);
             }
         }
+        if (testCase.name.contains("hand")) {
+            paint.setColor(Color.rgb(219, 174, 145));
+            canvas.drawOval(155, 315, 1090, 1275, paint);
+        }
 
-        Bitmap card = makeCard(testCase.holo);
+        Bitmap card = makeCard(testCase.holo, testCase.name.contains("dark-card-border"));
         float[] from = {0, 0, 630, 0, 630, 880, 0, 880};
         float[] to = {
                 testCase.quad[0].x, testCase.quad[0].y,
@@ -201,11 +346,11 @@ public final class CardCropInstrumentation extends Instrumentation {
         return scene;
     }
 
-    private Bitmap makeCard(boolean holo) {
+    private Bitmap makeCard(boolean holo, boolean darkBorder) {
         Bitmap card = Bitmap.createBitmap(630, 880, Bitmap.Config.ARGB_8888);
         Canvas canvas = new Canvas(card);
         Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        paint.setColor(Color.rgb(245, 226, 96));
+        paint.setColor(darkBorder ? Color.rgb(31, 35, 43) : Color.rgb(245, 226, 96));
         canvas.drawRoundRect(1, 1, 629, 879, 22, 22, paint);
         paint.setStyle(Paint.Style.STROKE);
         paint.setStrokeWidth(10f);

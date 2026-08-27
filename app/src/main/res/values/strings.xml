@@ -6,7 +6,7 @@
     <string name="bulk_camera_frame_instructions">Nur die Vorderseite vollständig in den Rahmen halten\nTorch bleibt aus · zum Fokussieren tippen</string>
     <string name="camera_starting">Kamera wird gestartet …</string>
     <string name="camera_preview_missing">Keine Kameravorschau. Bitte Scanner erneut öffnen.</string>
-    <string name="camera_preview_description">Kameravorschau für die Pokémon-Karte</string>
+    <string name="camera_preview_description">Kameravorschau für die Trading Card</string>
     <string name="scanner_cancel">Abbrechen</string>
     <string name="scanner_cancel_description">Scanner abbrechen</string>
     <string name="camera_light">Licht</string>
@@ -16,4 +16,9 @@
     <string name="capture_card">Karte aufnehmen</string>
     <string name="capture_card_description">Karte im Scanrahmen fotografieren</string>
     <string name="processing_card">Verarbeite …</string>
+    <string name="camera_find_card">Karte suchen</string>
+    <string name="camera_keep_card_visible">Karte vollständig ins Bild halten</string>
+    <string name="camera_move_closer">Karte näher an die Kamera halten</string>
+    <string name="camera_hold_still">Kamera ruhig halten</string>
+    <string name="camera_ready">Karte erkannt · Bereit</string>
 </resources>

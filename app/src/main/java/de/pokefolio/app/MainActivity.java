@@ -116,7 +116,7 @@ public final class MainActivity extends Activity {
         settings.setAllowContentAccess(true);
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
         settings.setMediaPlaybackRequiresUserGesture(false);
-        settings.setUserAgentString(settings.getUserAgentString() + " PokeFolio/0.15.0");
+        settings.setUserAgentString(settings.getUserAgentString() + " PokeFolio/0.16.0");
 
         webView.addJavascriptInterface(new NativeBridge(), "PokeNative");
         webView.setWebViewClient(new WebViewClient() {
@@ -360,12 +360,24 @@ public final class MainActivity extends Activity {
             output.put("cardCoverage", preparation.cardCoverage);
             output.put("fallbackUsed", preparation.fallbackUsed);
             output.put("detectedQuad", quadJson(preparation.detectedQuad));
+            output.put("detectedAspectRatio", preparation.detectedAspectRatio);
+            output.put("safetyMargin", preparation.safetyMargin);
+            output.put("correctedRotationDegrees", preparation.correctedRotationDegrees);
+            output.put("fourCornersDetected", preparation.fourCornersDetected);
+            output.put("perspectiveCorrected", preparation.perspectiveCorrected);
+            output.put("borderComplete", preparation.borderComplete);
             if (isDebugBuild()) {
                 Log.d(TAG, "CARD_PREPARATION source=" + source.getWidth() + "x" + source.getHeight()
                         + " final=" + preparation.bitmap.getWidth() + "x" + preparation.bitmap.getHeight()
                         + " method=" + preparation.method
                         + " confidence=" + String.format(java.util.Locale.US, "%.3f", preparation.confidence)
                         + " coverage=" + String.format(java.util.Locale.US, "%.3f", preparation.cardCoverage)
+                        + " aspect=" + String.format(java.util.Locale.US, "%.3f", preparation.detectedAspectRatio)
+                        + " rotation=" + String.format(java.util.Locale.US, "%.2f", preparation.correctedRotationDegrees)
+                        + " margin=" + String.format(java.util.Locale.US, "%.3f", preparation.safetyMargin)
+                        + " fourCorners=" + preparation.fourCornersDetected
+                        + " perspective=" + preparation.perspectiveCorrected
+                        + " borderComplete=" + preparation.borderComplete
                         + " fallback=" + preparation.fallbackUsed
                         + " quad=" + quadJson(preparation.detectedQuad));
             }
@@ -477,7 +489,7 @@ public final class MainActivity extends Activity {
             connection.setReadTimeout(8000);
             connection.setInstanceFollowRedirects(false);
             connection.setRequestProperty("Accept", "image/avif,image/webp,image/*");
-            connection.setRequestProperty("User-Agent", "PokeFolio/0.15.0 Android");
+            connection.setRequestProperty("User-Agent", "PokeFolio/0.16.0 Android");
             int status = connection.getResponseCode();
             if (status < 200 || status >= 300) {
                 throw new IOException("Kartenbild HTTP " + status);
@@ -712,7 +724,7 @@ public final class MainActivity extends Activity {
             connection.setRequestMethod("GET");
             connection.setRequestProperty("Accept", "application/json");
             connection.setRequestProperty("Cache-Control", "no-cache");
-            connection.setRequestProperty("User-Agent", "PokeFolio/0.15.0 Android");
+            connection.setRequestProperty("User-Agent", "PokeFolio/0.16.0 Android");
             status = connection.getResponseCode();
             InputStream stream = status >= 200 && status < 400
                     ? connection.getInputStream()
@@ -946,7 +958,18 @@ public final class MainActivity extends Activity {
         output.put("confidence", confidence);
         output.put("cardCoverage", data.getFloatExtra(CameraActivity.EXTRA_CROP_COVERAGE, 0f));
         output.put("fallbackUsed", fallback);
-        output.put("reliable", !fallback && confidence >= 0.61f);
+        output.put("detectedAspectRatio", data.getFloatExtra(
+                CameraActivity.EXTRA_CROP_ASPECT_RATIO, 0f));
+        output.put("safetyMargin", data.getFloatExtra(CameraActivity.EXTRA_CROP_MARGIN, 0f));
+        output.put("correctedRotationDegrees", data.getFloatExtra(
+                CameraActivity.EXTRA_CROP_ROTATION, 0f));
+        output.put("fourCornersDetected", data.getBooleanExtra(
+                CameraActivity.EXTRA_CROP_FOUR_CORNERS, false));
+        output.put("perspectiveCorrected", data.getBooleanExtra(
+                CameraActivity.EXTRA_CROP_PERSPECTIVE, false));
+        output.put("borderComplete", data.getBooleanExtra(
+                CameraActivity.EXTRA_CROP_BORDER_COMPLETE, false));
+        output.put("reliable", !fallback && confidence >= 0.72f);
         output.put("width", CardImageProcessor.NORMALIZED_WIDTH);
         output.put("height", CardImageProcessor.NORMALIZED_HEIGHT);
     }

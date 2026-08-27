@@ -1064,7 +1064,7 @@
 
   function findYuGiOhSetCode(text) {
     const match = String(text || '').toUpperCase().match(
-      /\b([A-Z0-9]{2,8}-(?:(?:DE|EN|FR|EU|IT|PT|SP|GE|AE)[A-Z]?)?\d{2,4})\b/
+      /\b([A-Z0-9]{2,8}-(?:(?:DE|EN|FR|EU|IT|PT|SP|GE|AE)[A-Z]?)?[A-Z]?\d{2,4})\b/
     );
     return match ? match[1] : '';
   }
@@ -1082,6 +1082,99 @@
       scores.pokemon += 5;
     }
     return Object.entries(scores).sort((a, b) => b[1] - a[1])[0][0] || 'pokemon';
+  }
+
+  function profileInput(input) {
+    if (input && typeof input === 'object' && input.rawText != null) {
+      return {text: String(input.rawText || ''), lines: input.lines || [], language: input.language || ''};
+    }
+    const hints = extractHints(input || '');
+    return {text: String(hints.rawText || input || ''), lines: hints.lines || [], language: hints.language || ''};
+  }
+
+  function profileTitle(lines, rejectPattern) {
+    const candidates = (lines || []).filter(line => {
+      const value = String(line.text || '').trim();
+      const top = line.region === 'TOP_HEADER' || line.y <= 0.20;
+      return top && value.length >= 2 && value.length <= 48
+        && (value.match(/[\p{L}]/gu) || []).length >= 2
+        && !rejectPattern.test(value) && !isRuleTextLikeTitle(value);
+    }).map(line => ({
+      value: String(line.text || '').replace(/\s+/g, ' ').trim(),
+      score: (line.region === 'TOP_HEADER' ? 3 : 1.4) + (line.y <= 0.12 ? 1 : 0)
+    })).sort((left, right) => right.score - left.score || left.value.length - right.value.length);
+    return candidates[0] ? candidates[0].value : '';
+  }
+
+  /** Yu-Gi-Oh! has its own identifiers and must never reuse Pokémon number rules. */
+  function parseYuGiOhFeatures(input) {
+    const data = profileInput(input);
+    const upper = data.text.toUpperCase();
+    const setCode = findYuGiOhSetCode(upper);
+    const bottomText = data.lines.filter(line => line.region === 'BOTTOM_METADATA' || line.y >= 0.70)
+      .map(line => line.text).join('\n');
+    const passcodeMatch = String(bottomText || upper).match(/(?:^|\D)(\d{8})(?!\d)/);
+    const atk = upper.match(/\bATK\s*[/:]?\s*(\d{1,5})\b/);
+    const def = upper.match(/\bDEF\s*[/:]?\s*(\d{1,5})\b/);
+    const level = upper.match(/\b(?:LEVEL|STUFE)\s*(\d{1,2})\b/);
+    const name = profileTitle(data.lines,
+      /\b(?:ATK|DEF|KONAMI|SPELL|TRAP|ZAUBER|FALLE|[A-Z0-9]{2,8}-[A-Z]*\d{2,4}|\d{8})\b/i);
+    return {
+      profile: 'YUGIOH', tcg: 'yugioh', name, language: data.language,
+      setCode, passcode: passcodeMatch ? passcodeMatch[1] : '',
+      atk: atk ? atk[1] : '', def: def ? def[1] : '', level: level ? level[1] : '',
+      setCodeResult: {normalizedValue: setCode, confidence: setCode ? 0.98 : 0,
+        validFormat: Boolean(setCode), sourceRegion: 'LOWER_TEXT', rawText: setCode},
+      passcodeResult: {normalizedValue: passcodeMatch ? passcodeMatch[1] : '',
+        confidence: passcodeMatch ? 0.96 : 0, validFormat: Boolean(passcodeMatch),
+        sourceRegion: 'BOTTOM_METADATA', rawText: passcodeMatch ? passcodeMatch[0].trim() : ''}
+    };
+  }
+
+  /** One Piece profile with OP/ST/EB/PRB/P code parsing and layout anchors. */
+  function parseOnePieceFeatures(input) {
+    const data = profileInput(input);
+    const upper = data.text.toUpperCase();
+    const codeMatch = upper.match(/\b((?:(?:OP|ST|EB|PRB|EX|DON)\s*-?\s*\d{1,2}\s*-\s*\d{3})|(?:P\s*-\s*\d{3}))\b/);
+    let cardCode = codeMatch ? codeMatch[1].replace(/\s+/g, '') : '';
+    cardCode = cardCode.replace(/^((?:OP|ST|EB|PRB|EX|DON))(\d)-/,
+      (_, prefix, number) => prefix + '0' + number + '-');
+    const cost = upper.match(/\bCOST\s*[:]?\s*(\d{1,2})\b/);
+    const power = upper.match(/\bPOWER\s*[:]?\s*(\d{3,5})\b/);
+    const counter = upper.match(/\bCOUNTER\s*[:+]?\s*\+?\s*(\d{3,5})\b/);
+    const type = upper.match(/\b(CHARACTER|LEADER|EVENT|STAGE|DON!!)\b/);
+    const name = profileTitle(data.lines,
+      /\b(?:COST|POWER|COUNTER|CHARACTER|LEADER|EVENT|STAGE|DON!!|OP\d|ST\d|EB\d|PRB\d|P-\d)\b/i);
+    return {
+      profile: 'ONE_PIECE', tcg: 'onepiece', name, language: data.language,
+      cardCode, cardType: type ? type[1] : '', cost: cost ? cost[1] : '',
+      power: power ? power[1] : '', counter: counter ? counter[1] : '',
+      cardCodeResult: {normalizedValue: cardCode, confidence: cardCode ? 0.99 : 0,
+        validFormat: Boolean(cardCode), sourceRegion: 'BOTTOM_METADATA', rawText: codeMatch ? codeMatch[0] : ''}
+    };
+  }
+
+  function tcgProbabilities(hints) {
+    const text = String(hints && hints.rawText || '').toUpperCase();
+    const ygo = parseYuGiOhFeatures(hints || '');
+    const one = parseOnePieceFeatures(hints || '');
+    const scores = {pokemon: 0.25, yugioh: 0.25, onepiece: 0.25};
+    if (hints && hints.collectorNumbers && hints.collectorNumbers.length) scores.pokemon += 3.5;
+    if (/\b(?:KP|HP)\s*[0-9OIL|]{2,3}\b|POK.MON|ENTWICKELT SICH AUS/.test(text)) scores.pokemon += 4.5;
+    if (ygo.setCode) scores.yugioh += 6;
+    if (ygo.passcode) scores.yugioh += 5;
+    if (/\bATK\b|\bDEF\b|KONAMI|ZAUBERKARTE|FALLENKARTE/.test(text)) scores.yugioh += 4;
+    if (one.cardCode) scores.onepiece += 7;
+    if (/DON!!|COUNTER|CHARACTER|LEADER|ONE PIECE|\bPOWER\b|\bCOST\b/.test(text)) scores.onepiece += 4;
+    const total = scores.pokemon + scores.yugioh + scores.onepiece;
+    return {pokemon: scores.pokemon / total, yugioh: scores.yugioh / total,
+      onepiece: scores.onepiece / total};
+  }
+
+  function classifyTcgProfiled(hints, selected) {
+    if (selected && selected !== 'auto') return selected;
+    const probabilities = tcgProbabilities(hints);
+    return Object.entries(probabilities).sort((a, b) => b[1] - a[1])[0][0] || 'pokemon';
   }
 
   function bestNameSimilarity(hints, candidateName, manual) {
@@ -1749,6 +1842,19 @@
     const layout = clamp(Number.isFinite(Number(visualInput.layout))
       ? Number(visualInput.layout) : whole * 0.52 + header * 0.20 + footer * 0.16 + textImage * 0.12, 0, 1);
     const visualReliable = visualInput.reliable !== false;
+    if (candidate && candidate.tcg && candidate.tcg !== 'pokemon') {
+      const adjustedArtwork = visualReliable ? artwork : 0.5 + (artwork - 0.5) * 0.62;
+      return {
+        ...candidate,
+        artworkScore: adjustedArtwork,
+        visualScore: clamp(adjustedArtwork * 0.72 + layout * 0.28, 0, 1),
+        visualSimilarity: {similarity: normalizedVisual,
+          regions: {artwork: adjustedArtwork, whole, header, footer, text: textImage, layout},
+          reliable: visualReliable},
+        matchDetails: {...(candidate.matchDetails || {}), artwork: adjustedArtwork, layout},
+        visualResult: visualInput
+      };
+    }
     let identificationScore = clamp(Number.isFinite(Number(candidate.identificationScore))
       ? Number(candidate.identificationScore) : Number(candidate.textConfidence) || Number(candidate.confidence) || 0, 0, 0.99);
     const dataConfidence = clamp(Number.isFinite(Number(candidate.dataConfidence))
@@ -2131,6 +2237,31 @@
       : 0;
     const margin = secondCandidate ? bestScore - secondScore : 1;
     const details = bestCandidate.matchDetails || {};
+    if (bestCandidate.tcg && bestCandidate.tcg !== 'pokemon') {
+      const hardRejected = Boolean(bestCandidate.hardRejected);
+      const strongCode = details.cardCode === 'match' || details.setCode === 'match'
+        || details.passcode === 'match';
+      const sameIdentityVariants = candidates.slice(1).some(candidate => bestIdentityKey
+        && printedIdentityKey(candidate) === bestIdentityKey);
+      const identityClear = !hardRejected && strongCode && bestScore >= 0.88
+        && (margin >= 0.08 || !secondCandidate);
+      if (identityClear && sameIdentityVariants) {
+        return {status: 'variant-uncertain', autoAccept: false, bestScore, secondScore, margin,
+          level: confidenceLevel(bestScore), identityClear: true, identityConfirmed: true,
+          variantConfirmed: false, variantUncertain: true,
+          state: 'IDENTITY_CONFIRMED_VARIANT_UNCERTAIN'};
+      }
+      if (identityClear) {
+        return {status: 'auto', autoAccept: true, bestScore, secondScore, margin,
+          level: confidenceLevel(bestScore), identityClear: true, identityConfirmed: true,
+          variantConfirmed: true, variantUncertain: false,
+          state: 'IDENTITY_CONFIRMED_VARIANT_CONFIRMED'};
+      }
+      return {status: !hardRejected && bestScore >= 0.45 ? 'candidates' : 'low', autoAccept: false,
+        bestScore, secondScore, margin, level: confidenceLevel(bestScore), identityClear: false,
+        identityConfirmed: false, variantConfirmed: false,
+        state: !hardRejected && bestScore >= 0.45 ? 'IDENTITY_UNCERTAIN' : 'NO_RELIABLE_MATCH'};
+    }
     const identification = Number(bestCandidate.identificationScore) || bestScore;
     const hardContradiction = details.collector === 'mismatch'
       || details.setNumber === 'mismatch'
@@ -2207,6 +2338,120 @@
     });
   }
 
+  function candidateVisualScore(candidate) {
+    const regions = candidate && candidate.visualSimilarity && candidate.visualSimilarity.regions || {};
+    const value = regions.artwork != null ? regions.artwork
+      : candidate && candidate.matchDetails && candidate.matchDetails.artwork != null
+        ? candidate.matchDetails.artwork : candidate && candidate.visualScore;
+    return Number.isFinite(Number(value)) ? clamp(Number(value), 0, 1) : null;
+  }
+
+  function normalizedCode(value) {
+    return String(value || '').toUpperCase().replace(/\s+/g, '').replace(/[–—]/g, '-');
+  }
+
+  function scoreYuGiOhCandidate(candidate, hints, manual) {
+    const feature = hints && hints.yugiohFeatures || parseYuGiOhFeatures(hints || '');
+    const expectedCode = normalizedCode(feature.setCode);
+    const codes = [candidate.number, candidate.setCode].concat(candidate.setCodes || [])
+      .map(normalizedCode).filter(Boolean);
+    const candidatePasscode = String(candidate.passcode || candidate.id || '').replace(/\D/g, '');
+    const setStatus = expectedCode ? (codes.includes(expectedCode) ? 'match' : 'mismatch') : 'unknown';
+    const passStatus = feature.passcode
+      ? (candidatePasscode === feature.passcode ? 'match' : 'mismatch') : 'unknown';
+    const nameHint = String(manual || feature.name || hints && hints.nameHint || '');
+    const titleScore = nameHint ? similarity(nameHint, candidate.name) : null;
+    const artworkScore = candidateVisualScore(candidate);
+    const atkStatus = feature.atk && candidate.atk != null
+      ? (String(candidate.atk) === String(feature.atk) ? 'match' : 'mismatch') : 'unknown';
+    const defStatus = feature.def && candidate.def != null
+      ? (String(candidate.def) === String(feature.def) ? 'match' : 'mismatch') : 'unknown';
+    let weighted = 0;
+    let weights = 0;
+    const add = (value, weight) => { if (value == null) return; weighted += value * weight; weights += weight; };
+    add(setStatus === 'match' ? 1 : setStatus === 'mismatch' ? 0 : null, 0.36);
+    add(passStatus === 'match' ? 1 : passStatus === 'mismatch' ? 0 : null, 0.31);
+    add(titleScore, 0.17);
+    add(artworkScore, 0.11);
+    add(atkStatus === 'match' ? 1 : atkStatus === 'mismatch' ? 0 : null, 0.025);
+    add(defStatus === 'match' ? 1 : defStatus === 'mismatch' ? 0 : null, 0.025);
+    let score = weights ? weighted / weights : 0;
+    if (setStatus === 'match' && passStatus === 'match') score = Math.max(score, 0.985);
+    else if (setStatus === 'match') score = Math.max(score, titleScore >= 0.82 ? 0.90 : 0.82);
+    else if (passStatus === 'match') score = Math.max(score, 0.93);
+    const hardRejected = setStatus === 'mismatch' && expectedCode && codes.length > 0
+      || passStatus === 'mismatch' && feature.passcode && candidatePasscode.length === 8;
+    if (hardRejected) score = Math.min(score, 0.24);
+    return {...candidate, confidence: clamp(score, 0, 0.995), identificationScore: clamp(score, 0, 0.995),
+      hardRejected, matchDetails: {profile: 'YUGIOH', title: titleScore, setCode: setStatus,
+        passcode: passStatus, artwork: artworkScore, atk: atkStatus, def: defStatus}};
+  }
+
+  function rankYuGiOhCandidates(candidates, hints, manual, limit) {
+    return deduplicateCandidates((candidates || []).map(candidate => scoreYuGiOhCandidate(candidate, hints, manual)))
+      .filter(candidate => !candidate.hardRejected)
+      .sort((left, right) => right.identificationScore - left.identificationScore)
+      .slice(0, Number(limit) || 7);
+  }
+
+  function scoreOnePieceCandidate(candidate, hints, manual) {
+    const feature = hints && hints.onePieceFeatures || parseOnePieceFeatures(hints || '');
+    const expectedCode = normalizedCode(feature.cardCode);
+    const candidateCode = normalizedCode(candidate.number || candidate.cardCode || candidate.id);
+    const codeStatus = expectedCode ? (candidateCode === expectedCode ? 'match' : 'mismatch') : 'unknown';
+    const nameHint = String(manual || feature.name || hints && hints.nameHint || '');
+    const titleScore = nameHint ? similarity(nameHint, candidate.name) : null;
+    const typeStatus = feature.cardType && candidate.cardType
+      ? (normalizedCode(feature.cardType) === normalizedCode(candidate.cardType) ? 'match' : 'mismatch') : 'unknown';
+    const artworkScore = candidateVisualScore(candidate);
+    const costStatus = feature.cost && candidate.cost != null
+      ? (String(feature.cost) === String(candidate.cost) ? 'match' : 'mismatch') : 'unknown';
+    const powerStatus = feature.power && candidate.power != null
+      ? (String(feature.power) === String(candidate.power) ? 'match' : 'mismatch') : 'unknown';
+    const counterStatus = feature.counter && candidate.counter != null
+      ? (String(feature.counter) === String(candidate.counter).replace('+', '') ? 'match' : 'mismatch') : 'unknown';
+    let weighted = 0;
+    let weights = 0;
+    const add = (value, weight) => { if (value == null) return; weighted += value * weight; weights += weight; };
+    add(codeStatus === 'match' ? 1 : codeStatus === 'mismatch' ? 0 : null, 0.50);
+    add(titleScore, 0.18);
+    add(typeStatus === 'match' ? 1 : typeStatus === 'mismatch' ? 0 : null, 0.08);
+    add(artworkScore, 0.16);
+    add(costStatus === 'match' ? 1 : costStatus === 'mismatch' ? 0 : null, 0.025);
+    add(powerStatus === 'match' ? 1 : powerStatus === 'mismatch' ? 0 : null, 0.035);
+    add(counterStatus === 'match' ? 1 : counterStatus === 'mismatch' ? 0 : null, 0.025);
+    let score = weights ? weighted / weights : 0;
+    if (codeStatus === 'match') score = Math.max(score, titleScore >= 0.80 ? 0.97 : 0.91);
+    const hardRejected = codeStatus === 'mismatch' && expectedCode && candidateCode;
+    if (hardRejected) score = Math.min(score, 0.18);
+    return {...candidate, confidence: clamp(score, 0, 0.995), identificationScore: clamp(score, 0, 0.995),
+      hardRejected, matchDetails: {profile: 'ONE_PIECE', title: titleScore, cardCode: codeStatus,
+        cardType: typeStatus, artwork: artworkScore, cost: costStatus, power: powerStatus,
+        counter: counterStatus}};
+  }
+
+  function rankOnePieceCandidates(candidates, hints, manual, limit) {
+    return deduplicateCandidates((candidates || []).map(candidate => scoreOnePieceCandidate(candidate, hints, manual)))
+      .filter(candidate => !candidate.hardRejected)
+      .sort((left, right) => right.identificationScore - left.identificationScore)
+      .slice(0, Number(limit) || 7);
+  }
+
+  function orientationScore(kind, hints) {
+    if (kind === 'yugioh') {
+      const f = parseYuGiOhFeatures(hints);
+      return clamp((f.setCode ? 4 : 0) + (f.passcode ? 4 : 0) + (f.name ? 1.5 : 0)
+        + (f.atk ? 1 : 0) + (f.def ? 1 : 0), 0, 10);
+    }
+    if (kind === 'onepiece') {
+      const f = parseOnePieceFeatures(hints);
+      return clamp((f.cardCode ? 5 : 0) + (f.name ? 1.5 : 0) + (f.cardType ? 1.5 : 0)
+        + (f.cost ? 0.7 : 0) + (f.power ? 0.7 : 0) + (f.counter ? 0.6 : 0), 0, 10);
+    }
+    return clamp((hints && hints.collectorNumbers && hints.collectorNumbers.length ? 4 : 0)
+      + (hints && hints.nameHint ? 3 : 0) + (hints && hints.hp ? 2 : 0), 0, 10);
+  }
+
   return {
     clamp,
     norm,
@@ -2222,7 +2467,15 @@
     withManualTitleHint,
     detectCardLanguage,
     extractHints,
-    classifyTcg,
+    classifyTcg: classifyTcgProfiled,
+    tcgProbabilities,
+    parseYuGiOhFeatures,
+    parseOnePieceFeatures,
+    scoreYuGiOhCandidate,
+    rankYuGiOhCandidates,
+    scoreOnePieceCandidate,
+    rankOnePieceCandidates,
+    orientationScore,
     scorePokemonCandidate,
     scorePokemonTcgCandidate,
     scoreNonPokemonCardCandidate,

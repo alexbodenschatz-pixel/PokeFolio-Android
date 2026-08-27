@@ -26,6 +26,7 @@ test('schneidet und entzerrt den Scan genau einmal vor den Kandidatenvergleichen
   assert.match(processor, /scaled != source && !scaled\.isRecycled\(\)/);
   assert.match(processor, /!isVariantBitmap\(variants, base\) && !base\.isRecycled\(\)/);
   assert.match(processor, /"detected-perspective"/);
+  assert.match(processor, /"bounded-card-fallback"/);
   assert.doesNotMatch(processor, /isCardAspectFrame/);
   assert.match(processor, /detectCard\(detectionBitmap\)/);
   assert.match(processor, /"search-region-fallback"/);
@@ -92,12 +93,39 @@ test('bewahrt beim Kamera- und Konturzuschnitt Sicherheitsränder an allen Karte
   assert.match(processor, /frameInView\.width\(\) \* 0\.025f/);
   assert.match(processor, /frameInView\.height\(\) \* 0\.025f/);
   assert.match(processor, /rectangleHeight \* scaleY \* 0\.035f/);
-  assert.match(processor, /DETECTION_MARGIN = 0\.030f/);
+  assert.match(processor, /HIGH_CONFIDENCE_MARGIN = 0\.018f/);
+  assert.match(processor, /NORMAL_DETECTION_MARGIN = 0\.024f/);
+  assert.match(processor, /LOW_CONFIDENCE_MARGIN = 0\.030f/);
+  assert.match(processor, /safetyMarginForConfidence/);
   assert.match(processor, /factor = 1f \+ fraction \* 2f/);
   assert.match(camera, /cropPreviewRegionDetailed/);
-  assert.match(camera, /prepareCapturedCardDetailed\(region\)/);
+  assert.match(camera, /prepareCapturedCardDetailed\(\s*region,\s*liveQuadInRegion,\s*capturedLiveConfidence\s*\)/);
   assert.match(styles, /\.photo-card img\{[^}]*object-fit:contain/);
   assert.match(styles, /\.bulk-camera-stage>img\{[^}]*object-fit:contain/);
+});
+
+test('verwendet den Guide nur als Search ROI und bindet Preview und Capture an einen ViewPort', () => {
+  assert.match(camera, /UseCaseGroup\.Builder/);
+  assert.match(camera, /previewView\.getViewPort\(\)/);
+  assert.match(camera, /new ViewPort\.Builder/);
+  assert.match(camera, /setScaleType\(ViewPort\.FILL_CENTER\)/);
+  assert.match(camera, /useCases\.setViewPort\(viewPort\)/);
+  assert.match(processor, /cropPreviewRegionDetailed/);
+  assert.match(processor, /scale = Math\.max\([\s\S]*previewWidth \/ \(float\) source\.getWidth\(\)/);
+});
+
+test('entzerrt nur belastbare Vierpunktkonturen und diagnostiziert den finalen Crop', () => {
+  assert.match(processor, /MIN_PERSPECTIVE_CONFIDENCE = 0\.66f/);
+  assert.match(processor, /RELIABLE_DETECTION = 0\.72f/);
+  assert.match(processor, /detection\.borderCompleteness >= 0\.50f/);
+  assert.match(processor, /cropLikelyCardBounds\(scaled\)/);
+  assert.match(camera, /Karte näher an die Kamera halten/);
+  assert.match(camera, /Karte etwas weiter von der Kamera entfernen/);
+  assert.match(app, /fourCornersDetected/);
+  assert.match(app, /normalizedAspectRatio/);
+  assert.match(app, /correctPreparedOrientation/);
+  assert.match(app, /Perspective/);
+  assert.match(styles, /\.scan-preview-button img\{[^}]*object-fit:contain/);
 });
 
 test('berechnet regionale pHash-, dHash-, Graustufen-, Gradienten- und Farbmerkmale', () => {
