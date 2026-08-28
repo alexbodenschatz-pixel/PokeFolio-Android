@@ -9,7 +9,7 @@
 <body>
 <header>
   <div class="brand"><b>PokéFolio</b><small>Dein TCG-Portfolio</small></div>
-  <div class="header-actions"><span class="currency-pill">EUR</span><span class="pill">v0.16.3</span></div>
+  <div class="header-actions"><span class="currency-pill">EUR</span><span class="pill">v0.16.5</span></div>
 </header>
 <main>
   <section id="home" class="page active">
@@ -140,12 +140,14 @@
       <div class="bulk-options card">
         <label>Sprache<select id="bulkLang"><option value="de">Deutsch</option><option value="en">Englisch</option><option value="ja">Japanisch</option><option value="ko">Koreanisch</option><option value="zh-CN">Chinesisch (vereinfacht)</option><option value="zh-TW">Chinesisch (traditionell)</option></select></label>
         <label>Druckvariante<select id="bulkVariant"><option value="unknown" selected>Automatisch bestimmen</option><option value="normal">Normal</option><option value="holo">Holo</option><option value="reverse-holo">Reverse Holo</option><option value="full-art">Full Art</option><option value="alternate-art">Alternate Art</option><option value="illustration-rare">Illustration Rare</option><option value="special-illustration-rare">Special Illustration Rare</option><option value="secret-rare">Secret Rare</option><option value="promo">Promo</option><option value="reprint">Reprint</option></select></label>
+        <label class="bulk-auto-continue"><input id="bulkAutoContinue" type="checkbox"> <span>Automatisch zur nächsten Karte</span></label>
       </div>
 
       <div class="bulk-session" aria-label="Bulk-Scan-Sitzungsstatistik">
-        <div><b id="bulkScanned">0</b><span>Heute gescannt</span></div>
-        <div><b id="bulkNew">0</b><span>Neue Karten</span></div>
-        <div><b id="bulkDuplicates">0</b><span>Duplikate</span></div>
+        <div><b id="bulkScanned">0</b><span>Scans</span></div>
+        <div><b id="bulkUnique">0</b><span>verschiedene</span></div>
+        <div><b id="bulkAutomatic">0</b><span>automatisch</span></div>
+        <div><b id="bulkManual">0</b><span>manuell</span></div>
       </div>
 
       <div id="bulkStatusBox" class="bulk-status card">
@@ -154,11 +156,20 @@
       </div>
 
       <button id="bulkCameraButton" class="bulk-camera-stage" type="button">
-        <img id="bulkPreview" alt="Zuletzt gescannte Kartenvorderseite" hidden>
         <span class="bulk-camera-shade" aria-hidden="true"></span>
         <span class="bulk-card-frame" aria-hidden="true"></span>
         <span class="bulk-camera-call"><b>Live-Kamera öffnen</b><small>Torch startet immer ausgeschaltet</small></span>
       </button>
+      <section id="bulkCapturedResult" class="bulk-captured-result card" hidden aria-live="polite">
+        <div class="bulk-result-image"><img id="bulkPreview" alt="Normalisierte Kartenvorderseite" hidden></div>
+        <div class="bulk-result-copy">
+          <span id="bulkResultEyebrow" class="section-kicker">Aufnahme wird analysiert</span>
+          <h2 id="bulkResultName">Kartennummer wird gelesen …</h2>
+          <p id="bulkResultMeta">Die vollständige normalisierte Karte wird verwendet.</p>
+          <strong id="bulkResultQuantity" hidden></strong>
+          <small id="bulkResultLookup">BULK_FAST · Identifier zuerst</small>
+        </div>
+      </section>
       <input id="bulkFile" type="file" accept="image/*" hidden>
 
       <div class="bulk-actions">
@@ -324,7 +335,7 @@
 
   <section id="settings" class="page">
     <h1>System</h1>
-    <div class="card"><b>PokéFolio v0.16.3</b><p>Asiatische Pokémon-Karten werden zuerst über Kartennummer, Set, Seltenheit und Artwork aufgelöst.</p></div>
+    <div class="card"><b>PokéFolio v0.16.5</b><p>Pokémon-Erkennung liest zuerst die untere linke Kartennummer; Voll-OCR und Artwork folgen nur bei Bedarf.</p></div>
     <section class="card learning-settings" aria-labelledby="learningTitle">
       <span class="section-kicker">KI &amp; Erkennung</span>
       <div class="learning-title"><div><h2 id="learningTitle">PokéFolio Lernsystem</h2><p>Bestätigte Scans und eindeutige Korrekturen verbessern die Erkennung ausschließlich lokal auf diesem Gerät.</p></div><span id="learningStatus" class="status good">Lokales Lernen aktiv</span></div>
@@ -379,6 +390,7 @@
 <script src="collection-core.js"></script>
 <script src="learning-core.js"></script>
 <script src="grading-core.js"></script>
+<script src="bulk-fast-core.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

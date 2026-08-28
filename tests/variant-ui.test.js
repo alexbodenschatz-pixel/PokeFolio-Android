@@ -28,11 +28,12 @@ test('Variantenauswahl verändert die gefundene Identität ohne neue Onlinesuche
   assert.doesNotMatch(handler, /lookupCandidates|pokemonSearch|tcgdex/);
 });
 
-test('Bulk-Scan speichert unbekannte Varianten nicht automatisch', () => {
+test('Bulk-Scan speichert eine sichere Kartenidentität auch bei später korrigierbarer Variante', () => {
   assert.match(index, /id="bulkVariant"[\s\S]*value="unknown"[^>]*>Automatisch bestimmen/);
   assert.match(app, /Variants\.explicitVariant\(candidate\) === 'unknown'/);
-  assert.match(app, /renderBulkVariantSelector\(candidate, trigger\)/);
-  assert.match(app, /variantSelectionConfirmed: true/);
+  assert.match(app, /variantSelectionConfirmed: Variants\.explicitVariant\(candidate\) !== 'unknown'/);
+  assert.match(app, /Variante später in der Sammlung korrigierbar/);
+  assert.match(app, /IDENTITY_CONFIRMED_VARIANT_UNCERTAIN[\s\S]*commitBulkCandidate/);
 });
 
 test('Sammlungsdetail erlaubt eine verlustfreie Variantenänderung mit Preisaktualisierung', () => {

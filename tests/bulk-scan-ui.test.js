@@ -32,7 +32,7 @@ test('öffnet für Bulk direkt die native CameraX-Liveansicht und übergibt ein 
   assert.match(camera, /CAPTURE_MODE_MINIMIZE_LATENCY/);
 });
 
-test('speichert im Bulk-Modus nur bestätigte Identität plus Variante automatisch', () => {
+test('speichert im Bulk-Modus nur eine bestätigte Identität und blockiert nicht auf einer offenen Variante', () => {
   assert.match(app, /Recognition\.confidenceDecision\(list\)/);
   assert.match(app, /IDENTITY_CONFIRMED_VARIANT_CONFIRMED && confidence >= 0\.80/);
   assert.match(app, /exactPrintedIdentity && noContradiction/);
@@ -40,7 +40,8 @@ test('speichert im Bulk-Modus nur bestätigte Identität plus Variante automatis
   assert.match(app, /bulkCandidates\.slice\(0, 3\)/);
   assert.match(app, /REJECTED_LOW_CONFIDENCE/);
   assert.match(app, /MANUAL_SELECTION/);
-  assert.match(app, /renderBulkVariantSelector/);
+  assert.match(app, /IDENTITY_CONFIRMED_VARIANT_UNCERTAIN[\s\S]*commitBulkCandidate/);
+  assert.match(app, /Variante später in der Sammlung korrigierbar/);
   assert.match(index, /Keine eindeutige Karte erkannt/);
 });
 
@@ -49,7 +50,7 @@ test('protokolliert Collection-Key und Mengenaktion und schützt gegen Mehrfachf
   assert.match(app, /SAME_CARD_STILL_PRESENT|REJECTED_DUPLICATE_FRAME/);
   assert.match(app, /collectionKey=/);
   assert.match(collection, /QUANTITY_INCREMENT/);
-  assert.match(app, /debugBulkScan\(bulkHints, kind, 'automatisch', ocrResult\.text\)/);
+  assert.match(app, /debugBulkScan\(bulkHints, kind, 'PRIMARY_IDENTIFIER', identifierOcr\.text\)/);
   assert.match(index, /Karte bereits vorhanden – Stückzahl erhöht|bulkStatusTitle/);
 });
 

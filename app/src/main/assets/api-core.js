@@ -136,7 +136,8 @@
   function buildPokemonTcgQueries(hints, manual) {
     const queries = [];
     (hints && hints.collectorNumbers || []).slice(0, 3).forEach(item => {
-      const raw = String(item.number || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+      const printed = String(item.normalizedValue || '').split('/')[0];
+      const raw = String(printed || item.number || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
       if (raw) queries.push('number:' + raw);
       const normalized = normalizedCollectorNumber(raw);
       if (normalized && normalized !== raw) queries.push('number:' + normalized);
@@ -165,7 +166,7 @@
   function buildPokemonTcgUrls(hints, manual) {
     return buildPokemonTcgQueries(hints, manual).map(query =>
       POKEMON_TCG_ENDPOINT + '?q=' + encodeURIComponent(query)
-        + '&pageSize=100&select=id,name,number,images,set,rarity,hp,supertype,subtypes,artist,attacks,abilities,rules,cardmarket,tcgplayer'
+        + '&pageSize=100&select=id,name,number,images,set,rarity,hp,supertype,subtypes,artist,attacks,abilities,rules,regulationMark,cardmarket,tcgplayer'
     );
   }
 
@@ -194,7 +195,8 @@
     const lang = /^[a-z]{2}(?:-[a-z]{2})?$/i.test(language || '') ? language.toLowerCase() : 'de';
     const names = tcgdexNames(hints, manual, lang);
     const numbers = [...new Set((hints && hints.collectorNumbers || []).slice(0, 2)
-      .map(item => String(item.number || '').toUpperCase().replace(/[^A-Z0-9]/g, ''))
+      .map(item => String(String(item.normalizedValue || '').split('/')[0] || item.number || '')
+        .toUpperCase().replace(/[^A-Z0-9]/g, ''))
       .filter(Boolean))];
     const setCodes = [...new Set((hints && hints.pokemonSetCodes || [])
       .filter(item => Number(item.votes) >= 1.1)

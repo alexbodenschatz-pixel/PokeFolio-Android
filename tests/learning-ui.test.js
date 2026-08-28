@@ -39,12 +39,14 @@ test('bietet explizite Ablehnung ohne positives Lernbeispiel', () => {
   assert.match(app, /window\.rejectBulkCandidate/);
 });
 
-test('überspringt im Bulk-Modus die API nur beim streng geprüften lokalen Fast-Match', () => {
-  const fast = app.indexOf('Learning.isFastBulkMatch');
-  const lookup = app.indexOf("lookup = await lookupCandidates(kind, bulkHints, '', run)", fast);
-  assert.ok(fast >= 0 && lookup > fast);
-  assert.match(app, /LOCAL_FAST_MATCH API_SKIPPED/);
-  assert.match(app, /commitBulkCandidate\(bulkCandidates\[0\], 'LOCAL_FAST'\)/);
+test('verwendet im Bulk-Modus Identifier-Caches vor API und lokale Lernreferenzen vor breiter Suche', () => {
+  const cache = app.indexOf('findBulkCachedIdentity(identifier)');
+  const exact = app.indexOf('exactBulkApiLookup(kind, bulkHints, identifier)', cache);
+  const learning = app.indexOf('Learning.isFastBulkMatch', exact);
+  const lookup = app.indexOf("lookup = await lookupCandidates(kind, bulkHints, '', run)", learning);
+  assert.ok(cache >= 0 && exact > cache && learning > exact && lookup > learning);
+  assert.match(app, /lookupSource: 'LOCAL_LEARNING'/);
+  assert.match(app, /scheduleBulkMetadataRefresh/);
 });
 
 test('zeigt Lernkontrolle, Statistik, Speicher und getrennte Nutzungsschalter im Systembereich', () => {

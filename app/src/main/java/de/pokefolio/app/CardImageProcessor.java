@@ -567,6 +567,37 @@ public final class CardImageProcessor {
     }
 
     /**
+     * BULK_FAST reads only the TCG's strongest printed identifier after orientation has been
+     * selected. Header/body OCR remains a later JavaScript-requested fallback and therefore
+     * never delays an exact passcode, card-code, or collector-number hit.
+     */
+    public static List<OcrVariant> createBulkIdentifierOcrVariants(
+            Bitmap source,
+            int rotation,
+            String profile
+    ) {
+        int normalizedRotation = ((rotation % 360) + 360) % 360;
+        Bitmap rotated = rotate(source, normalizedRotation);
+        Bitmap normal = scaleDown(rotated, 1500);
+        Bitmap card = normal.getWidth() <= normal.getHeight()
+                ? fitCardToCanvas(normal, NORMALIZED_WIDTH, NORMALIZED_HEIGHT)
+                : normal.copy(Bitmap.Config.ARGB_8888, false);
+        List<OcrVariant> variants = new ArrayList<>();
+        String kind = String.valueOf(profile == null ? "pokemon" : profile).toLowerCase();
+        if ("yugioh".equals(kind)) {
+            addYuGiOhMetadataOcrVariants(variants, card, normalizedRotation);
+        } else if ("onepiece".equals(kind)) {
+            addOnePieceMetadataOcrVariants(variants, card, normalizedRotation);
+        } else {
+            addCollectorOcrVariants(variants, card, normalizedRotation);
+        }
+        if (card != normal && !card.isRecycled()) card.recycle();
+        if (normal != rotated && !normal.isRecycled()) normal.recycle();
+        if (rotated != source && !rotated.isRecycled()) rotated.recycle();
+        return variants;
+    }
+
+    /**
      * Creates detailed OCR only for the already selected upright rotation and TCG profile.
      * This replaces the former 4x multiplication of every high-resolution OCR region.
      */
@@ -1856,18 +1887,24 @@ public final class CardImageProcessor {
     }
 
     private static void addCollectorOcrVariants(List<OcrVariant> variants, Bitmap card, int rotation) {
+        // Pokemon print identity is concentrated in the lower-left footer. Limiting the primary
+        // OCR to 72% width keeps damage/rules/copyright on the right from becoming search keys.
+        // y=80.0..98.5% retains regulation marks and set symbols without including the card edge.
+        int left = 0;
         int top = Math.max(0, Math.round(card.getHeight() * 0.80f));
-        Bitmap bottom = Bitmap.createBitmap(card, 0, top, card.getWidth(), card.getHeight() - top);
-        int normalWidth = 1100;
+        int right = clamp(Math.round(card.getWidth() * 0.72f), 2, card.getWidth());
+        int bottomEdge = clamp(Math.round(card.getHeight() * 0.985f), top + 2, card.getHeight());
+        Bitmap bottom = Bitmap.createBitmap(card, left, top, right - left, bottomEdge - top);
+        int normalWidth = 1050;
         Bitmap normal = Bitmap.createScaledBitmap(
                 bottom,
                 normalWidth,
                 Math.max(2, Math.round(bottom.getHeight() * normalWidth / (float) bottom.getWidth())),
                 true
         );
-        variants.add(new OcrVariant("unterkante-normal-" + rotation, normal));
-        variants.add(new OcrVariant("unterkante-grau-" + rotation, grayscaleForOcr(normal)));
-        variants.add(new OcrVariant("unterkante-kontrast-" + rotation, enhanceForOcr(normal)));
+        variants.add(new OcrVariant("unterkante-idzone-original-" + rotation, normal));
+        variants.add(new OcrVariant("unterkante-idzone-grau-" + rotation, grayscaleForOcr(normal)));
+        variants.add(new OcrVariant("unterkante-idzone-kontrast-" + rotation, enhanceForOcr(normal)));
 
         int sharpWidth = 1500;
         Bitmap sharpLarge = Bitmap.createScaledBitmap(
@@ -1877,26 +1914,26 @@ public final class CardImageProcessor {
                 true
         );
         Bitmap sharpGray = grayscaleForOcr(sharpLarge);
-        variants.add(new OcrVariant("unterkante-scharf-" + rotation, sharpenForOcr(sharpGray)));
+        variants.add(new OcrVariant("unterkante-idzone-3x-scharf-" + rotation, sharpenForOcr(sharpGray)));
         sharpGray.recycle();
         if (sharpLarge != bottom) sharpLarge.recycle();
         if (bottom != card) bottom.recycle();
 
-        // A second, tighter 16% metadata ROI gives small collector numbers substantially
-        // more pixels without letting attack damage from the lower rule box dominate OCR.
+        // One low-cost full-width context pass supplies set/block/regulation context. It remains
+        // secondary to the focused ID zone and is never used as a title source.
         int metadataTop = Math.max(0, Math.round(card.getHeight() * 0.84f));
         Bitmap metadata = Bitmap.createBitmap(
                 card, 0, metadataTop, card.getWidth(), card.getHeight() - metadataTop);
-        int metadataWidth = 1800;
+        int metadataWidth = 1350;
         Bitmap metadataLarge = Bitmap.createScaledBitmap(
                 metadata,
                 metadataWidth,
                 Math.max(2, Math.round(metadata.getHeight() * metadataWidth / (float) metadata.getWidth())),
                 true
         );
-        variants.add(new OcrVariant("unterkante-metadata-normal-" + rotation, metadataLarge));
+        variants.add(new OcrVariant("unterkante-kontext-normal-" + rotation, metadataLarge));
         Bitmap metadataGray = grayscaleForOcr(metadataLarge);
-        variants.add(new OcrVariant("unterkante-metadata-scharf-" + rotation, sharpenForOcr(metadataGray)));
+        variants.add(new OcrVariant("unterkante-kontext-scharf-" + rotation, sharpenForOcr(metadataGray)));
         metadataGray.recycle();
         metadata.recycle();
     }

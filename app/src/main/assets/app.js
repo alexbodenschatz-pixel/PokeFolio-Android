@@ -8,6 +8,9 @@ const Variants = window.PokeVariants;
 const Collection = window.PokeCollection;
 const Learning = window.PokeLearning;
 const Grading = window.PokeGrading;
+const BulkFast = window.PokeBulkFast;
+const RecognitionMode = BulkFast.RecognitionMode;
+const BULK_IDENTITY_CACHE_KEY = 'pokefolio_bulk_identity_cache_v1';
 
 let selectedTcg = 'auto';
 let recognizedTcg = 'pokemon';
@@ -33,7 +36,10 @@ let bulkHints = null;
 let bulkSourceDataUrl = '';
 let bulkPreviewUrl = '';
 let bulkScanLock = Collection.createScanLock(1000);
-let bulkSession = {active: false, scanned: 0, newCards: 0, duplicates: 0};
+let bulkFastSession = BulkFast.createSession();
+let bulkLocalCache = BulkFast.loadLocalCache(localStorage.getItem(BULK_IDENTITY_CACHE_KEY));
+let bulkSession = {active: false, ...bulkFastSession.stats, newCards: 0, duplicates: 0};
+let bulkPerformance = null;
 let recognitionTimer = null;
 let recognitionRun = 0;
 let recognizedRotation = 0;
@@ -327,6 +333,7 @@ function renderRecognitionFeatures(hints) {
   const identity = hints.pokemonIdentity || {};
   const collector = hints.collectorNumbers && hints.collectorNumbers[0];
   const setCode = hints.pokemonSetCodes && hints.pokemonSetCodes[0];
+  const priorityRoi = hints.priorityRoi || {};
   const confidence = Number(identity.nameConfidence);
   const titleConfidence = Number(hints.titleConfidence);
   const crop = hints.cardCrop || {};
@@ -348,8 +355,11 @@ function renderRecognitionFeatures(hints) {
     ['Variante', identity.variant || 'nicht erkannt'],
     ['KP/HP', identity.hp || hints.hp || 'nicht erkannt'],
     ['Collector Number', collector
-      ? [collector.number, collector.total].filter(Boolean).join('/')
+      ? collector.normalizedValue || [collector.number, collector.total].filter(Boolean).join('/')
       : 'nicht erkannt'],
+    ['Priority ROI', Number.isFinite(Number(priorityRoi.width))
+      ? `x ${Number(priorityRoi.x || 0).toFixed(2)} · y ${Number(priorityRoi.y || 0).toFixed(2)} · ${Number(priorityRoi.width).toFixed(2)} × ${Number(priorityRoi.height).toFixed(3)}`
+      : 'nicht verfügbar'],
     ['Bottom OCR', hints.ocrByRegion && hints.ocrByRegion.bottom || 'nicht erkannt'],
     ['Candidate Retrieval', hints.candidateRetrievalStrategy || 'noch offen'],
     ['Candidate Count', Number.isFinite(Number(hints.candidateCount))
@@ -358,6 +368,7 @@ function renderRecognitionFeatures(hints) {
       ? Math.round(Number(hints.bestArtworkScore) * 100) + ' %' : 'noch offen'],
     ['Final Identity', hints.finalCanonicalIdentity || 'noch nicht bestimmt'],
     ['Seltenheit', hints.rarity || 'nicht erkannt'],
+    ['Regulation Mark', hints.regulationMark || 'nicht erkannt'],
     ['Set', setCode && setCode.value || 'nicht erkannt'],
     ['Attacken', (hints.attackHints || []).slice(0, 3).map(item => item.value).join(', ') || 'nicht erkannt'],
     ['Schadenswerte', (hints.damageValues || []).slice(0, 4).map(item => item.value).join(', ') || 'nicht erkannt'],
@@ -380,14 +391,22 @@ function renderRecognitionFeatures(hints) {
     ['CARD CROP · Fallback', crop.fallbackUsed ? `JA · ${crop.method}` : 'NEIN']
     ,['PERF · Orientierung', Number.isFinite(Number(perf.orientationMs))
       ? Number(perf.orientationMs).toFixed(1) + ' ms' : 'nicht gemessen']
-    ,['PERF · Detail-OCR', Number.isFinite(Number(perf.detailedOcrMs))
-      ? Number(perf.detailedOcrMs).toFixed(1) + ' ms' : 'nicht gemessen']
+    ,['PERF · Crop', Number.isFinite(Number(perf.cropMs))
+      ? Number(perf.cropMs).toFixed(1) + ' ms' : 'nicht gemessen']
+    ,['PERF · Bottom-left OCR', Number.isFinite(Number(perf.bottomLeftOcrMs))
+      ? Number(perf.bottomLeftOcrMs).toFixed(1) + ' ms' : 'nicht gemessen']
+    ,['PERF · Nummernparser', Number.isFinite(Number(perf.collectorNumberParseMs))
+      ? Number(perf.collectorNumberParseMs).toFixed(2) + ' ms' : 'nicht gemessen']
+    ,['PERF · Exact Lookup', Number.isFinite(Number(perf.exactLookupMs))
+      ? Number(perf.exactLookupMs).toFixed(1) + ' ms' : 'übersprungen']
+    ,['PERF · Name-/Full-OCR-Fallback', Number.isFinite(Number(perf.fallbackNameOcrMs))
+      ? Number(perf.fallbackNameOcrMs).toFixed(1) + ' ms' : 'übersprungen']
     ,['PERF · API', Number.isFinite(Number(perf.apiMs))
       ? Number(perf.apiMs).toFixed(1) + ' ms' : 'noch nicht ausgeführt']
     ,['PERF · Artwork', Number.isFinite(Number(perf.artworkMs))
       ? Number(perf.artworkMs).toFixed(1) + ' ms' : 'übersprungen']
-    ,['PERF · Gesamt', Number.isFinite(Number(perf.totalMs))
-      ? Number(perf.totalMs).toFixed(1) + ' ms' : 'läuft']
+    ,['PERF · Gesamt', Number.isFinite(Number(perf.totalRecognitionMs || perf.totalMs))
+      ? Number(perf.totalRecognitionMs || perf.totalMs).toFixed(1) + ' ms' : 'läuft']
   ];
   list.innerHTML = rows.map(([name, value]) => `<dt>${esc(name)}</dt><dd>${esc(value)}</dd>`).join('');
   details.hidden = false;
@@ -402,7 +421,8 @@ function debugRecognitionFeatures(hints) {
     + ` OCR_TITLE=${hints && hints.mainTitle || 'UNKNOWN'}`
     + ` MANUAL_TITLE_HINT=${hints && hints.manualTitleHint || '<keiner>'}`
     + ` IgnorierteZusatznamen=${(hints && hints.ignoredAdditionalNames || []).join('|') || '<keine>'}`
-    + ` Kartennummer=${collector ? [collector.number, collector.total].filter(Boolean).join('/') : '<nicht erkannt>'}`
+    + ` Kartennummer=${collector ? collector.normalizedValue || [collector.number, collector.total].filter(Boolean).join('/') : '<nicht erkannt>'}`
+    + ` PriorityROI=${JSON.stringify(hints && hints.priorityRoi || null)}`
     + ` CARD_NUMBER_RAW=${JSON.stringify(hints && hints.ocrByRegion && hints.ocrByRegion.bottom || '').slice(0, 300)}`
     + ` CARD_NUMBER_NORMALIZED=${collector ? [collector.number, collector.total].filter(Boolean).join('/') : 'UNKNOWN'}`
     + ` HP=${hints && hints.hp || 'UNKNOWN'}`
@@ -658,14 +678,18 @@ function setScanMode(mode) {
 }
 
 function startBulkSession() {
-  if (!bulkSession.active) bulkSession = {active: true, scanned: 0, newCards: 0, duplicates: 0};
+  if (!bulkSession.active) {
+    bulkFastSession = BulkFast.createSession();
+    bulkSession = {active: true, ...bulkFastSession.stats, newCards: 0, duplicates: 0};
+  }
   renderBulkSession();
 }
 
 function renderBulkSession() {
   $('#bulkScanned').textContent = String(bulkSession.scanned);
-  $('#bulkNew').textContent = String(bulkSession.newCards);
-  $('#bulkDuplicates').textContent = String(bulkSession.duplicates);
+  $('#bulkUnique').textContent = String(bulkSession.uniqueCards);
+  $('#bulkAutomatic').textContent = String(bulkSession.automatic);
+  $('#bulkManual').textContent = String(bulkSession.manual);
 }
 
 function setBulkStatus(kind, title, text) {
@@ -681,6 +705,48 @@ function showBulkFeedback(title, detail, warn = false) {
   box.hidden = false;
   clearTimeout(showBulkFeedback.timer);
   showBulkFeedback.timer = setTimeout(() => { box.hidden = true; }, 1800);
+}
+
+function showBulkCapturedImage(dataUrl) {
+  $('#bulkScanPanel').classList.add('has-capture');
+  $('#bulkCameraButton').hidden = true;
+  $('#bulkCapturedResult').hidden = false;
+  const preview = $('#bulkPreview');
+  preview.src = dataUrl;
+  preview.hidden = false;
+  $('#bulkResultEyebrow').textContent = 'BULK_FAST';
+  $('#bulkResultName').textContent = 'Kartennummer wird gelesen …';
+  $('#bulkResultMeta').textContent = 'Die vollständige normalisierte Karte wird verwendet.';
+  $('#bulkResultQuantity').hidden = true;
+  $('#bulkResultLookup').textContent = 'Identifier zuerst · kein Live-Rahmen';
+}
+
+function resetBulkCapturedImage() {
+  $('#bulkScanPanel').classList.remove('has-capture');
+  $('#bulkCapturedResult').hidden = true;
+  $('#bulkCameraButton').hidden = false;
+  $('#bulkPreview').hidden = true;
+  $('#bulkPreview').removeAttribute('src');
+}
+
+function updateBulkResult(candidate, saved, source) {
+  $('#bulkResultEyebrow').textContent = '✓ Karte erkannt';
+  $('#bulkResultName').textContent = candidate.name || saved && saved.entry && saved.entry.name || 'Karte erkannt';
+  $('#bulkResultMeta').textContent = [candidate.set, candidate.number,
+    languageLabel(candidate.language || activeRecognitionLanguage())].filter(Boolean).join(' · ');
+  const quantity = saved && saved.entry && saved.entry.quantity;
+  const previous = quantity > 1 ? quantity - 1 : 0;
+  $('#bulkResultQuantity').textContent = `Im Bestand: ${previous} → ${quantity}`;
+  $('#bulkResultQuantity').hidden = !quantity;
+  $('#bulkResultLookup').textContent = `Lookup: ${source || 'UNBEKANNT'} · Nächste Karte sofort bereit`;
+}
+
+function updateBulkResultState(eyebrow, title, text, lookup = '') {
+  $('#bulkResultEyebrow').textContent = eyebrow;
+  $('#bulkResultName').textContent = title;
+  $('#bulkResultMeta').textContent = text;
+  $('#bulkResultQuantity').hidden = true;
+  $('#bulkResultLookup').textContent = lookup;
 }
 
 async function imageFromFile(file) {
@@ -1140,8 +1206,9 @@ window.onNativeOcrResult = json => {
     if (!pending) return;
     clearTimeout(pending.timeout);
     pendingOcr.delete(response.requestId);
-    if (response.ok) pending.resolve(response);
-    else pending.reject(new Error(response.error || 'OCR fehlgeschlagen.'));
+    if (response.ok || pending.allowEmpty && /kein lesbarer kartentext/i.test(response.error || '')) {
+      pending.resolve(response);
+    } else pending.reject(new Error(response.error || 'OCR fehlgeschlagen.'));
   } catch (error) {
     console.error(error);
   }
@@ -1268,6 +1335,44 @@ function nativeOcr(dataUrl, language, profile = selectedTcg || 'auto') {
   });
 }
 
+function nativeBulkIdentifierOcr(dataUrl, language, profile = bulkSelectedTcg || 'auto') {
+  return new Promise((resolve, reject) => {
+    if (!window.PokeNative || !PokeNative.recognizeBulkIdentifier) {
+      reject(new Error('BULK_FAST-Identifier-OCR ist nicht verfügbar.'));
+      return;
+    }
+    const requestId = 'bulk-identifier-' + requestSequence++;
+    const timeout = setTimeout(() => {
+      pendingOcr.delete(requestId);
+      reject(new Error('Die schnelle Identifier-Erkennung hat zu lange gedauert.'));
+    }, 18000);
+    // An empty identifier ROI is a normal fast-path miss, not a fatal recognition error.
+    pendingOcr.set(requestId, {resolve, reject, timeout, allowEmpty: true});
+    PokeNative.recognizeBulkIdentifier(dataUrl, requestId, language, profile || 'auto');
+  });
+}
+
+function nativePrimaryIdentifierOcr(dataUrl, language, profile = selectedTcg || 'auto') {
+  return new Promise((resolve, reject) => {
+    if (!window.PokeNative || (!PokeNative.recognizePrimaryIdentifier
+      && !PokeNative.recognizeBulkIdentifier)) {
+      reject(new Error('Die lokale Identifier-Erkennung ist nicht verfügbar.'));
+      return;
+    }
+    const requestId = 'primary-identifier-' + requestSequence++;
+    const timeout = setTimeout(() => {
+      pendingOcr.delete(requestId);
+      reject(new Error('Die Identifier-Erkennung hat zu lange gedauert.'));
+    }, 18000);
+    pendingOcr.set(requestId, {resolve, reject, timeout, allowEmpty: true});
+    if (PokeNative.recognizePrimaryIdentifier) {
+      PokeNative.recognizePrimaryIdentifier(dataUrl, requestId, language, profile || 'auto');
+    } else {
+      PokeNative.recognizeBulkIdentifier(dataUrl, requestId, language, profile || 'auto');
+    }
+  });
+}
+
 function mergeOcrResults(primary, fallback, requestedLanguage) {
   const passes = [...(primary && primary.passes || []), ...(fallback && fallback.passes || [])];
   const texts = [primary && primary.text, fallback && fallback.text].filter(Boolean);
@@ -1293,7 +1398,8 @@ function mergeOcrResults(primary, fallback, requestedLanguage) {
     totalOcrMs: Number(primary && primary.totalOcrMs || 0)
       + Number(fallback && fallback.totalOcrMs || 0),
     text: [...new Set(texts)].join('\n'),
-    passes
+    passes,
+    priorityRoi: primary && primary.priorityRoi || fallback && fallback.priorityRoi || null
   };
 }
 
@@ -1528,6 +1634,7 @@ function pokemonCardFromApi(card) {
     printedTotal: card.set && card.set.printedTotal,
     total: card.set && card.set.total,
     rarity: card.rarity || '',
+    regulationMark: card.regulationMark || '',
     hp: card.hp || '',
     subtypes: card.subtypes || [],
     artist: card.artist || '',
@@ -1582,6 +1689,7 @@ function pokemonCardFromTcgdex(card, language = 'de') {
     printedTotal: cardCount.official || '',
     total: cardCount.total || '',
     rarity: card.rarity || '',
+    regulationMark: card.regulationMark || '',
     hp: card.hp || '',
     subtypes: card.stage ? [card.stage] : [],
     artist: card.illustrator || '',
@@ -1699,6 +1807,7 @@ function mergePokemonCandidate(current, incoming, language) {
     imagesByLanguage: {...(current.imagesByLanguage || {}), ...(incoming.imagesByLanguage || {})},
     sourceVariants: {...(current.sourceVariants || {}), ...(incoming.sourceVariants || {})},
     availableVariants: [...new Set([...(current.availableVariants || []), ...(incoming.availableVariants || [])])],
+    regulationMark: current.regulationMark || incoming.regulationMark || '',
     pricesByVariant: {...(incoming.pricesByVariant || {}), ...(current.pricesByVariant || {})},
     genericPrice: current.genericPrice || incoming.genericPrice || null,
     imageSmall: preferIncomingText && incoming.imageSmall
@@ -2462,6 +2571,7 @@ function renderBulkFeatures(hints) {
     hints.cardType || 'unknown'
   ];
   const rows = [
+    ['Recognition Mode', RecognitionMode.BULK_FAST],
     ['Kartentyp', type],
     ['Name/Titel', hints.mainTitle || identity.baseName || hints.nameHint || 'nicht erkannt'],
     ['Ignoriert', (hints.ignoredAdditionalNames || []).join(', ') || 'keine'],
@@ -2469,7 +2579,16 @@ function renderBulkFeatures(hints) {
     ['Nummer', collector ? [collector.number, collector.total].filter(Boolean).join('/') : 'nicht erkannt'],
     ['Sprache', hints.language || activeRecognitionLanguage()],
     ['Variante', identity.variant || $('#bulkVariant').value],
-    ['Sicherheit Titel', Math.round((Number(hints.titleConfidence || identity.nameConfidence) || 0) * 100) + ' %']
+    ['Primary Identifier', hints.bulkPrimaryIdentifier || 'nicht erkannt'],
+    ['Lookup Source', hints.bulkLookupSource || bulkPerformance && bulkPerformance.lookupSource || 'noch offen'],
+    ['Sicherheit Titel', Math.round((Number(hints.titleConfidence || identity.nameConfidence) || 0) * 100) + ' %'],
+    ['Capture → Crop', bulkPerformance ? Number(bulkPerformance.captureToCropMs || 0).toFixed(1) + ' ms' : 'läuft'],
+    ['Orientation', bulkPerformance ? Number(bulkPerformance.orientationMs || 0).toFixed(1) + ' ms' : 'läuft'],
+    ['Identifier OCR', bulkPerformance ? Number(bulkPerformance.identifierOcrMs || 0).toFixed(1) + ' ms' : 'läuft'],
+    ['Exact Lookup', bulkPerformance ? Number(bulkPerformance.exactLookupMs || 0).toFixed(1) + ' ms' : 'läuft'],
+    ['Artwork Fallback', bulkPerformance ? Number(bulkPerformance.artworkFallbackMs || 0).toFixed(1) + ' ms' : 'nicht verwendet'],
+    ['Collection Write', bulkPerformance ? Number(bulkPerformance.collectionWriteMs || 0).toFixed(1) + ' ms' : 'noch offen'],
+    ['Gesamt', bulkPerformance ? Number(bulkPerformance.totalBulkRecognitionMs || 0).toFixed(1) + ' ms' : 'läuft']
   ];
   list.innerHTML = rows.map(([name, value]) => `<dt>${esc(name)}</dt><dd>${esc(value)}</dd>`).join('');
   box.hidden = false;
@@ -2489,6 +2608,136 @@ function debugBulkScan(hints, kind, query, rawOcrText) {
     + ' Variante=' + (identity.variant || $('#bulkVariant').value)
     + ' Confidence=' + Math.round((Number(hints && (hints.titleConfidence || identity.nameConfidence)) || 0) * 100) + '%'
     + ' Suchanfrage=' + (query || '<automatisch>'));
+}
+
+function bulkCachedCandidate(candidate, source) {
+  return {
+    ...candidate,
+    source,
+    identificationScore: Math.max(0.97, Number(candidate.identificationScore) || 0),
+    confidence: Math.max(0.96, Number(candidate.confidence) || 0),
+    evidence: [...new Set([...(candidate.evidence || []), 'Exakter Identifier', source])],
+    bulkLookupSource: source
+  };
+}
+
+function findBulkCachedIdentity(identifier) {
+  if (!identifier) return null;
+  const session = BulkFast.sessionGet(bulkFastSession, identifier);
+  if (session) return {candidate: bulkCachedCandidate(session, 'SESSION_CACHE'), source: 'SESSION_CACHE'};
+  const local = BulkFast.localGet(bulkLocalCache, identifier);
+  if (local) return {candidate: bulkCachedCandidate(local, 'LOCAL_CACHE'), source: 'LOCAL_CACHE'};
+  const collection = BulkFast.collectionMatch(loadCollection(), identifier);
+  if (collection) return {candidate: bulkCachedCandidate(collection, 'LOCAL_CACHE'), source: 'LOCAL_CACHE'};
+  return null;
+}
+
+function cacheBulkIdentity(identifier, candidate) {
+  if (!identifier || !candidate) return;
+  BulkFast.sessionPut(bulkFastSession, identifier, candidate);
+  BulkFast.localPut(bulkLocalCache, identifier, candidate, Date.now());
+  try {
+    localStorage.setItem(BULK_IDENTITY_CACHE_KEY, BulkFast.serializeLocalCache(bulkLocalCache));
+  } catch (error) {
+    console.warn('[PokeFolio Bulk] Lokaler Identifier-Cache konnte nicht gespeichert werden: ' + error.message);
+  }
+}
+
+function tcgdexBulkLanguage(language) {
+  return ({de: 'de', en: 'en', ja: 'ja', 'zh-TW': 'zh-tw', 'zh-CN': 'zh-tw'})[language] || 'en';
+}
+
+async function exactBulkApiLookup(kind, hints, identifier) {
+  if (!identifier) return null;
+  if (kind === 'pokemon') {
+    const regional = PokeAsia.exactRegionalPrints(hints);
+    const regionalExact = BulkFast.uniqueExactCandidate(identifier, regional);
+    if (regionalExact) return {candidate: bulkCachedCandidate(regionalExact, 'LOCAL_CACHE'), source: 'LOCAL_CACHE'};
+    if (!identifier.setId) return null;
+    const requestedLanguage = hints.language || activeRecognitionLanguage();
+    const language = tcgdexBulkLanguage(requestedLanguage);
+    const directUrl = Api.buildTcgdexUrls(hints, '', language)
+      .find(url => /\/cards\/[^?]+$/.test(url));
+    if (!directUrl) return null;
+    try {
+      const response = await nativeGet(directUrl);
+      const candidateLanguage = language === 'zh-tw' ? 'zh-TW' : language;
+      const candidate = response && response.id
+        ? pokemonCardFromTcgdex(response, candidateLanguage) : null;
+      if (!candidate || !BulkFast.isExactCandidate(identifier, candidate)) return null;
+      return {candidate: bulkCachedCandidate(candidate, 'EXACT_API'), source: 'EXACT_API'};
+    } catch (error) {
+      console.warn('[PokeFolio Bulk] EXACT_API Pokémon fehlgeschlagen: '
+        + Api.formatHttpFailure(Api.errorDetails(error, directUrl)));
+      return null;
+    }
+  }
+  if (kind === 'yugioh') {
+    try {
+      const lookup = await yugiohSearchProfiled(hints, '');
+      const candidate = BulkFast.uniqueExactCandidate(identifier, lookup.candidates);
+      return candidate ? {candidate: bulkCachedCandidate(candidate, 'EXACT_API'), source: 'EXACT_API'} : null;
+    } catch (error) {
+      console.warn('[PokeFolio Bulk] EXACT_API Yu-Gi-Oh! fehlgeschlagen: ' + (error.message || error));
+      return null;
+    }
+  }
+  if (kind === 'onepiece') {
+    try {
+      const lookup = await onePieceSearchProfiled(hints, '');
+      const candidate = BulkFast.uniqueExactCandidate(identifier, lookup.candidates);
+      return candidate ? {candidate: bulkCachedCandidate(candidate, 'EXACT_API'), source: 'EXACT_API'} : null;
+    } catch (error) {
+      console.warn('[PokeFolio Bulk] EXACT_API One Piece fehlgeschlagen: ' + (error.message || error));
+      return null;
+    }
+  }
+  return null;
+}
+
+function scheduleBulkMetadataRefresh(entry, hints, kind) {
+  if (!entry || entry.price) return;
+  const expectedKey = entry.collectionKey || Collection.collectionKey(entry);
+  setTimeout(async () => {
+    try {
+      const lookup = await lookupCandidates(kind, hints, '', undefined);
+      const richer = (lookup.candidates || []).find(candidate => {
+        const probe = bulkCollectionEntry(candidate);
+        return Collection.collectionKey(probe) === expectedKey;
+      });
+      if (!richer) return;
+      const collection = loadCollection();
+      const index = collection.findIndex(card => card.collectionKey === expectedKey);
+      if (index < 0) return;
+      collection[index] = {
+        ...collection[index],
+        image: collection[index].image || richer.imageSmall || richer.imageLarge || '',
+        imageSmall: collection[index].imageSmall || richer.imageSmall || '',
+        imageLarge: collection[index].imageLarge || richer.imageLarge || '',
+        price: richer.price || collection[index].price || null,
+        genericPrice: richer.genericPrice || collection[index].genericPrice || null,
+        pricesByVariant: {...(collection[index].pricesByVariant || {}), ...(richer.pricesByVariant || {})},
+        metadataUpdatedAt: new Date().toISOString()
+      };
+      persistCollection(collection);
+      console.debug('[PokeFolio Bulk] METADATA_BACKGROUND_UPDATED collectionKey=' + expectedKey);
+    } catch (error) {
+      console.warn('[PokeFolio Bulk] METADATA_BACKGROUND_FAILED ' + (error.message || error));
+    }
+  }, 0);
+}
+
+function debugBulkPerformance(metrics) {
+  if (!metrics) return;
+  console.debug('[PokeFolio Bulk Performance] mode=' + RecognitionMode.BULK_FAST
+    + ' captureToCropMs=' + Number(metrics.captureToCropMs || 0).toFixed(1)
+    + ' orientationMs=' + Number(metrics.orientationMs || 0).toFixed(1)
+    + ' identifierOcrMs=' + Number(metrics.identifierOcrMs || 0).toFixed(1)
+    + ' exactLookupMs=' + Number(metrics.exactLookupMs || 0).toFixed(1)
+    + ' artworkFallbackMs=' + Number(metrics.artworkFallbackMs || 0).toFixed(1)
+    + ' collectionWriteMs=' + Number(metrics.collectionWriteMs || 0).toFixed(1)
+    + ' totalBulkRecognitionMs=' + Number(metrics.totalBulkRecognitionMs || 0).toFixed(1)
+    + ' lookupSource=' + (metrics.lookupSource || 'NONE'));
 }
 
 function isBulkAutoAcceptable(list) {
@@ -2602,19 +2851,19 @@ function bulkCollectionEntry(candidate) {
     pricesByVariant: {...(candidate.pricesByVariant || {})},
     availableVariants: [...(candidate.availableVariants || [])],
     sourceVariants: candidate.sourceVariants ? {...candidate.sourceVariants} : null,
-    variantSelectionConfirmed: true,
+    variantSelectionConfirmed: Variants.explicitVariant(candidate) !== 'unknown',
     recognitionConfidence: Number(candidate.identificationScore) || Number(candidate.confidence) || 0,
     recognitionSource: candidate.source || '',
     date: new Date().toISOString()
   };
 }
 
-function commitBulkCandidate(candidate, trigger) {
+function commitBulkCandidate(candidate, trigger, options = {}) {
   if (!candidate) return false;
-  if (Variants.explicitVariant(candidate) === 'unknown') {
-    renderBulkVariantSelector(candidate, trigger);
-    return false;
-  }
+  const writeStartedAt = performance.now();
+  const identifier = options.identifier || BulkFast.primaryIdentifier(
+    candidate.tcg || recognizedTcg, bulkHints || {});
+  const lookupSource = options.lookupSource || candidate.bulkLookupSource || trigger || 'AUTO';
   const entry = bulkCollectionEntry(candidate);
   if (!Collection.hasMergeIdentity(entry)) {
     setBulkStatus('warn', 'Unsichere Erkennung', 'Set und Kartennummer fehlen. Die Karte wurde nicht gespeichert.');
@@ -2637,18 +2886,24 @@ function commitBulkCandidate(candidate, trigger) {
   if (trigger === 'MANUAL_SELECTION' || trigger === 'AUTO_VARIANT_SELECTION') {
     recordLearningSelection(bulkLearningScan, candidate, 'bulk-manual-selection');
   }
-  bulkSession.scanned++;
+  const automatic = trigger !== 'MANUAL_SELECTION' && trigger !== 'AUTO_VARIANT_SELECTION';
+  BulkFast.recordAccepted(bulkFastSession, saved.entry.collectionKey, automatic);
+  Object.assign(bulkSession, bulkFastSession.stats);
   if (saved.action === 'NEW_CARD') bulkSession.newCards++;
   else bulkSession.duplicates++;
+  cacheBulkIdentity(identifier, candidate);
   renderBulkSession();
   $('#bulkCandidatePanel').hidden = true;
   bulkVariantCandidate = null;
   $('#bulkNoMatch').hidden = true;
   const quantity = saved.entry.quantity;
   const statusTitle = saved.action === 'NEW_CARD' ? 'Neue Karte hinzugefügt' : 'Karte bereits vorhanden – Stückzahl erhöht';
-  setBulkStatus('success', statusTitle, `+1 ${saved.entry.name} · Bestand: ${quantity}`);
+  const variantHint = Variants.explicitVariant(candidate) === 'unknown'
+    ? ' · Variante später in der Sammlung korrigierbar' : '';
+  setBulkStatus('success', statusTitle, `+1 ${saved.entry.name} · Bestand: ${quantity}${variantHint}`);
   showBulkFeedback('✓ ' + saved.entry.name + ' hinzugefügt',
     (saved.entry.number ? saved.entry.number + ' · ' : '') + 'Bestand: ' + quantity);
+  updateBulkResult(saved.entry, saved, lookupSource);
   if (window.PokeNative && PokeNative.vibrateBulkSuccess) PokeNative.vibrateBulkSuccess();
   const event = trigger === 'MANUAL_SELECTION' || trigger === 'AUTO_VARIANT_SELECTION'
     ? 'MANUAL_SELECTION' : saved.action;
@@ -2660,24 +2915,46 @@ function commitBulkCandidate(candidate, trigger) {
     + ' Sprache=' + saved.entry.language
     + ' Variante=' + saved.entry.printingVariant
     + ' Confidence=' + Math.round(saved.entry.recognitionConfidence * 100) + '%'
-    + ' collectionKey=' + saved.entry.collectionKey);
-  setTimeout(() => {
-    if (scanMode === 'bulk') setBulkStatus('ready', 'Bereit für die nächste Karte', 'Karte entfernen, dann „Nächste Karte scannen“ wählen.');
-  }, 1200);
+    + ' collectionKey=' + saved.entry.collectionKey
+    + ' LookupSource=' + lookupSource);
+  if (bulkPerformance) {
+    bulkPerformance.collectionWriteMs = performance.now() - writeStartedAt;
+    bulkPerformance.lookupSource = lookupSource;
+    bulkPerformance = BulkFast.finishMetrics(bulkPerformance, performance.now());
+    if (bulkHints) {
+      bulkHints.bulkLookupSource = lookupSource;
+      renderBulkFeatures(bulkHints);
+    }
+    debugBulkPerformance(bulkPerformance);
+  }
+  scheduleBulkMetadataRefresh(saved.entry, bulkHints || {}, candidate.tcg || recognizedTcg);
+  if ($('#bulkAutoContinue').checked) {
+    setTimeout(() => {
+      if (scanMode === 'bulk') window.bulkMarkRemovedAndScan();
+    }, 700);
+  } else {
+    setTimeout(() => {
+      if (scanMode === 'bulk') setBulkStatus('ready', 'Bereit für die nächste Karte',
+        'Karte entfernen, dann „Nächste Karte scannen“ wählen.');
+    }, 1200);
+  }
   return true;
 }
 
 window.selectBulkCandidate = index => {
   const candidate = bulkCandidates[index];
   if (!candidate) return;
-  const resolution = candidate.variantResolution || Variants.resolve(candidate);
-  if (!resolution.confirmed) return renderBulkVariantSelector(candidate, 'MANUAL_SELECTION');
   commitBulkCandidate(candidate, 'MANUAL_SELECTION');
 };
 
 async function runBulkRecognition(dataUrl, previewUrl, normalizedCapture = null) {
   const run = ++recognitionRun;
+  const startedAt = performance.now();
+  bulkPerformance = BulkFast.createMetrics(startedAt);
   startBulkSession();
+  BulkFast.beginScan(bulkFastSession);
+  Object.assign(bulkSession, bulkFastSession.stats);
+  renderBulkSession();
   bulkSourceDataUrl = dataUrl;
   bulkCandidates = [];
   bulkVariantCandidate = null;
@@ -2686,12 +2963,9 @@ async function runBulkRecognition(dataUrl, previewUrl, normalizedCapture = null)
   renderBulkCandidates();
   $('#bulkNoMatch').hidden = true;
   $('#bulkFeedback').hidden = true;
-  if (bulkPreviewUrl && bulkPreviewUrl.startsWith('blob:')) URL.revokeObjectURL(bulkPreviewUrl);
-  bulkPreviewUrl = previewUrl || dataUrl;
-  $('#bulkPreview').src = bulkPreviewUrl;
-  $('#bulkPreview').hidden = false;
-  setBulkStatus('busy', 'Karte wird erkannt', 'OCR, Kartennummer und Set werden ausgewertet.');
+  setBulkStatus('busy', 'Karte wird vorbereitet', 'Die vollständige Karte wird ausgerichtet.');
   try {
+    const cropStartedAt = performance.now();
     let prepared;
     if (normalizedCapture && normalizedCapture.normalized) {
       prepared = {...normalizedCapture, dataUrl, prepared: true};
@@ -2705,45 +2979,129 @@ async function runBulkRecognition(dataUrl, previewUrl, normalizedCapture = null)
       }
     }
     if (normalizedCapture) prepared = {...prepared, sourceOrientation: normalizedCapture};
-    if (bulkPreviewUrl && bulkPreviewUrl.startsWith('blob:')) URL.revokeObjectURL(bulkPreviewUrl);
+    if (previewUrl && previewUrl.startsWith('blob:')) URL.revokeObjectURL(previewUrl);
+    bulkPerformance.captureToCropMs = performance.now() - cropStartedAt;
     bulkSourceDataUrl = prepared.dataUrl || dataUrl;
     bulkPreviewUrl = bulkSourceDataUrl;
-    $('#bulkPreview').src = bulkPreviewUrl;
-    const ocrAnalysis = await recognizeCardFeatures(
-      prepared.dataUrl || dataUrl, activeRecognitionLanguage(), bulkSelectedTcg || 'auto');
-    const ocrResult = ocrAnalysis.result;
+    showBulkCapturedImage(bulkSourceDataUrl);
+
+    setBulkStatus('busy', 'Kartennummer wird gelesen …', 'BULK_FAST prüft zuerst den eindeutigen Karten-Identifier.');
+    const identifierStartedAt = performance.now();
+    const identifierOcr = await nativeBulkIdentifierOcr(
+      bulkSourceDataUrl, activeRecognitionLanguage(), bulkSelectedTcg || 'auto');
+    const identifierElapsedMs = performance.now() - identifierStartedAt;
+    bulkPerformance.identifierOcrMs = Number(identifierOcr.detailedOcrMs)
+      || Math.max(0, identifierElapsedMs - Number(identifierOcr.orientationMs || 0));
     if (run !== recognitionRun || scanMode !== 'bulk') return;
-    const bulkRotation = chooseRecognitionRotation(ocrResult);
+
+    const orientationStartedAt = performance.now();
+    const bulkRotation = chooseRecognitionRotation(identifierOcr);
     prepared = await correctPreparedOrientation(prepared, bulkRotation);
+    bulkPerformance.orientationMs = performance.now() - orientationStartedAt
+      + Number(identifierOcr.orientationMs || 0);
     if (prepared.orientationCorrectedByOcr) {
       bulkSourceDataUrl = prepared.dataUrl;
       bulkPreviewUrl = prepared.dataUrl;
-      $('#bulkPreview').src = prepared.dataUrl;
+      showBulkCapturedImage(prepared.dataUrl);
     }
-    bulkHints = attachCropMetadata(ocrAnalysis.hints, prepared);
-    renderBulkFeatures(bulkHints);
-    const kind = Recognition.classifyTcg(bulkHints, bulkSelectedTcg);
+    bulkHints = attachCropMetadata(Recognition.extractHints(identifierOcr), prepared);
+    if (identifierOcr.detectedProfile && bulkSelectedTcg === 'auto') {
+      bulkHints.detectedProfile = identifierOcr.detectedProfile;
+    }
+    let kind = bulkSelectedTcg !== 'auto'
+      ? bulkSelectedTcg
+      : identifierOcr.detectedProfile || Recognition.classifyTcg(bulkHints, 'auto');
     recognizedTcg = kind;
-    debugBulkScan(bulkHints, kind, 'automatisch', ocrResult.text);
+    let identifier = BulkFast.primaryIdentifier(kind, bulkHints);
+    bulkHints.bulkPrimaryIdentifier = identifier ? identifier.key : '';
+    renderBulkFeatures(bulkHints);
+    debugBulkScan(bulkHints, kind, 'PRIMARY_IDENTIFIER', identifierOcr.text);
     debugRecognitionFeatures(bulkHints);
-    bulkLearningScan = await buildLearningScan(prepared, bulkHints, kind, 'bulk');
-    if (Learning.isFastBulkMatch(bulkLearningScan.matchResult)) {
-      bulkCandidates = applyLocalLearning(
-        Learning.offlineCandidates(bulkLearningScan.matchResult, bulkLearningScan.context),
-        bulkLearningScan
-      );
-      bulkCandidates = resolveCandidateVariants(bulkCandidates, $('#bulkVariant').value).slice(0, 5);
-      if (bulkCandidates.length) {
-        console.debug('[PokeFolio Bulk] Aktion=LOCAL_FAST_MATCH API_SKIPPED cardId='
-          + Learning.cardId(bulkCandidates[0]));
-        if (isBulkAutoAcceptable(bulkCandidates)) commitBulkCandidate(bulkCandidates[0], 'LOCAL_FAST');
-        else renderBulkVariantSelector(bulkCandidates[0], 'LOCAL_FAST');
+
+    if (identifier) {
+      const cached = findBulkCachedIdentity(identifier);
+      if (cached) {
+        bulkPerformance.exactLookupMs = 0;
+        bulkHints.bulkLookupSource = cached.source;
+        commitBulkCandidate(cached.candidate, 'AUTO', {
+          identifier, lookupSource: cached.source
+        });
+        return;
+      }
+      const exactStartedAt = performance.now();
+      const exact = await exactBulkApiLookup(kind, bulkHints, identifier);
+      bulkPerformance.exactLookupMs = performance.now() - exactStartedAt;
+      if (run !== recognitionRun || scanMode !== 'bulk') return;
+      if (exact) {
+        bulkHints.bulkLookupSource = exact.source;
+        commitBulkCandidate(exact.candidate, 'AUTO', {
+          identifier, lookupSource: exact.source
+        });
         return;
       }
     }
+
+    // Expensive work starts only after the primary identifier/cache/API fast path failed.
+    setBulkStatus('busy', 'Weitere Merkmale werden gelesen …', 'Name und Artwork werden nur als Fallback geprüft.');
+    let fullAnalysis;
+    try {
+      fullAnalysis = await recognizeCardFeatures(
+        prepared.dataUrl || dataUrl, activeRecognitionLanguage(), kind || 'auto');
+    } catch (error) {
+      if (!/kein lesbarer kartentext/i.test(error.message || '')) throw error;
+      console.debug('[PokeFolio Bulk] FULL_OCR_EMPTY local-learning-and-visual-fallback-continue');
+      fullAnalysis = {result: identifierOcr, hints: Recognition.extractHints(identifierOcr)};
+    }
+    if (run !== recognitionRun || scanMode !== 'bulk') return;
+    const mergedOcr = mergeOcrResults(identifierOcr, fullAnalysis.result, activeRecognitionLanguage());
+    bulkHints = attachCropMetadata(Recognition.extractHints(mergedOcr), prepared);
+    kind = bulkSelectedTcg !== 'auto'
+      ? bulkSelectedTcg
+      : mergedOcr.detectedProfile || Recognition.classifyTcg(bulkHints, 'auto');
+    recognizedTcg = kind;
+    identifier = BulkFast.primaryIdentifier(kind, bulkHints) || identifier;
+    bulkHints.bulkPrimaryIdentifier = identifier ? identifier.key : '';
+    renderBulkFeatures(bulkHints);
+    debugBulkScan(bulkHints, kind, 'FALLBACK_OCR', mergedOcr.text);
+
+    if (identifier) {
+      const retryCached = findBulkCachedIdentity(identifier);
+      if (retryCached) {
+        commitBulkCandidate(retryCached.candidate, 'AUTO', {
+          identifier, lookupSource: retryCached.source
+        });
+        return;
+      }
+      const retryStartedAt = performance.now();
+      const retryExact = await exactBulkApiLookup(kind, bulkHints, identifier);
+      bulkPerformance.exactLookupMs += performance.now() - retryStartedAt;
+      if (retryExact) {
+        commitBulkCandidate(retryExact.candidate, 'AUTO', {
+          identifier, lookupSource: retryExact.source
+        });
+        return;
+      }
+    }
+
+    bulkLearningScan = await buildLearningScan(prepared, bulkHints, kind, 'bulk');
+    if (Learning.isFastBulkMatch(bulkLearningScan.matchResult)) {
+      const learned = applyLocalLearning(
+        Learning.offlineCandidates(bulkLearningScan.matchResult, bulkLearningScan.context),
+        bulkLearningScan
+      );
+      const learnedCandidates = resolveCandidateVariants(learned, $('#bulkVariant').value);
+      if (isBulkAutoAcceptable(learnedCandidates)) {
+        commitBulkCandidate(learnedCandidates[0], 'AUTO', {
+          identifier, lookupSource: 'LOCAL_LEARNING'
+        });
+        return;
+      }
+    }
+
     let lookup;
     let serviceError = null;
     try {
+      setBulkStatus('busy', 'Karte wird gesucht …', 'Nur notwendige Kandidaten werden geladen.');
       lookup = await lookupCandidates(kind, bulkHints, '', run);
     } catch (error) {
       serviceError = error;
@@ -2752,48 +3110,82 @@ async function runBulkRecognition(dataUrl, previewUrl, normalizedCapture = null)
     if (run !== recognitionRun || scanMode !== 'bulk') return;
     let found = mergeLocalOfflineCandidates(lookup.candidates || [], bulkLearningScan);
     if (!hasExactStructuredIdentity(kind, found, lookup)
-      && found.some(candidate => candidate.tcg === 'pokemon' && (candidate.imageSmall || candidate.imageLarge))) {
-      setBulkStatus('busy', 'Kandidaten werden geprüft', 'Eindeutige Kartendaten werden durch den Bildvergleich bestätigt.');
+      && found.some(candidate => candidate.imageSmall || candidate.imageLarge)) {
+      const artworkStartedAt = performance.now();
+      setBulkStatus('busy', 'Artwork wird verglichen …', 'Nur der kleine Kandidatenpool wird visuell geprüft.');
       found = await enrichWithVisualSimilarity(found, prepared, run);
+      bulkPerformance.artworkFallbackMs = performance.now() - artworkStartedAt;
     }
     if (run !== recognitionRun || scanMode !== 'bulk') return;
     found = applyLocalLearning(found, bulkLearningScan);
     found = resolveCandidateVariants(found, $('#bulkVariant').value);
     if (kind === 'pokemon') found = Recognition.filterPlausibleCandidates(found);
     if (!found.length && serviceError) throw serviceError;
-    bulkCandidates = found.slice(0, 5);
-    debugRecognitionCandidates('BulkFinalRanking', bulkCandidates);
+    bulkCandidates = found.slice(0, 3);
+    debugRecognitionCandidates('BulkFastFinalRanking', bulkCandidates);
     if (isBulkAutoAcceptable(bulkCandidates)) {
-      commitBulkCandidate(bulkCandidates[0], 'AUTO');
+      commitBulkCandidate(bulkCandidates[0], 'AUTO', {
+        identifier, lookupSource: identifier ? 'OCR_NAME' : 'ARTWORK_FALLBACK'
+      });
       return;
     }
-    const bulkDecision = Recognition.confidenceDecision(bulkCandidates);
-    if (bulkDecision.state === Variants.STATES.IDENTITY_CONFIRMED_VARIANT_UNCERTAIN) {
-      renderBulkVariantSelector(bulkCandidates[0], 'AUTO_VARIANT_SELECTION');
+    const decision = Recognition.confidenceDecision(bulkCandidates);
+    if (decision.state === Variants.STATES.IDENTITY_CONFIRMED_VARIANT_UNCERTAIN
+      && bulkCandidates[0]) {
+      commitBulkCandidate(bulkCandidates[0], 'AUTO', {
+        identifier, lookupSource: 'OCR_NAME'
+      });
       return;
     }
     if (Recognition.hasPlausibleCandidate(bulkCandidates)) {
-      setBulkStatus('warn', 'Unsichere Erkennung', 'Mehrere Karten könnten passen. Bitte einen der drei besten Treffer wählen.');
-      $('#bulkCandidateText').textContent = 'Bitte die passende Karte auswählen. Erst danach wird die Stückzahl verändert.';
+      BulkFast.recordUncertain(bulkFastSession);
+      Object.assign(bulkSession, bulkFastSession.stats);
+      renderBulkSession();
+      setBulkStatus('warn', 'Unsichere Erkennung', 'Bitte einen der maximal drei plausiblen Treffer wählen.');
+      $('#bulkCandidateText').textContent = 'Erst nach deiner Auswahl wird die Stückzahl verändert.';
+      updateBulkResultState('Manuelle Bestätigung', 'Bitte Treffer auswählen',
+        'Die Karte wurde noch nicht gespeichert.', 'Maximal drei plausible Kandidaten');
       renderBulkCandidates();
+      bulkPerformance = BulkFast.finishMetrics(bulkPerformance, performance.now());
+      debugBulkPerformance(bulkPerformance);
       return;
     }
+    BulkFast.recordFailed(bulkFastSession);
+    Object.assign(bulkSession, bulkFastSession.stats);
+    renderBulkSession();
     bulkCandidates = [];
     renderBulkCandidates();
     $('#bulkNoMatch').hidden = false;
     const recovery = recoveryState(lookup.status);
     setBulkStatus(recovery ? 'bad' : 'warn',
-      recovery ? recovery.title : 'Keine eindeutige Karte erkannt',
+      recovery ? recovery.title : 'Keine belastbaren Kandidaten gefunden',
       recovery ? recovery.message : 'Die Karte wurde nicht gespeichert. Bitte erneut scannen oder manuell suchen.');
+    updateBulkResultState('Nicht gespeichert',
+      recovery ? recovery.title : 'Keine belastbaren Kandidaten gefunden',
+      recovery ? recovery.message : 'Das Bild bleibt für eine manuelle Suche sichtbar.',
+      recovery ? 'Online-Lookup fehlgeschlagen' : 'Identifier, OCR und lokale Referenzen ohne eindeutigen Treffer');
+    bulkPerformance = BulkFast.finishMetrics(bulkPerformance, performance.now());
+    debugBulkPerformance(bulkPerformance);
     console.debug('[PokeFolio Bulk] Aktion=REJECTED_LOW_CONFIDENCE Confidence='
       + Math.round((Number(found[0] && found[0].confidence) || 0) * 100) + '%');
   } catch (error) {
     if (run !== recognitionRun) return;
+    BulkFast.recordFailed(bulkFastSession);
+    Object.assign(bulkSession, bulkFastSession.stats);
+    renderBulkSession();
     bulkCandidates = [];
     renderBulkCandidates();
     $('#bulkNoMatch').hidden = false;
-    setBulkStatus('bad', 'Kartendienst oder Erkennung nicht verfügbar',
+    const isLocalRecognitionError = /ocr|kartentext|bilderkennung|identifier/i.test(error.message || '');
+    const errorTitle = isLocalRecognitionError
+      ? 'Keine belastbaren Kandidaten gefunden' : 'Kartendienst nicht erreichbar';
+    setBulkStatus('bad', errorTitle,
       (error.message || 'Unbekannter Fehler.') + ' Die Karte wurde nicht gespeichert.');
+    updateBulkResultState('Nicht gespeichert', errorTitle,
+      error.message || 'Die Erkennung konnte nicht abgeschlossen werden.',
+      isLocalRecognitionError ? 'Lokale Erkennung fehlgeschlagen' : 'Online-Lookup fehlgeschlagen');
+    bulkPerformance = BulkFast.finishMetrics(bulkPerformance, performance.now());
+    debugBulkPerformance(bulkPerformance);
     console.error('[PokeFolio Bulk] Aktion=REJECTED_LOW_CONFIDENCE Fehler=' + (error.message || error));
   }
 }
@@ -2822,6 +3214,7 @@ window.bulkMarkRemovedAndScan = () => {
   bulkVariantCandidate = null;
   $('#bulkCandidatePanel').hidden = true;
   $('#bulkNoMatch').hidden = true;
+  resetBulkCapturedImage();
   setBulkStatus('ready', 'Bereit zum Scannen', 'Die nächste Karte kann aufgenommen werden.');
   window.startBulkCamera();
 };
@@ -2888,6 +3281,7 @@ $('#bulkEndSession').onclick = () => {
   const summary = `${bulkSession.scanned} gescannt · ${bulkSession.newCards} neu · ${bulkSession.duplicates} Duplikate`;
   recognitionRun++;
   bulkSession.active = false;
+  resetBulkCapturedImage();
   showBulkFeedback('Scan-Sitzung beendet', summary);
   setBulkStatus('ready', 'Sitzung beendet', 'Alle erfassten Karten bleiben in der Sammlung gespeichert.');
 };
@@ -3047,6 +3441,7 @@ async function runRecognition(manual = false) {
   renderRecognitionFeatures(null);
   renderCandidates(false);
   try {
+    const cropStartedAt = performance.now();
     const dataUrl = await ocrDataUrl(file);
     let prepared;
     const sourceMetadata = sourceImageMetadata.get('front') || null;
@@ -3064,43 +3459,104 @@ async function runRecognition(manual = false) {
     }
     if (sourceMetadata) prepared = {...prepared, sourceOrientation: sourceMetadata};
     displayNormalizedCard('front', prepared);
-    setRecState('busy', 'Richte Karte aus …', 'Bestimme die aufrechte Kartenorientierung vor der Detail-OCR.');
-    const ocrAnalysis = await recognizeCardFeatures(
+    const cropMs = performance.now() - cropStartedAt;
+    setRecState('busy', 'Richte Karte aus …', 'Bestimme die Kartenorientierung vor der Identifier-OCR.');
+    const primaryOcrStartedAt = performance.now();
+    const primaryOcr = await nativePrimaryIdentifierOcr(
       prepared.dataUrl || dataUrl, $('#lang').value, selectedTcg || 'auto');
-    const ocrResult = ocrAnalysis.result;
     if (run !== recognitionRun) return null;
-    recognizedRotation = chooseRecognitionRotation(ocrResult);
+    recognizedRotation = chooseRecognitionRotation(primaryOcr);
     prepared = await correctPreparedOrientation(prepared, recognizedRotation);
     if (prepared.orientationCorrectedByOcr) {
       recognizedRotation = 0;
       displayNormalizedCard('front', prepared);
     }
-    const hints = attachCropMetadata(ocrAnalysis.hints, prepared);
+    const parseStartedAt = performance.now();
+    let hints = attachCropMetadata(Recognition.extractHints(primaryOcr), prepared);
+    hints.priorityRoi = primaryOcr.priorityRoi || {
+      x: 0, y: 0.80, width: 0.72, height: 0.185, source: 'normalizedCardImage'
+    };
+    const collectorNumberParseMs = performance.now() - parseStartedAt;
+    let kind = primaryOcr.detectedProfile || Recognition.classifyTcg(hints, selectedTcg);
+    if (selectedTcg && selectedTcg !== 'auto') kind = selectedTcg;
+    recognizedTcg = kind;
     hints.recognitionPerformance = {
-      orientationMs: Number(ocrResult.orientationMs) || 0,
-      detailedOcrMs: Number(ocrResult.detailedOcrMs) || 0,
-      totalOcrMs: Number(ocrResult.totalOcrMs) || 0,
+      cropMs,
+      orientationMs: Number(primaryOcr.orientationMs) || 0,
+      bottomLeftOcrMs: Number(primaryOcr.detailedOcrMs)
+        || Math.max(0, performance.now() - primaryOcrStartedAt - Number(primaryOcr.orientationMs || 0)),
+      collectorNumberParseMs,
+      exactLookupMs: null,
+      fallbackNameOcrMs: null,
+      detailedOcrMs: 0,
+      totalOcrMs: Number(primaryOcr.totalOcrMs) || 0,
       apiMs: null,
       artworkMs: null,
-      totalMs: null
+      artworkFallbackMs: null,
+      totalMs: null,
+      totalRecognitionMs: null
     };
     renderRecognitionFeatures(hints);
     debugRecognitionFeatures(hints);
-    const kind = Recognition.classifyTcg(hints, manual ? selectedTcg : selectedTcg);
-    recognizedTcg = kind;
-    setRecState('busy', 'Lese Kartennummer …', 'Werte TCG-spezifische Titel- und Metadatenbereiche aus.');
+    setRecState('busy', 'Lese Kartennummer …', 'Prüfe zuerst die untere linke Identifikationszone.');
     learningScan = await buildLearningScan(prepared, hints, kind, 'single');
-    let lookup;
+    let lookup = null;
     let serviceError = null;
-    const apiStartedAt = performance.now();
-    try {
-      setRecState('busy', 'Suche Karte …', 'Prüfe exakte Codes, lokale Referenzen und passende Kartendatensätze.');
-      lookup = await lookupCandidates(kind, hints, '', run);
-    } catch (error) {
-      serviceError = error;
-      lookup = {candidates: [], status: emptyLookupStatus()};
+    const primaryIdentifier = BulkFast.primaryIdentifier(kind, hints);
+    let exactPrimaryIdentity = false;
+    if (primaryIdentifier) {
+      const exactLookupStartedAt = performance.now();
+      try {
+        setRecState('busy', 'Suche Karte …', 'Nutze Kartennummer und unteren Setkontext als primären Schlüssel.');
+        lookup = await lookupCandidates(kind, hints, '', run);
+        exactPrimaryIdentity = Boolean(lookup.earlyExit)
+          || hasExactStructuredIdentity(kind, lookup.candidates || [], lookup);
+      } catch (error) {
+        serviceError = error;
+        lookup = {candidates: [], status: emptyLookupStatus()};
+      }
+      hints.recognitionPerformance.exactLookupMs = performance.now() - exactLookupStartedAt;
     }
-    hints.recognitionPerformance.apiMs = performance.now() - apiStartedAt;
+
+    if (!exactPrimaryIdentity) {
+      setRecState('busy', 'Lese Kartenkopf …', 'Die Nummer war nicht eindeutig; Name und weitere Merkmale werden als Fallback gelesen.');
+      const fallbackOcrStartedAt = performance.now();
+      const fallbackAnalysis = await recognizeCardFeatures(
+        prepared.dataUrl || dataUrl, $('#lang').value, kind || selectedTcg || 'auto');
+      hints.recognitionPerformance.fallbackNameOcrMs = performance.now() - fallbackOcrStartedAt;
+      hints.recognitionPerformance.detailedOcrMs = Number(fallbackAnalysis.result.detailedOcrMs) || 0;
+      hints.recognitionPerformance.totalOcrMs += Number(fallbackAnalysis.result.totalOcrMs) || 0;
+      const mergedOcr = mergeOcrResults(primaryOcr, fallbackAnalysis.result, $('#lang').value);
+      const mergedParseStartedAt = performance.now();
+      const mergedHints = attachCropMetadata(Recognition.extractHints(mergedOcr), prepared);
+      mergedHints.priorityRoi = hints.priorityRoi;
+      mergedHints.recognitionPerformance = hints.recognitionPerformance;
+      hints = mergedHints;
+      hints.recognitionPerformance.collectorNumberParseMs += performance.now() - mergedParseStartedAt;
+      kind = selectedTcg && selectedTcg !== 'auto'
+        ? selectedTcg : fallbackAnalysis.result.detectedProfile || Recognition.classifyTcg(hints, 'auto');
+      recognizedTcg = kind;
+      learningScan.hints = hints;
+      learningScan.context = learningContext(hints, kind);
+      learningScan.matchResult = Learning.findMatches(
+        learningState, learningScan.fingerprint, learningScan.context, 16);
+      serviceError = null;
+      const fallbackLookupStartedAt = performance.now();
+      try {
+        setRecState('busy', 'Suche Karte …', 'Nummer, Set und Kartenname werden gemeinsam geprüft.');
+        lookup = await lookupCandidates(kind, hints, '', run);
+      } catch (error) {
+        serviceError = error;
+        lookup = {candidates: [], status: emptyLookupStatus()};
+      }
+      hints.recognitionPerformance.apiMs = performance.now() - fallbackLookupStartedAt
+        + Number(hints.recognitionPerformance.exactLookupMs || 0);
+    } else {
+      hints.recognitionPerformance.apiMs = Number(hints.recognitionPerformance.exactLookupMs) || 0;
+      console.debug('[PokeFolio Recognition] PRIMARY_IDENTIFIER_EARLY_EXIT kind=' + kind
+        + ' key=' + primaryIdentifier.key + ' source=BOTTOM_LEFT_ID');
+    }
+    if (!lookup) lookup = {candidates: [], status: emptyLookupStatus()};
     hints.candidateRetrievalStrategy = lookup.diagnostics && lookup.diagnostics.retrievalStrategy
       || hints.candidateRetrievalStrategy || (lookup.earlyExit ? lookup.earlyExit : 'STRUCTURED_FALLBACK');
     hints.candidateCount = lookup.diagnostics && Number.isFinite(Number(lookup.diagnostics.afterFiltering))
@@ -3114,6 +3570,7 @@ async function runRecognition(manual = false) {
       const artworkStartedAt = performance.now();
       foundCandidates = await enrichWithVisualSimilarity(foundCandidates, prepared, run);
       hints.recognitionPerformance.artworkMs = performance.now() - artworkStartedAt;
+      hints.recognitionPerformance.artworkFallbackMs = hints.recognitionPerformance.artworkMs;
       if (run !== recognitionRun) return null;
     }
     foundCandidates = applyLocalLearning(foundCandidates, learningScan);
@@ -3132,13 +3589,18 @@ async function runRecognition(manual = false) {
     }
     if (!foundCandidates.length && serviceError) throw serviceError;
     hints.recognitionPerformance.totalMs = performance.now() - recognitionStartedAt;
+    hints.recognitionPerformance.totalRecognitionMs = hints.recognitionPerformance.totalMs;
     renderRecognitionFeatures(hints);
     console.debug('[PokeFolio Recognition] RECOGNITION_PERF'
+      + ` CropMs=${hints.recognitionPerformance.cropMs.toFixed(2)}`
       + ` OrientationMs=${hints.recognitionPerformance.orientationMs.toFixed(2)}`
-      + ` DetailedOcrMs=${hints.recognitionPerformance.detailedOcrMs.toFixed(2)}`
+      + ` BottomLeftOcrMs=${hints.recognitionPerformance.bottomLeftOcrMs.toFixed(2)}`
+      + ` CollectorNumberParseMs=${hints.recognitionPerformance.collectorNumberParseMs.toFixed(2)}`
+      + ` ExactLookupMs=${hints.recognitionPerformance.exactLookupMs == null ? 'SKIPPED' : hints.recognitionPerformance.exactLookupMs.toFixed(2)}`
+      + ` FallbackNameOcrMs=${hints.recognitionPerformance.fallbackNameOcrMs == null ? 'SKIPPED' : hints.recognitionPerformance.fallbackNameOcrMs.toFixed(2)}`
       + ` ApiMs=${hints.recognitionPerformance.apiMs.toFixed(2)}`
-      + ` ArtworkMs=${hints.recognitionPerformance.artworkMs == null ? 'SKIPPED' : hints.recognitionPerformance.artworkMs.toFixed(2)}`
-      + ` TotalMs=${hints.recognitionPerformance.totalMs.toFixed(2)}`
+      + ` ArtworkFallbackMs=${hints.recognitionPerformance.artworkFallbackMs == null ? 'SKIPPED' : hints.recognitionPerformance.artworkFallbackMs.toFixed(2)}`
+      + ` TotalRecognitionMs=${hints.recognitionPerformance.totalRecognitionMs.toFixed(2)}`
       + ` EarlyExit=${lookup.earlyExit || 'NO'}`);
     debugRecognitionCandidates('FinalRanking', foundCandidates);
     candidates = foundCandidates;

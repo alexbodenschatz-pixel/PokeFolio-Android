@@ -15,8 +15,8 @@ android {
         applicationId 'app.pokefolio.mobile'
         minSdk 29
         targetSdk 36
-        versionCode 33
-        versionName '0.16.3'
+        versionCode 35
+        versionName '0.16.5'
         testInstrumentationRunner 'de.pokefolio.app.CardCropInstrumentation'
     }
 

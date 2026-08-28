@@ -76,7 +76,7 @@ public final class MainActivity extends Activity {
     private static final int MAX_BRIDGE_IMAGE_BYTES = 14_000_000;
     private static final int MAX_REFERENCE_IMAGE_BYTES = 8_000_000;
     private static final Pattern POKEMON_NUMBER_PATTERN = Pattern.compile(
-            "(?i)\\b(?:[A-Z]{0,4}[0-9OILSB|]{1,3})\\s*[/／]\\s*(?:[A-Z]{0,4}[0-9OILSB|]{1,3})\\b");
+            "(?i)\\b(?:[A-Z]{0,4}[0-9OILSB|]{1,4})\\s*[/／\\\\]\\s*(?:[A-Z]{0,4}[0-9OILSB|]{1,4})\\b");
     private static final Pattern YUGIOH_PASSCODE_PATTERN = Pattern.compile("(?:^|\\D)(\\d{8})(?!\\d)");
     private static final Pattern YUGIOH_SET_PATTERN = Pattern.compile(
             "(?i)\\b[A-Z0-9]{2,8}-(?:(?:DE|EN|FR|EU|IT|PT|SP|GE|AE)[A-Z]?)?[A-Z]?\\d{2,4}\\b");
@@ -129,7 +129,7 @@ public final class MainActivity extends Activity {
         settings.setAllowContentAccess(true);
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
         settings.setMediaPlaybackRequiresUserGesture(false);
-        settings.setUserAgentString(settings.getUserAgentString() + " PokeFolio/0.16.3");
+        settings.setUserAgentString(settings.getUserAgentString() + " PokeFolio/0.16.5");
 
         webView.addJavascriptInterface(new NativeBridge(), "PokeNative");
         webView.setWebViewClient(new WebViewClient() {
@@ -254,7 +254,8 @@ public final class MainActivity extends Activity {
     public final class NativeBridge {
         @JavascriptInterface
         public void recognizeCard(String dataUrl, String requestId, String language) {
-            bridgeExecutor.execute(() -> startCardRecognition(dataUrl, requestId, language, "auto"));
+            bridgeExecutor.execute(() -> startCardRecognition(
+                    dataUrl, requestId, language, "auto", "FULL"));
         }
 
         /** New UI path: the manual TCG selection is authoritative during staged OCR. */
@@ -262,7 +263,26 @@ public final class MainActivity extends Activity {
         public void recognizeCardProfiled(
                 String dataUrl, String requestId, String language, String profile
         ) {
-            bridgeExecutor.execute(() -> startCardRecognition(dataUrl, requestId, language, profile));
+            bridgeExecutor.execute(() -> startCardRecognition(
+                    dataUrl, requestId, language, profile, "FULL"));
+        }
+
+        /** Orientation plus the small TCG-specific identifier ROI; no full-card OCR. */
+        @JavascriptInterface
+        public void recognizePrimaryIdentifier(
+                String dataUrl, String requestId, String language, String profile
+        ) {
+            bridgeExecutor.execute(() -> startCardRecognition(
+                    dataUrl, requestId, language, profile, "PRIMARY_IDENTIFIER"));
+        }
+
+        /** Identifier-only OCR for the throughput-oriented bulk path. */
+        @JavascriptInterface
+        public void recognizeBulkIdentifier(
+                String dataUrl, String requestId, String language, String profile
+        ) {
+            bridgeExecutor.execute(() -> startCardRecognition(
+                    dataUrl, requestId, language, profile, "BULK_FAST"));
         }
 
         /** Kept for compatibility with an older cached UI. */
@@ -510,7 +530,7 @@ public final class MainActivity extends Activity {
             connection.setReadTimeout(8000);
             connection.setInstanceFollowRedirects(false);
             connection.setRequestProperty("Accept", "image/avif,image/webp,image/*");
-            connection.setRequestProperty("User-Agent", "PokeFolio/0.16.3 Android");
+            connection.setRequestProperty("User-Agent", "PokeFolio/0.16.5 Android");
             int status = connection.getResponseCode();
             if (status < 200 || status >= 300) {
                 throw new IOException("Kartenbild HTTP " + status);
@@ -564,7 +584,8 @@ public final class MainActivity extends Activity {
     }
 
     private void startCardRecognition(
-            String dataUrl, String requestId, String language, String requestedProfile
+            String dataUrl, String requestId, String language, String requestedProfile,
+            String recognitionMode
     ) {
         JSONObject output = new JSONObject();
         Bitmap bitmap = null;
@@ -575,6 +596,10 @@ public final class MainActivity extends Activity {
             String profile = normalizeRecognitionProfile(requestedProfile);
             output.put("language", ocrLanguage);
             output.put("profile", profile);
+            String mode = "BULK_FAST".equals(recognitionMode)
+                    ? "BULK_FAST"
+                    : "PRIMARY_IDENTIFIER".equals(recognitionMode) ? "PRIMARY_IDENTIFIER" : "FULL";
+            output.put("recognitionMode", mode);
             int comma = dataUrl.indexOf(',');
             String encoded = comma >= 0 ? dataUrl.substring(comma + 1) : dataUrl;
             byte[] bytes = Base64.decode(encoded, Base64.DEFAULT);
@@ -610,7 +635,7 @@ public final class MainActivity extends Activity {
             recognizeOrientationVariant(
                     requestId, output, recognizer, bitmap, profile, orientationVariants, 0,
                     new JSONArray(), new OrientationSelection(), recognitionStarted,
-                    System.nanoTime()
+                    System.nanoTime(), mode
             );
             bitmap = null; // Ownership moved to the asynchronous orientation stage.
         } catch (Exception error) {
@@ -645,7 +670,8 @@ public final class MainActivity extends Activity {
             JSONArray probeDiagnostics,
             OrientationSelection selection,
             long recognitionStarted,
-            long orientationStarted
+            long orientationStarted,
+            String recognitionMode
     ) {
         if (index >= variants.size()) {
             float orientationMs = elapsedMs(orientationStarted);
@@ -654,8 +680,11 @@ public final class MainActivity extends Activity {
                     : profile;
             if ("auto".equals(effectiveProfile)) effectiveProfile = "pokemon";
             int appliedRotation = selection.resolvedRotation();
-            List<CardImageProcessor.OcrVariant> detailed =
-                    CardImageProcessor.createProfileOcrVariants(
+            boolean identifierOnly = !"FULL".equals(recognitionMode);
+            List<CardImageProcessor.OcrVariant> detailed = identifierOnly
+                    ? CardImageProcessor.createBulkIdentifierOcrVariants(
+                            source, appliedRotation, effectiveProfile)
+                    : CardImageProcessor.createProfileOcrVariants(
                             source, appliedRotation, effectiveProfile,
                             output.optString("language", "de"));
             source.recycle();
@@ -669,12 +698,22 @@ public final class MainActivity extends Activity {
                 output.put("detectedProfile", effectiveProfile);
                 output.put("orientationProbes", probeDiagnostics);
                 output.put("orientationMs", orientationMs);
+                if ("pokemon".equals(effectiveProfile)) {
+                    JSONObject roi = new JSONObject();
+                    roi.put("x", 0.0);
+                    roi.put("y", 0.80);
+                    roi.put("width", 0.72);
+                    roi.put("height", 0.185);
+                    roi.put("source", "normalizedCardImage");
+                    output.put("priorityRoi", roi);
+                }
             } catch (Exception ignored) {
                 // Continue with best-effort diagnostics.
             }
             if (isDebugBuild()) {
                 Log.d(TAG, String.format(Locale.US,
-                        "OCR_STAGE orientation_complete best=%d applied=%d score=%.2f second=%.2f margin=%.2f confident=%s ms=%.2f profile=%s detailed=%d",
+                        "OCR_STAGE orientation_complete mode=%s best=%d applied=%d score=%.2f second=%.2f margin=%.2f confident=%s ms=%.2f profile=%s detailed=%d",
+                        recognitionMode,
                         selection.rotation, appliedRotation, selection.score,
                         selection.secondScoreValue(), selection.margin(), selection.isConfident(),
                         orientationMs, effectiveProfile, detailed.size()));
@@ -718,7 +757,7 @@ public final class MainActivity extends Activity {
             }
             recognizeOrientationVariant(requestId, output, recognizer, source, profile,
                     variants, index + 1, probeDiagnostics, selection, recognitionStarted,
-                    orientationStarted);
+                    orientationStarted, recognitionMode);
         });
     }
 
@@ -967,7 +1006,7 @@ public final class MainActivity extends Activity {
             connection.setRequestMethod("GET");
             connection.setRequestProperty("Accept", "application/json");
             connection.setRequestProperty("Cache-Control", "no-cache");
-            connection.setRequestProperty("User-Agent", "PokeFolio/0.16.3 Android");
+            connection.setRequestProperty("User-Agent", "PokeFolio/0.16.5 Android");
             status = connection.getResponseCode();
             InputStream stream = status >= 200 && status < 400
                     ? connection.getInputStream()

@@ -298,7 +298,7 @@
       if (!letters) return;
       let score = Math.min(letters, 42) * (line.region === 'WHOLE_CARD' ? 0.14 : 0.055);
       if (line.region === 'TOP_HEADER' && /\b(?:KP|HP)\s*[0-9OIL|]{2,3}\b/i.test(line.text)) score += 4;
-      if (line.region === 'BOTTOM_METADATA' && /[0-9OIL|SB]{1,3}\s*[\/／]\s*[0-9OIL|SB]{1,3}/i.test(line.text)) score += 4;
+      if (line.region === 'BOTTOM_METADATA' && /[0-9OIL|SB]{1,4}\s*[\/／\\]\s*[0-9OIL|SB]{1,4}/i.test(line.text)) score += 4;
       if (line.region === 'TOP_HEADER' && isPokemonCardHeaderLabel(line.text)) score += 2;
       scores.set(line.rotation, (scores.get(line.rotation) || 0) + score);
     });
@@ -313,7 +313,7 @@
       if (/\b(?:KP|HP|pok[eé]dex|schw[aä]che|weakness|resistenz|resistance|r[uü]ckzug|retreat|illus)\b/i.test(line.text)) {
         return;
       }
-      if (/[0-9OIL|]{1,3}\s*[\/／]\s*[0-9OIL|]{1,3}/i.test(line.text)) return;
+      if (/[0-9OIL|]{1,4}\s*[\/／\\]\s*[0-9OIL|]{1,4}/i.test(line.text)) return;
       const damageMatch = String(line.text).match(/(?:^|\s)([0-9OIL|]{1,3})([+x×-]?)(?=\s*$)/i);
       let attackName = damageMatch
         ? String(line.text).slice(0, damageMatch.index).trim()
@@ -388,8 +388,25 @@
     if (!text || /\b(?:pok[eé]dex|national(?:er)?\s+pok[eé]dex|nr\.?|no\.?)\s*[:#-]?\s*0*\d{1,4}\b/i.test(text)) {
       return null;
     }
-    const fraction = text.match(/\b([A-Z]{0,4}\s*-?\s*[0-9OIL|SB]{1,3}[A-Z]?)\s*[\/／]\s*([A-Z]{0,4}\s*-?\s*[0-9OIL|SB]{1,3})\b/i);
-    if (fraction) return parsePokemonCollector(fraction[1], fraction[2], {...(context || {}), text});
+    const fraction = text.match(/\b([A-Z]{0,4}\s*-?\s*[0-9OIL|SB]{1,4}[A-Z]?)\s*[\/／\\]\s*([A-Z]{0,4}\s*-?\s*[0-9OIL|SB]{1,4})\b/i);
+    if (fraction) return parsePokemonCollector(fraction[1], fraction[2], {
+      ...(context || {}), text, rawNumber: fraction[1], rawTotal: fraction[2]
+    });
+
+    // A missing slash is repaired only inside the dedicated lower-left ID ROI. Requiring a
+    // three/four-glyph numerator prevents HP/damage pairs such as "90 120" becoming an ID.
+    const priorityRoi = Boolean(context && (context.priorityRoi || context.sourceRegion === 'BOTTOM_LEFT_ID'));
+    if (priorityRoi && !/\b(?:HP|KP|DAMAGE|SCHADEN|ATK|DEF)\b/i.test(text)) {
+      const missingSlash = text.match(
+        /(?:^|\s)([0-9OIL|SB]{3,4})\s*(?:[-:;|]|\s)\s*([0-9OIL|SB]{2,4})(?=\s|$|[·•])/i
+      );
+      if (missingSlash) {
+        return parsePokemonCollector(missingSlash[1], missingSlash[2], {
+          ...(context || {}), text, rawNumber: missingSlash[1], rawTotal: missingSlash[2],
+          missingSlash: true
+        });
+      }
+    }
     const promo = text.match(/\b((?:SWSH|SVP|HGSS|SM|XY|BW|DP|PR)\s*-?\s*[0-9OIL|SB]{1,3})\b/i);
     if (!promo || !(context && (context.simpleInput || Number(context.y) >= 0.68))) return null;
     const normalized = normalizeCollectorOcrToken(promo[1]);
@@ -407,8 +424,8 @@
     }
     const number = normalizeCollectorOcrToken(numberValue);
     const totalRaw = normalizeCollectorOcrToken(totalValue);
-    const numberMatch = number.match(/^([A-Z]{0,4})(\d{1,3})([A-Z]?)$/);
-    const totalMatch = totalRaw.match(/^([A-Z]{0,4})(\d{1,3})$/);
+    const numberMatch = number.match(/^([A-Z]{0,4})(\d{1,4})([A-Z]?)$/);
+    const totalMatch = totalRaw.match(/^([A-Z]{0,4})(\d{1,4})$/);
     if (!numberMatch || !totalMatch) return null;
     const numberPrefix = numberMatch[1];
     const totalPrefix = totalMatch[1];
@@ -420,16 +437,28 @@
       if (y < minimumY) return null;
     }
     const total = String(parseInt(totalMatch[2], 10));
-    if (!total || Number(total) < 1 || Number(total) > 999) return null;
+    if (!total || Number(total) < 1 || Number(total) > 9999) return null;
     const digits = numberPrefix
       ? numberMatch[2]
       : String(parseInt(numberMatch[2], 10));
-    if (!digits || Number(numberMatch[2]) > 999) return null;
-    return {
+    if (!digits || Number(numberMatch[2]) > 9999) return null;
+    const result = {
       number: numberPrefix + digits + numberMatch[3],
       total,
       prefix: numberPrefix || totalPrefix || ''
     };
+    const rawNumber = normalizeCollectorOcrToken(context && context.rawNumber || numberValue);
+    const rawTotal = normalizeCollectorOcrToken(context && context.rawTotal || totalValue);
+    const printedNumber = numberPrefix
+      ? numberPrefix + numberMatch[2] + numberMatch[3]
+      : (rawNumber.match(/\d{1,4}/) || [numberMatch[2]])[0];
+    const printedTotal = (rawTotal.match(/\d{1,4}/) || [totalMatch[2]])[0];
+    Object.defineProperty(result, 'normalizedValue', {
+      value: printedNumber + '/' + printedTotal,
+      enumerable: false,
+      configurable: true
+    });
+    return result;
   }
 
   function isStructuralCardLabel(value) {
@@ -856,6 +885,7 @@
     const onePieceVotes = new Map();
     const hpVotes = new Map();
     const rarityVotes = new Map();
+    const regulationVotes = new Map();
 
     passes.forEach((pass, passIndex) => {
       const text = String(pass.text || '').replace(/\r/g, '');
@@ -905,24 +935,43 @@
 
       const seenCollectors = new Set();
       normalizedLines.forEach(line => {
-        const collectorPattern = /\b([A-Z]{0,4}\s*-?\s*[0-9OIL|SB]{1,3}[A-Z]?)\s*[\/／]\s*([A-Z]{0,4}\s*-?\s*[0-9OIL|SB]{1,3})\b/gi;
+        const collectorPattern = /\b([A-Z]{0,4}\s*-?\s*[0-9OIL|SB]{1,4}[A-Z]?)\s*[\/／\\]\s*([A-Z]{0,4}\s*-?\s*[0-9OIL|SB]{1,4})\b/gi;
         let collectorMatch;
         while ((collectorMatch = collectorPattern.exec(line.text)) !== null) {
+          const priorityRoi = /^unterkante-idzone-/.test(line.variant);
           const collector = parsePokemonCollectorText(collectorMatch[0], {
             text: line.text,
             y: line.y,
-            simpleInput: line.variant === 'einfach'
+            simpleInput: line.variant === 'einfach',
+            priorityRoi,
+            sourceRegion: priorityRoi ? 'BOTTOM_LEFT_ID' : line.region
           });
           if (!collector) continue;
           const key = numberKey(collector.number) + '/' + numberKey(collector.total);
           if (!seenCollectors.has(key)) {
             seenCollectors.add(key);
-            const positionWeight = line.region === 'BOTTOM_METADATA'
-              ? 1.95
+            const positionWeight = priorityRoi
+              ? 2.85
+              : line.region === 'BOTTOM_METADATA' ? 1.95
               : line.variant === 'einfach'
                 ? 1
                 : line.y >= 0.78 ? 1.55 : 1.1;
             addVote(collectorVotes, key, collector, positionWeight);
+          }
+        }
+
+        // A slash lost by OCR is recoverable only in the focused ID-zone passes.
+        if (!seenCollectors.size && /^unterkante-idzone-/.test(line.variant)) {
+          const collector = parsePokemonCollectorText(line.text, {
+            text: line.text,
+            y: line.y,
+            priorityRoi: true,
+            sourceRegion: 'BOTTOM_LEFT_ID'
+          });
+          if (collector) {
+            const key = numberKey(collector.number) + '/' + numberKey(collector.total);
+            seenCollectors.add(key);
+            addVote(collectorVotes, key, collector, 2.55);
           }
         }
 
@@ -950,7 +999,7 @@
           let rarityMatch;
           while ((rarityMatch = rarityPattern.exec(line.text)) !== null) {
             const rarity = rarityMatch[1].toUpperCase();
-            const containsCollector = /[0-9OIL|SB]{1,3}\s*[\/／]\s*[0-9OIL|SB]{1,3}/i.test(line.text);
+            const containsCollector = /[0-9OIL|SB]{1,4}\s*[\/／\\]\s*[0-9OIL|SB]{1,4}/i.test(line.text);
             const shortMetadataLine = line.text.length <= 32;
             if (!containsCollector && !shortMetadataLine) continue;
             addVote(rarityVotes, rarity, rarity, line.region === 'BOTTOM_METADATA' ? 1.8 : 1.1);
@@ -964,6 +1013,13 @@
             const regionalSet = regionalSetMatch[1];
             addVote(setCodeVotes, regionalSet.toUpperCase(), regionalSet,
               line.region === 'BOTTOM_METADATA' ? 2.1 : 1.25);
+          }
+
+          const regulationMatch = line.text.match(/(?:REGULATION(?:\s+MARK)?\s*[:#-]?\s*)?\b([DEFGHI])\b/i);
+          if (regulationMatch && line.text.length <= 36) {
+            const mark = regulationMatch[1].toUpperCase();
+            addVote(regulationVotes, mark, mark,
+              /^unterkante-idzone-/.test(line.variant) ? 2.4 : 1.45);
           }
         }
       });
@@ -1032,7 +1088,11 @@
       .map(entry => ({value: entry.value, votes: entry.votes}));
     const collectorNumbers = [...collectorVotes.values()]
       .sort((a, b) => b.votes - a.votes)
-      .map(entry => ({...entry.value, votes: entry.votes}));
+      .map(entry => ({
+        ...entry.value,
+        ...(entry.value.normalizedValue ? {normalizedValue: entry.value.normalizedValue} : {}),
+        votes: entry.votes
+      }));
     const setCodes = [...setCodeVotes.values()]
       .sort((a, b) => b.votes - a.votes)
       .map(entry => ({value: entry.value, votes: entry.votes}));
@@ -1170,6 +1230,8 @@
       },
       rarityHints: rarityTerms,
       rarity: rarityTerms[0] || '',
+      regulationMark: regulationVotes.size
+        ? [...regulationVotes.values()].sort((left, right) => right.votes - left.votes)[0].value : '',
       stageHints: stageTerms,
       artistHint: artistMatch ? artistMatch[1].trim() : ''
     };
@@ -1528,6 +1590,13 @@
     if (rarityMatches) {
       evidence.push('Seltenheit');
     }
+    const detectedRegulation = String(hints.regulationMark || '').toUpperCase();
+    const candidateRegulation = String(candidate.regulationMark || '').toUpperCase();
+    const regulationStatus = detectedRegulation && candidateRegulation
+      ? detectedRegulation === candidateRegulation ? 'match' : 'mismatch'
+      : 'unknown';
+    if (regulationStatus === 'match') evidence.push('Regulation Mark');
+    else if (regulationStatus === 'mismatch') evidence.push('Regulation Mark abweichend');
     const stageMatches = hints.stageHints && hints.stageHints.some(stage => {
       return (candidate.subtypes || []).some(subtype => similarity(stage, subtype) >= 0.68);
     });
@@ -1581,15 +1650,17 @@
       : titleReliable && nameScore < 0.62 ? 'mismatch' : 'unknown';
     const asianRecognition = isAsianPokemonRecognition(hints, candidate);
     const signalWeights = asianRecognition
-      ? {collector: 0.37, set: 0.28, name: manualHint ? 0.055 : 0.035, hp: 0.075,
-        variant: 0.02, attack: 0.015, damage: 0.01, language: 0.05, type: 0.045, rarity: 0.10}
-      : {collector: 0.30, set: 0.20, name: manualHint ? 0.14 : 0.20, hp: 0.09,
-        variant: 0.045, attack: 0.075, damage: 0.04, language: 0.025, type: 0.025, rarity: 0.01};
+      ? {collector: 0.37, set: 0.25, regulation: 0.07, name: manualHint ? 0.055 : 0.035, hp: 0.075,
+        variant: 0.02, attack: 0.015, damage: 0.01, language: 0.05, type: 0.045, rarity: 0.06}
+      : {collector: 0.38, set: 0.24, regulation: 0.07, name: manualHint ? 0.08 : 0.10, hp: 0.07,
+        variant: 0.03, attack: 0.02, damage: 0.01, language: 0.02, type: 0.03, rarity: 0.03};
     const signals = [
       {key: 'collector', status: collectorStatus, weight: signalWeights.collector,
         penalty: asianRecognition ? 0.55 : 0.42},
       {key: 'set', status: setStatus, weight: signalWeights.set,
         value: Math.max(setScore, setNumberMatches ? 1 : 0), penalty: asianRecognition ? 0.36 : 0.26},
+      {key: 'regulation', status: regulationStatus, weight: signalWeights.regulation,
+        penalty: 0.16},
       {key: 'name', status: nameStatus, weight: signalWeights.name, value: nameScore,
         penalty: manualHint ? 0.24 : asianRecognition ? 0.08 : 0.38,
         reliability: manualHint
@@ -1631,7 +1702,8 @@
     if (collectorStatus !== 'match' && exactName && hpStatus === 'match' && !corroboratedText) {
       identificationScore = Math.min(identificationScore, 0.66);
     }
-    const dataConfidence = dataCoverage(signals);
+    let dataConfidence = dataCoverage(signals);
+    if (exactName && exactPrintedIdentity) dataConfidence = Math.max(dataConfidence, 0.92);
     const confidence = initialFinalConfidence(identificationScore, dataConfidence);
     return {
       ...candidate,
@@ -1665,6 +1737,7 @@
         cardType: typeStatus,
         typeScore: typeStatus === 'match' ? 1 : typeStatus === 'mismatch' ? 0 : null,
         rarity: rarityStatus,
+        regulationMark: regulationStatus,
         asianNumberFirst: asianRecognition,
         artwork: null,
         wholeImage: null,

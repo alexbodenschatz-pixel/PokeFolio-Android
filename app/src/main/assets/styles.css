@@ -92,9 +92,16 @@ main{max-width:1180px}
 .bulk-heading h1{margin-top:3px}.bulk-heading button{width:auto;white-space:nowrap;margin-bottom:3px}
 .bulk-options{display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:9px 14px}
 .bulk-options label,.collection-select-filters label{margin:0}
-.bulk-session{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:14px 0}
+.bulk-auto-continue{grid-column:1/-1;display:flex;align-items:center;gap:9px;padding:5px 0;color:#bdc8d5;font-size:11px}.bulk-auto-continue input{width:20px;height:20px;margin:0;accent-color:#58d7aa}
+#bulkScanPanel.has-capture>.muted,#bulkScanPanel.has-capture>.bulk-tcgs,#bulkScanPanel.has-capture>.bulk-options{display:none}
+#bulkScanPanel.has-capture .bulk-session{margin-top:12px}
+#bulkScanPanel.has-capture .empty-matches{padding:0;border:0;background:transparent}
+#bulkScanPanel.has-capture .empty-matches>b,#bulkScanPanel.has-capture .empty-matches>span,
+#bulkScanPanel.has-capture .empty-actions button:first-child{display:none}
+#bulkScanPanel.has-capture .empty-actions{margin:0;justify-content:flex-end}
+.bulk-session{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:14px 0}
 .bulk-session div{display:flex;flex-direction:column;align-items:center;gap:2px;padding:12px 5px;border:1px solid #2d3541;border-radius:14px;background:#151b23;text-align:center}
-.bulk-session b{font-size:24px;color:#8dffd4}.bulk-session span{font-size:10px;color:#929eb0}
+.bulk-session b{font-size:21px;color:#8dffd4}.bulk-session span{font-size:9px;color:#929eb0}
 .bulk-status{display:flex;align-items:center;gap:11px;padding:13px 15px;margin-bottom:10px}
 .bulk-status div{display:flex;flex-direction:column;gap:2px}.bulk-status small{color:#99a5b6}
 .bulk-status-dot{width:12px;height:12px;border-radius:50%;flex:0 0 auto;background:#647184;box-shadow:0 0 0 5px rgba(100,113,132,.12)}
@@ -102,8 +109,7 @@ main{max-width:1180px}
 .bulk-status-dot.busy{background:#ffd783;box-shadow:0 0 0 5px rgba(255,215,131,.12)}
 .bulk-status-dot.warn{background:#ffac66;box-shadow:0 0 0 5px rgba(255,172,102,.12)}
 .bulk-status-dot.bad{background:#ff7f90;box-shadow:0 0 0 5px rgba(255,127,144,.12)}
-.bulk-camera-stage{position:relative;display:block;width:100%;min-height:min(68vh,660px);overflow:hidden;border:1px solid #36404e;border-radius:22px;background:radial-gradient(circle at 50% 38%,#26313e,#090d12 70%);color:#fff;cursor:pointer;box-shadow:0 16px 40px rgba(0,0,0,.28)}
-.bulk-camera-stage>img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#080b10}
+.bulk-camera-stage{position:relative;display:block;width:100%;min-height:min(48vh,480px);overflow:hidden;border:1px solid #36404e;border-radius:22px;background:radial-gradient(circle at 50% 38%,#26313e,#090d12 70%);color:#fff;cursor:pointer;box-shadow:0 16px 40px rgba(0,0,0,.28)}
 .bulk-camera-shade{position:absolute;inset:0;background:rgba(0,0,0,.28)}
 .bulk-card-frame{position:absolute;left:50%;top:47%;height:min(78%,560px);aspect-ratio:63/88;max-width:82%;transform:translate(-50%,-50%);border:3px solid #78ebc3;border-radius:17px;box-shadow:0 0 0 999px rgba(3,7,10,.28),0 0 25px rgba(88,215,170,.2)}
 .bulk-card-frame:before,.bulk-card-frame:after{content:"";position:absolute;width:34px;height:34px;border-color:#fff}
@@ -111,6 +117,8 @@ main{max-width:1180px}
 .bulk-card-frame:after{right:-6px;bottom:-6px;border-right:5px solid;border-bottom:5px solid;border-radius:0 0 10px}
 .bulk-camera-call{position:absolute;left:50%;bottom:22px;transform:translateX(-50%);display:flex;flex-direction:column;gap:2px;min-width:210px;padding:11px 16px;border-radius:999px;background:rgba(12,18,24,.86);box-shadow:0 5px 18px rgba(0,0,0,.35)}
 .bulk-camera-call b{font-size:14px}.bulk-camera-call small{font-size:10px;color:#a9b5c5}
+.bulk-captured-result{display:grid;grid-template-columns:minmax(126px,190px) minmax(0,1fr);align-items:center;gap:18px;padding:14px;overflow:hidden}
+.bulk-captured-result[hidden]{display:none}.bulk-result-image{display:flex;align-items:center;justify-content:center;min-height:190px;max-height:300px;border-radius:15px;background:linear-gradient(145deg,#18212a,#0d1218);overflow:hidden}.bulk-result-image img{display:block;width:100%;height:100%;max-height:300px;object-fit:contain;object-position:center}.bulk-result-copy{min-width:0}.bulk-result-copy h2{margin:5px 0;font-size:23px;overflow-wrap:anywhere}.bulk-result-copy p{margin:0;color:#a6b2c1;font-size:12px}.bulk-result-copy strong{display:block;margin-top:12px;color:#8dffd4;font-size:18px}.bulk-result-copy small{display:block;margin-top:8px;color:#8290a1;font-size:10px}
 .bulk-actions{display:grid;grid-template-columns:1fr 1.35fr;gap:10px;margin:12px 0}
 .bulk-feedback{position:sticky;z-index:4;bottom:78px;margin:12px 0;padding:14px 16px;border:1px solid #3eaf88;border-radius:15px;background:#15372c;color:#b5ffe2;box-shadow:0 9px 28px rgba(0,0,0,.36)}
 .bulk-feedback.warn{border-color:#b7823b;background:#352815;color:#ffe0a4}
@@ -132,11 +140,12 @@ main{max-width:1180px}
 .item .item-meta{display:flex;flex-wrap:wrap;gap:5px;margin:5px 0}.item .item-meta span{padding:4px 6px;border-radius:7px;background:#222a35;color:#b9c3d1;font-size:10px}.item .danger{width:auto;padding:9px 12px;font-size:11px}
 
 @media(max-width:600px){
-  .bulk-camera-stage{min-height:58vh}
+  .bulk-camera-stage{min-height:min(44vh,420px)}
   .bulk-options,.collection-select-filters{grid-template-columns:1fr 1fr}
   .collection-select-filters label:last-child{grid-column:1/-1}
   .bulk-heading{align-items:start}.bulk-heading button{font-size:11px}
   .bulk-choice{grid-template-columns:64px 1fr}.bulk-choice-visual,.bulk-choice img,.bulk-choice-placeholder{width:64px}
+  .bulk-captured-result{grid-template-columns:118px minmax(0,1fr);gap:12px;padding:11px}.bulk-result-image{min-height:166px;max-height:230px}.bulk-result-image img{max-height:230px}.bulk-result-copy h2{font-size:19px}.bulk-session{gap:5px}.bulk-session div{padding:9px 3px}.bulk-session b{font-size:18px}.bulk-session span{font-size:8px}
 }
 
 /* Calibrated candidate comparison: one strong reference, compact alternatives. */

@@ -114,7 +114,7 @@ test('bewahrt beim Kamera- und Konturzuschnitt Sicherheitsränder an allen Karte
   assert.match(camera, /cropPreviewRegionDetailed/);
   assert.match(camera, /prepareCapturedCardDetailed\(\s*region,\s*liveQuadInRegion,\s*capturedLiveConfidence\s*\)/);
   assert.match(styles, /\.photo-card img\{[^}]*object-fit:contain/);
-  assert.match(styles, /\.bulk-camera-stage>img\{[^}]*object-fit:contain/);
+  assert.match(styles, /\.bulk-result-image img\{[^}]*object-fit:contain/);
 });
 
 test('verwendet den Guide nur als Search ROI und bindet Preview und Capture an einen ViewPort', () => {
@@ -158,13 +158,14 @@ test('berechnet regionale pHash-, dHash-, Graustufen-, Gradienten- und Farbmerkm
 });
 
 test('liefert gezielte Collector-Number-OCR in mehreren Bildvarianten', () => {
-  assert.match(processor, /unterkante-normal-/);
-  assert.match(processor, /unterkante-grau-/);
-  assert.match(processor, /unterkante-kontrast-/);
-  assert.match(processor, /unterkante-scharf-/);
-  assert.match(processor, /unterkante-metadata-normal-/);
-  assert.match(processor, /unterkante-metadata-scharf-/);
+  assert.match(processor, /unterkante-idzone-original-/);
+  assert.match(processor, /unterkante-idzone-grau-/);
+  assert.match(processor, /unterkante-idzone-kontrast-/);
+  assert.match(processor, /unterkante-idzone-3x-scharf-/);
+  assert.match(processor, /unterkante-kontext-normal-/);
+  assert.match(processor, /unterkante-kontext-scharf-/);
   assert.match(processor, /sharpenForOcr/);
+  assert.match(processor, /card\.getWidth\(\) \* 0\.72f/);
   assert.match(processor, /card\.getHeight\(\) \* 0\.80f/);
   assert.match(processor, /card\.getHeight\(\) \* 0\.84f/);
 });
