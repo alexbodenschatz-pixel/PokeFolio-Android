@@ -1092,13 +1092,17 @@
     return {text: String(hints.rawText || input || ''), lines: hints.lines || [], language: hints.language || ''};
   }
 
-  function profileTitle(lines, rejectPattern) {
+  function profileTitle(lines, rejectPattern, acceptedRegions) {
+    const regions = new Set(acceptedRegions || ['TOP_HEADER']);
     const candidates = (lines || []).filter(line => {
       const value = String(line.text || '').trim();
-      const top = line.region === 'TOP_HEADER' || line.y <= 0.20;
+      const structuralOrLegal = /^\s*\[[^\]]{2,30}\]\s*$/u.test(value)
+        || /\b(?:NINTENDO|CREATURES|GAME\s+FREAK|KONAMI|BANDAI|COPYRIGHT|ILLUS(?:TRATOR)?|ATK|DEF|COUNTER|DON!!|CHARACTER|LEADER|EVENT|STAGE)\b/i.test(value)
+        || /(?:©|\(C\)|™)/u.test(value);
+      const top = regions.has(line.region) || line.y <= 0.20;
       return top && value.length >= 2 && value.length <= 48
         && (value.match(/[\p{L}]/gu) || []).length >= 2
-        && !rejectPattern.test(value) && !isRuleTextLikeTitle(value);
+        && !structuralOrLegal && !rejectPattern.test(value) && !isRuleTextLikeTitle(value);
     }).map(line => ({
       value: String(line.text || '').replace(/\s+/g, ' ').trim(),
       score: (line.region === 'TOP_HEADER' ? 3 : 1.4) + (line.y <= 0.12 ? 1 : 0)
@@ -1144,7 +1148,8 @@
     const counter = upper.match(/\bCOUNTER\s*[:+]?\s*\+?\s*(\d{3,5})\b/);
     const type = upper.match(/\b(CHARACTER|LEADER|EVENT|STAGE|DON!!)\b/);
     const name = profileTitle(data.lines,
-      /\b(?:COST|POWER|COUNTER|CHARACTER|LEADER|EVENT|STAGE|DON!!|OP\d|ST\d|EB\d|PRB\d|P-\d)\b/i);
+      /\b(?:COST|POWER|COUNTER|CHARACTER|LEADER|EVENT|STAGE|DON!!|OP\d|ST\d|EB\d|PRB\d|P-\d)\b/i,
+      ['TOP_HEADER', 'LOWER_TEXT']);
     return {
       profile: 'ONE_PIECE', tcg: 'onepiece', name, language: data.language,
       cardCode, cardType: type ? type[1] : '', cost: cost ? cost[1] : '',
@@ -2437,6 +2442,24 @@
       .slice(0, Number(limit) || 7);
   }
 
+  /** Pure fallback used by tests and older native bridges that do not return an orientation. */
+  function selectBestOrientation(ocrResult, selected) {
+    let best = {rotation: 0, score: -1};
+    [0, 90, 180, 270].forEach(rotation => {
+      const passes = (ocrResult && ocrResult.passes || []).filter(pass =>
+        String(pass.variant || '').endsWith('-' + rotation));
+      if (!passes.length) return;
+      const hints = extractHints({passes});
+      const kind = selected && selected !== 'auto' ? selected : classifyTcgProfiled(hints, 'auto');
+      const probabilities = tcgProbabilities(hints);
+      const score = orientationScore(kind, hints)
+        + Number(probabilities[kind] || 0) * 2
+        + passes.reduce((sum, pass) => sum + String(pass.text || '').length, 0) / 1600;
+      if (score > best.score) best = {rotation, score};
+    });
+    return best;
+  }
+
   function orientationScore(kind, hints) {
     if (kind === 'yugioh') {
       const f = parseYuGiOhFeatures(hints);
@@ -2475,6 +2498,7 @@
     rankYuGiOhCandidates,
     scoreOnePieceCandidate,
     rankOnePieceCandidates,
+    selectBestOrientation,
     orientationScore,
     scorePokemonCandidate,
     scorePokemonTcgCandidate,

@@ -30,7 +30,7 @@ test('schneidet und entzerrt den Scan genau einmal vor den Kandidatenvergleichen
   assert.doesNotMatch(processor, /isCardAspectFrame/);
   assert.match(processor, /detectCard\(detectionBitmap\)/);
   assert.match(processor, /"search-region-fallback"/);
-  assert.match(app, /recognizeCardFeatures\(prepared\.dataUrl \|\| dataUrl/);
+  assert.match(app, /recognizeCardFeatures\(\s*prepared\.dataUrl \|\| dataUrl/);
   assert.match(app, /displayNormalizedCard\('front', prepared\)/);
   assert.match(app, /The native normalized card is authoritative/);
   assert.match(camera, /EXTRA_NORMALIZED_CARD/);
@@ -39,6 +39,17 @@ test('schneidet und entzerrt den Scan genau einmal vor den Kandidatenvergleichen
   assert.match(app, /AUTHORITATIVE_CAMERA_CROP_REUSED mode=bulk/);
   assert.match(app, /normalizedCaptureMetadata\.get\('front'\)/);
   assert.match(activity, /"images\.scrydex\.com"/);
+});
+
+test('richtet mit kleinen Probes aus und startet vollständige OCR nur für eine Rotation', () => {
+  assert.match(processor, /createOrientationOcrVariants/);
+  assert.match(processor, /createProfileOcrVariants/);
+  assert.match(activity, /recognizeOrientationVariant/);
+  assert.match(activity, /OCR_STAGE orientation_complete/);
+  assert.match(activity, /output\.put\("orientation", selection\.rotation\)/);
+  assert.match(activity, /OCR_PERF OrientationMs=/);
+  assert.match(app, /PokeNative\.recognizeCardProfiled/);
+  assert.match(app, /Richte Karte aus/);
 });
 
 test('startet Kamera und Aufnahme immer mit ausgeschaltetem Blitz und Torch', () => {

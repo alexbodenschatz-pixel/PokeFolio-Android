@@ -11,6 +11,7 @@ import android.graphics.Matrix;
 import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.PointF;
+import android.graphics.Rect;
 import android.graphics.Shader;
 import android.os.Bundle;
 import android.util.Log;
@@ -34,7 +35,8 @@ public final class CardCropInstrumentation extends Instrumentation {
         Bundle result = new Bundle();
         try {
             int syntheticCases = runCropCases();
-            int geometryCases = runPreviewMappingCase() + runSafeFallbackCase() + runTrackingCase();
+            int geometryCases = runPreviewMappingCase() + runSafeFallbackCase() + runTrackingCase()
+                    + runFastDetectorCadenceCase() + runFastDetectorPerformanceCase();
             int externalCases = runExternalPhotoCases();
             int total = syntheticCases + geometryCases + externalCases;
             result.putString("stream", "\nCardCropInstrumentation: " + total + "/" + total
@@ -268,6 +270,56 @@ public final class CardCropInstrumentation extends Instrumentation {
                 0.92f, 1080, 1920, 900L);
         assertTrue("moving card is no longer ready", !moved.ready);
         assertTrue("smoothed corner does not jump", moved.quad[0].x < 340f);
+        return 1;
+    }
+
+    private int runFastDetectorCadenceCase() {
+        FastCardDetector detector = new FastCardDetector();
+        int selected = 0;
+        for (long now = 0L; now <= 2_000L; now += 16L) {
+            if (detector.shouldAnalyze(now)) selected++;
+        }
+        float detectionFps = selected / 2f;
+        Log.i(TAG, String.format(Locale.US,
+                "PERF FastCardDetector cadence DetectionFPS=%.2f selected=%d previewFrames=%d",
+                detectionFps, selected, 126));
+        assertTrue("FastCardDetector cadence >=10fps", detectionFps >= 10f);
+        assertTrue("FastCardDetector cadence <=15fps", detectionFps <= 15f);
+        return 1;
+    }
+
+    private int runFastDetectorPerformanceCase() {
+        Case sourceCase = new Case("fast-detector-performance", Color.rgb(47, 51, 58), true,
+                quad(250, 210, 950, 210, 950, 1188, 250, 1188));
+        Bitmap large = makeScene(sourceCase);
+        Bitmap frame = Bitmap.createScaledBitmap(large, 480, 560, true);
+        large.recycle();
+        Rect roi = new Rect(12, 10, frame.getWidth() - 12, frame.getHeight() - 10);
+        FastCardDetector detector = new FastCardDetector();
+        for (int warmup = 0; warmup < 3; warmup++) {
+            detector.detect(frame, roi, 1080, 1920, warmup * 80L);
+        }
+        float[] times = new float[12];
+        float trackingTotal = 0f;
+        FastCardDetector.Result result = null;
+        for (int index = 0; index < times.length; index++) {
+            result = detector.detect(frame, roi, 1080, 1920, 400L + index * 80L);
+            times[index] = result.detectorMs;
+            trackingTotal += result.trackingMs;
+        }
+        java.util.Arrays.sort(times);
+        float median = (times[5] + times[6]) / 2f;
+        float p95 = times[11];
+        float trackingAverage = trackingTotal / times.length;
+        Log.i(TAG, String.format(Locale.US,
+                "PERF FastCardDetector CardDetectorMsMedian=%.2f CardDetectorMsP95=%.2f TrackingMs=%.3f",
+                median, p95, trackingAverage));
+        assertTrue("FastCardDetector returns a tracked physical quad",
+                result != null && result.snapshot != null && result.snapshot.quad != null);
+        assertTrue("FastCardDetector median target <30ms actual=" + median, median < 30f);
+        assertTrue("FastCardDetector tracking target <1ms actual=" + trackingAverage,
+                trackingAverage < 1f);
+        frame.recycle();
         return 1;
     }
 

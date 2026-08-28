@@ -319,6 +319,7 @@ function renderRecognitionFeatures(hints) {
   const confidence = Number(identity.nameConfidence);
   const titleConfidence = Number(hints.titleConfidence);
   const crop = hints.cardCrop || {};
+  const perf = hints.recognitionPerformance || {};
   const cardTypeLabel = ({pokemon: 'Pokémon', trainer: 'Trainer', energy: 'Energie', unknown: 'Unbekannt'})[
     hints.cardType || 'unknown'
   ];
@@ -358,6 +359,16 @@ function renderRecognitionFeatures(hints) {
     ['CARD CROP · Sicherheitsrand', Math.round((crop.safetyMargin || 0) * 1000) / 10 + ' %'],
     ['CARD CROP · Rand vollständig', crop.borderComplete ? 'JA' : 'NICHT SICHER'],
     ['CARD CROP · Fallback', crop.fallbackUsed ? `JA · ${crop.method}` : 'NEIN']
+    ,['PERF · Orientierung', Number.isFinite(Number(perf.orientationMs))
+      ? Number(perf.orientationMs).toFixed(1) + ' ms' : 'nicht gemessen']
+    ,['PERF · Detail-OCR', Number.isFinite(Number(perf.detailedOcrMs))
+      ? Number(perf.detailedOcrMs).toFixed(1) + ' ms' : 'nicht gemessen']
+    ,['PERF · API', Number.isFinite(Number(perf.apiMs))
+      ? Number(perf.apiMs).toFixed(1) + ' ms' : 'noch nicht ausgeführt']
+    ,['PERF · Artwork', Number.isFinite(Number(perf.artworkMs))
+      ? Number(perf.artworkMs).toFixed(1) + ' ms' : 'übersprungen']
+    ,['PERF · Gesamt', Number.isFinite(Number(perf.totalMs))
+      ? Number(perf.totalMs).toFixed(1) + ' ms' : 'läuft']
   ];
   list.innerHTML = rows.map(([name, value]) => `<dt>${esc(name)}</dt><dd>${esc(value)}</dd>`).join('');
   details.hidden = false;
@@ -1215,7 +1226,7 @@ function nativeOpenBulkScanner() {
   });
 }
 
-function nativeOcr(dataUrl, language) {
+function nativeOcr(dataUrl, language, profile = selectedTcg || 'auto') {
   return new Promise((resolve, reject) => {
     if (!window.PokeNative || (!PokeNative.recognizeCard && !PokeNative.recognizeText)) {
       reject(new Error('Das lokale OCR-Modul ist nicht verfügbar.'));
@@ -1227,7 +1238,9 @@ function nativeOcr(dataUrl, language) {
       reject(new Error('Die Bilderkennung hat zu lange gedauert.'));
     }, 45000);
     pendingOcr.set(requestId, {resolve, reject, timeout});
-    if (PokeNative.recognizeCard) PokeNative.recognizeCard(dataUrl, requestId, language);
+    if (PokeNative.recognizeCardProfiled) {
+      PokeNative.recognizeCardProfiled(dataUrl, requestId, language, profile || 'auto');
+    } else if (PokeNative.recognizeCard) PokeNative.recognizeCard(dataUrl, requestId, language);
     else PokeNative.recognizeText(dataUrl, requestId, language);
   });
 }
@@ -1239,48 +1252,61 @@ function mergeOcrResults(primary, fallback, requestedLanguage) {
     ...(primary || {}),
     ok: Boolean(primary && primary.ok || fallback && fallback.ok),
     language: requestedLanguage || primary && primary.language || '',
+    orientation: fallback && Number.isFinite(Number(fallback.orientation))
+      ? Number(fallback.orientation) : primary && primary.orientation,
+    orientationMs: Number(primary && primary.orientationMs || 0)
+      + Number(fallback && fallback.orientationMs || 0),
+    detailedOcrMs: Number(primary && primary.detailedOcrMs || 0)
+      + Number(fallback && fallback.detailedOcrMs || 0),
+    totalOcrMs: Number(primary && primary.totalOcrMs || 0)
+      + Number(fallback && fallback.totalOcrMs || 0),
     text: [...new Set(texts)].join('\n'),
     passes
   };
 }
 
-function needsChineseOcrFallback(hints, selectedLanguage) {
+function needsScriptOcrFallback(hints, selectedLanguage) {
   if (/^(?:zh-CN|zh-TW|ja|ko)$/i.test(String(selectedLanguage || ''))) return false;
   const letters = (String(hints && hints.rawText || '').match(/[A-Za-zÄÖÜäöüß]/g) || []).length;
   return !(hints && hints.mainTitle)
-    && !(hints && hints.collectorNumbers && hints.collectorNumbers.length)
-    && !(hints && hints.language)
+    && !/^(?:Japanese|Chinese|Hangul)$/i.test(String(hints && hints.script || ''))
     && letters <= 12;
 }
 
 /**
- * Runs the selected recognizer first. Only a structurally empty Latin result triggers one
- * controlled Chinese fallback; this avoids multiplying normal scan latency while fixing the
- * common "HP only" failure on clean Chinese cards.
+ * Runs the selected recognizer first. Only a structurally weak Latin result triggers controlled,
+ * sequential non-Latin probes. The first useful script result wins; models never run in parallel
+ * and normal Latin scans therefore keep the fast path.
  */
-async function recognizeCardFeatures(dataUrl, selectedLanguage) {
-  const primary = await nativeOcr(dataUrl, selectedLanguage);
+async function recognizeCardFeatures(dataUrl, selectedLanguage, recognitionProfile = selectedTcg || 'auto') {
+  const primary = await nativeOcr(dataUrl, selectedLanguage, recognitionProfile || 'auto');
   let result = primary;
   let hints = Recognition.extractHints(primary);
-  if (needsChineseOcrFallback(hints, selectedLanguage)) {
-    try {
-      const fallback = await nativeOcr(dataUrl, 'zh-CN');
-      const merged = mergeOcrResults(primary, fallback, selectedLanguage);
-      const mergedHints = Recognition.extractHints(merged);
-      const usefulFallback = mergedHints.script === 'Chinese'
-        || mergedHints.collectorNumbers.length > hints.collectorNumbers.length
-        || Boolean(mergedHints.hp && !hints.hp);
-      console.debug('[PokeFolio Recognition] OCR_SCRIPT_FALLBACK language=zh-CN useful=' + usefulFallback
-        + ' script=' + (mergedHints.script || 'Unknown')
-        + ' collector=' + (mergedHints.collectorNumbers[0]
-          ? [mergedHints.collectorNumbers[0].number, mergedHints.collectorNumbers[0].total].filter(Boolean).join('/')
-          : 'UNKNOWN'));
-      if (usefulFallback) {
-        result = merged;
-        hints = mergedHints;
+  if (needsScriptOcrFallback(hints, selectedLanguage)) {
+    for (const fallbackLanguage of ['ja', 'zh-CN', 'ko']) {
+      try {
+        const fallback = await nativeOcr(dataUrl, fallbackLanguage, recognitionProfile || 'auto');
+        const merged = mergeOcrResults(result, fallback, selectedLanguage);
+        const mergedHints = Recognition.extractHints(merged);
+        const usefulFallback = /^(?:Japanese|Chinese|Hangul)$/i.test(String(mergedHints.script || ''))
+          || mergedHints.collectorNumbers.length > hints.collectorNumbers.length
+          || Boolean(mergedHints.hp && !hints.hp);
+        console.debug('[PokeFolio Recognition] OCR_SCRIPT_FALLBACK language=' + fallbackLanguage
+          + ' useful=' + usefulFallback
+          + ' script=' + (mergedHints.script || 'Unknown')
+          + ' collector=' + (mergedHints.collectorNumbers[0]
+            ? [mergedHints.collectorNumbers[0].number, mergedHints.collectorNumbers[0].total]
+              .filter(Boolean).join('/')
+            : 'UNKNOWN'));
+        if (usefulFallback) {
+          result = merged;
+          hints = mergedHints;
+          break;
+        }
+      } catch (error) {
+        console.warn('[PokeFolio Recognition] OCR_SCRIPT_FALLBACK language=' + fallbackLanguage
+          + ' failed type=ocr message=' + error.message);
       }
-    } catch (error) {
-      console.warn('[PokeFolio Recognition] OCR_SCRIPT_FALLBACK failed type=ocr message=' + error.message);
     }
   }
   return {result, hints};
@@ -1400,21 +1426,10 @@ function nativeGet(url) {
 }
 
 function chooseRecognitionRotation(ocrResult) {
-  let best = {rotation: 0, score: -1};
-  [0, 90, 180, 270].forEach(rotation => {
-    const passes = (ocrResult.passes || []).filter(pass =>
-      String(pass.variant || '').endsWith('-' + rotation));
-    if (!passes.length) return;
-    const hints = Recognition.extractHints({passes});
-    const kind = selectedTcg && selectedTcg !== 'auto'
-      ? selectedTcg : Recognition.classifyTcg(hints, 'auto');
-    const probabilities = Recognition.tcgProbabilities(hints);
-    const score = Recognition.orientationScore(kind, hints)
-      + Number(probabilities[kind] || 0) * 2
-      + passes.reduce((sum, pass) => sum + String(pass.text || '').length, 0) / 1600;
-    if (score > best.score) best = {rotation, score};
-  });
-  return best.rotation;
+  if (ocrResult && [0, 90, 180, 270].includes(Number(ocrResult.orientation))) {
+    return Number(ocrResult.orientation);
+  }
+  return Recognition.selectBestOrientation(ocrResult, selectedTcg || 'auto').rotation;
 }
 
 function marketPrice(value, currency, source) {
@@ -1927,9 +1942,33 @@ async function yugiohSearchProfiled(hints, manual = '') {
   if (manual) features.name = manual;
   hints.yugiohFeatures = features;
   const urls = Api.buildYuGiOhUrls(features, manual, language);
-  const status = await Api.settleSearchVariants(urls, nativeGetOnce, {
+  const options = {
     attempts: 3, backoffMs: [250, 650], logger: message => console.error(message)
-  });
+  };
+  const passcodeUrl = urls.find(url => /cardinfo\.php\?[^#]*\bid=\d{8}/.test(url));
+  let passcodeStatus = {values: [], errors: [], requestedCount: 0, successCount: 0,
+    emptyCount: 0, resultCount: 0, unavailable: false};
+  if (passcodeUrl) {
+    passcodeStatus = await Api.settleSearchVariants([passcodeUrl], nativeGetOnce, options);
+    const exactCards = passcodeStatus.values.flatMap(result => {
+      const value = result.value;
+      return Array.isArray(value) ? value : Array.isArray(value && value.data) ? value.data : value ? [value] : [];
+    }).map(card => yugiohCandidateFromApi(card, features, language)).filter(Boolean);
+    const exactRanked = Recognition.rankYuGiOhCandidates(exactCards, hints, manual, 30);
+    if (exactRanked.some(card => card.matchDetails && card.matchDetails.passcode === 'match'
+      && (!features.setCode || card.matchDetails.setCode !== 'mismatch'))) {
+      console.debug('[PokeFolio Recognition] EARLY_EXIT TCG=YUGIOH Strategy=PASSCODE cardId='
+        + exactRanked[0].id);
+      return {candidates: exactRanked, earlyExit: 'PASSCODE', status: {
+        primarySource: 'ygoprodeck-passcode', fallbackSource: 'local-learning',
+        primary: passcodeStatus,
+        fallback: {requestedCount: 0, successCount: 0, resultCount: 0, errors: []}
+      }};
+    }
+  }
+  const fallbackStatus = await Api.settleSearchVariants(
+    urls.filter(url => url !== passcodeUrl), nativeGetOnce, options);
+  const status = mergeSettledSearchStatus(passcodeStatus, fallbackStatus);
   const rawCards = [];
   status.values.forEach(result => {
     const value = result.value;
@@ -1951,9 +1990,26 @@ async function onePieceSearchProfiled(hints, manual = '') {
   if (manual && !features.name) features.name = manual;
   hints.onePieceFeatures = features;
   const urls = Api.buildOnePieceUrls(features, manual);
-  const status = await Api.settleSearchVariants(urls, nativeGetOnce, {
+  const options = {
     attempts: 3, backoffMs: [250, 650], logger: message => console.error(message)
-  });
+  };
+  let status = {values: [], errors: [], requestedCount: 0, successCount: 0,
+    emptyCount: 0, resultCount: 0, unavailable: false};
+  for (const url of urls) {
+    const attempt = await Api.settleSearchVariants([url], nativeGetOnce, options);
+    status = mergeSettledSearchStatus(status, attempt);
+    const direct = attempt.values.map(result => parseOnePieceCard(result.value, features.cardCode)).filter(Boolean);
+    const ranked = Recognition.rankOnePieceCandidates(direct, hints, manual, 30);
+    if (ranked.some(card => card.matchDetails && card.matchDetails.cardCode === 'match')) {
+      console.debug('[PokeFolio Recognition] EARLY_EXIT TCG=ONE_PIECE Strategy=CARD_CODE cardId='
+        + ranked[0].id);
+      return {candidates: ranked, earlyExit: 'CARD_CODE', status: {
+        primarySource: url.includes('/sets/') ? 'optcgapi-sets-code' : 'optcgapi-decks-code',
+        fallbackSource: 'local-learning', primary: status,
+        fallback: {requestedCount: 0, successCount: 0, resultCount: 0, errors: []}
+      }};
+    }
+  }
   status.errors.forEach(error => console.warn('[PokeFolio OnePiece API] '
     + Api.formatHttpFailure(error)));
   const mapped = status.values.map(result => parseOnePieceCard(result.value, features.cardCode)).filter(Boolean)
@@ -1965,11 +2021,39 @@ async function onePieceSearchProfiled(hints, manual = '') {
   }};
 }
 
+function mergeSettledSearchStatus(...sources) {
+  const values = sources.flatMap(source => source && source.values || []);
+  const errors = sources.flatMap(source => source && source.errors || []);
+  return {
+    values,
+    errors,
+    requestedCount: sources.reduce((sum, source) => sum + Number(source && source.requestedCount || 0), 0),
+    successCount: sources.reduce((sum, source) => sum + Number(source && source.successCount || 0), 0),
+    emptyCount: sources.reduce((sum, source) => sum + Number(source && source.emptyCount || 0), 0),
+    resultCount: sources.reduce((sum, source) => sum + Number(source && source.resultCount || 0), 0),
+    unavailable: sources.length > 0 && sources.every(source => source && source.unavailable)
+  };
+}
+
 async function lookupCandidates(kind, hints, manual = '', runToken) {
   if (kind === 'pokemon') return pokemonSearch(hints, manual, runToken);
   if (kind === 'yugioh') return yugiohSearchProfiled(hints, manual);
   if (kind === 'onepiece') return onePieceSearchProfiled(hints, manual);
   return {candidates: [], status: emptyLookupStatus()};
+}
+
+function hasExactStructuredIdentity(kind, candidatesToCheck, lookup) {
+  if (lookup && lookup.earlyExit) return true;
+  const best = candidatesToCheck && candidatesToCheck[0];
+  const details = best && best.matchDetails || {};
+  if (!best || best.hardRejected) return false;
+  if (kind === 'yugioh') {
+    return details.passcode === 'match'
+      && (details.setCode === 'match' || details.setCode === 'unknown');
+  }
+  if (kind === 'onepiece') return details.cardCode === 'match';
+  return details.collector === 'match' && details.set === 'match'
+    && Number(best.identificationScore || best.confidence || 0) >= 0.90;
 }
 
 async function enrichWithVisualSimilarity(list, preparedCard, runToken) {
@@ -2540,7 +2624,8 @@ async function runBulkRecognition(dataUrl, previewUrl, normalizedCapture = null)
     bulkSourceDataUrl = prepared.dataUrl || dataUrl;
     bulkPreviewUrl = bulkSourceDataUrl;
     $('#bulkPreview').src = bulkPreviewUrl;
-    const ocrAnalysis = await recognizeCardFeatures(prepared.dataUrl || dataUrl, activeRecognitionLanguage());
+    const ocrAnalysis = await recognizeCardFeatures(
+      prepared.dataUrl || dataUrl, activeRecognitionLanguage(), bulkSelectedTcg || 'auto');
     const ocrResult = ocrAnalysis.result;
     if (run !== recognitionRun || scanMode !== 'bulk') return;
     const bulkRotation = chooseRecognitionRotation(ocrResult);
@@ -2581,7 +2666,8 @@ async function runBulkRecognition(dataUrl, previewUrl, normalizedCapture = null)
     }
     if (run !== recognitionRun || scanMode !== 'bulk') return;
     let found = mergeLocalOfflineCandidates(lookup.candidates || [], bulkLearningScan);
-    if (found.some(candidate => candidate.tcg === 'pokemon' && (candidate.imageSmall || candidate.imageLarge))) {
+    if (!hasExactStructuredIdentity(kind, found, lookup)
+      && found.some(candidate => candidate.tcg === 'pokemon' && (candidate.imageSmall || candidate.imageLarge))) {
       setBulkStatus('busy', 'Kandidaten werden geprüft', 'Eindeutige Kartendaten werden durch den Bildvergleich bestätigt.');
       found = await enrichWithVisualSimilarity(found, prepared, run);
     }
@@ -2689,7 +2775,8 @@ $('#bulkManualSearch').onclick = async () => {
     const lookup = await lookupCandidates(kind, hints, query, run);
     if (run !== recognitionRun) return;
     let found = mergeLocalOfflineCandidates(lookup.candidates || [], bulkLearningScan);
-    if (bulkSourceDataUrl && found.some(candidate => candidate.tcg === 'pokemon' && (candidate.imageSmall || candidate.imageLarge))) {
+    if (bulkSourceDataUrl && !hasExactStructuredIdentity(kind, found, lookup)
+      && found.some(candidate => candidate.tcg === 'pokemon' && (candidate.imageSmall || candidate.imageLarge))) {
       let prepared = bulkLearningScan && bulkLearningScan.prepared;
       if (!prepared) {
         try { prepared = await nativePrepareCard(bulkSourceDataUrl); } catch (_) {
@@ -2861,6 +2948,7 @@ async function runRecognition(manual = false) {
     return null;
   }
   const run = ++recognitionRun;
+  const recognitionStartedAt = performance.now();
   setRecState(
     'busy',
     'Analysiere …',
@@ -2888,7 +2976,9 @@ async function runRecognition(manual = false) {
       }
     }
     displayNormalizedCard('front', prepared);
-    const ocrAnalysis = await recognizeCardFeatures(prepared.dataUrl || dataUrl, $('#lang').value);
+    setRecState('busy', 'Richte Karte aus …', 'Bestimme die aufrechte Kartenorientierung vor der Detail-OCR.');
+    const ocrAnalysis = await recognizeCardFeatures(
+      prepared.dataUrl || dataUrl, $('#lang').value, selectedTcg || 'auto');
     const ocrResult = ocrAnalysis.result;
     if (run !== recognitionRun) return null;
     recognizedRotation = chooseRecognitionRotation(ocrResult);
@@ -2898,24 +2988,39 @@ async function runRecognition(manual = false) {
       displayNormalizedCard('front', prepared);
     }
     const hints = attachCropMetadata(ocrAnalysis.hints, prepared);
+    hints.recognitionPerformance = {
+      orientationMs: Number(ocrResult.orientationMs) || 0,
+      detailedOcrMs: Number(ocrResult.detailedOcrMs) || 0,
+      totalOcrMs: Number(ocrResult.totalOcrMs) || 0,
+      apiMs: null,
+      artworkMs: null,
+      totalMs: null
+    };
     renderRecognitionFeatures(hints);
     debugRecognitionFeatures(hints);
     const kind = Recognition.classifyTcg(hints, manual ? selectedTcg : selectedTcg);
     recognizedTcg = kind;
+    setRecState('busy', 'Lese Kartennummer …', 'Werte TCG-spezifische Titel- und Metadatenbereiche aus.');
     learningScan = await buildLearningScan(prepared, hints, kind, 'single');
     let lookup;
     let serviceError = null;
+    const apiStartedAt = performance.now();
     try {
+      setRecState('busy', 'Suche Karte …', 'Prüfe exakte Codes, lokale Referenzen und passende Kartendatensätze.');
       lookup = await lookupCandidates(kind, hints, '', run);
     } catch (error) {
       serviceError = error;
       lookup = {candidates: [], status: emptyLookupStatus()};
     }
+    hints.recognitionPerformance.apiMs = performance.now() - apiStartedAt;
     if (run !== recognitionRun) return null;
     let foundCandidates = mergeLocalOfflineCandidates(lookup.candidates, learningScan);
-    if (foundCandidates.some(candidate => candidate.imageSmall || candidate.imageLarge)) {
+    if (!hasExactStructuredIdentity(kind, foundCandidates, lookup)
+      && foundCandidates.some(candidate => candidate.imageSmall || candidate.imageLarge)) {
       setRecState('busy', 'Vergleiche Kartenbilder …', 'Artwork und Bildstruktur werden lokal mit den besten Treffern abgeglichen.');
+      const artworkStartedAt = performance.now();
       foundCandidates = await enrichWithVisualSimilarity(foundCandidates, prepared, run);
+      hints.recognitionPerformance.artworkMs = performance.now() - artworkStartedAt;
       if (run !== recognitionRun) return null;
     }
     foundCandidates = applyLocalLearning(foundCandidates, learningScan);
@@ -2926,6 +3031,15 @@ async function runRecognition(manual = false) {
     else if (kind === 'onepiece') foundCandidates = Recognition.rankOnePieceCandidates(foundCandidates, hints, '', 7)
       .filter(candidate => candidate.confidence >= 0.45);
     if (!foundCandidates.length && serviceError) throw serviceError;
+    hints.recognitionPerformance.totalMs = performance.now() - recognitionStartedAt;
+    renderRecognitionFeatures(hints);
+    console.debug('[PokeFolio Recognition] RECOGNITION_PERF'
+      + ` OrientationMs=${hints.recognitionPerformance.orientationMs.toFixed(2)}`
+      + ` DetailedOcrMs=${hints.recognitionPerformance.detailedOcrMs.toFixed(2)}`
+      + ` ApiMs=${hints.recognitionPerformance.apiMs.toFixed(2)}`
+      + ` ArtworkMs=${hints.recognitionPerformance.artworkMs == null ? 'SKIPPED' : hints.recognitionPerformance.artworkMs.toFixed(2)}`
+      + ` TotalMs=${hints.recognitionPerformance.totalMs.toFixed(2)}`
+      + ` EarlyExit=${lookup.earlyExit || 'NO'}`);
     debugRecognitionCandidates('FinalRanking', foundCandidates);
     candidates = foundCandidates;
     candidateFocusIndex = 0;
@@ -2984,6 +3098,8 @@ async function runRecognition(manual = false) {
     recognition = null;
     candidates = [];
     renderCandidates(true);
+    console.error('[PokeFolio Recognition] RECOGNITION_PERF failed TotalMs='
+      + (performance.now() - recognitionStartedAt).toFixed(2) + ' Error=' + (error.message || error));
     setRecState('bad', 'Erkennung fehlgeschlagen', error.message || 'Unbekannter Fehler.');
     return null;
   }
@@ -3021,7 +3137,8 @@ $('#manualSearch').onclick = async () => {
     if (run !== recognitionRun) return;
     let foundCandidates = mergeLocalOfflineCandidates(lookup.candidates, learningScan);
     const frontFile = $('#front').files[0];
-    if (frontFile && foundCandidates.some(candidate => candidate.imageSmall || candidate.imageLarge)) {
+    if (frontFile && !hasExactStructuredIdentity(kind, foundCandidates, lookup)
+      && foundCandidates.some(candidate => candidate.imageSmall || candidate.imageLarge)) {
       const prepared = learningScan && learningScan.prepared || await visualComparisonDataUrl(frontFile);
       foundCandidates = await enrichWithVisualSimilarity(foundCandidates, prepared, run);
       if (run !== recognitionRun) return;

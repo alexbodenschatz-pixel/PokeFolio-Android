@@ -83,8 +83,8 @@ test('YGOPRODeck-v7-Builder nutzt nur dokumentierte, nichtleere Parameter', () =
   const urls = Api.buildYuGiOhUrls({setCode: 'SDY-G008', passcode: '91152256',
     name: 'Keltischer W\u00e4chter'}, '', 'de');
   assert.equal(urls.length, 3);
-  assert.match(urls[0], /cardsetsinfo\.php\?setcode=SDY-G008/);
-  assert.match(urls[1], /cardinfo\.php\?id=91152256&language=de/);
+  assert.match(urls[0], /cardinfo\.php\?id=91152256&language=de/);
+  assert.match(urls[1], /cardsetsinfo\.php\?setcode=SDY-G008/);
   assert.match(urls[2], /fname=Keltischer\+W%C3%A4chter.*language=de/);
   urls.forEach(url => assert.doesNotMatch(url, /=(&|$)|undefined|null/));
 });
@@ -106,10 +106,86 @@ test('dynamischer Live-Rahmen analysiert latest-only und glättet vier physische
   const camera = fs.readFileSync(path.join(root, 'app/src/main/java/de/pokefolio/app/CameraActivity.java'), 'utf8');
   const overlay = fs.readFileSync(path.join(root, 'app/src/main/java/de/pokefolio/app/CardOverlayView.java'), 'utf8');
   const tracker = fs.readFileSync(path.join(root, 'app/src/main/java/de/pokefolio/app/CardDetectionTracker.java'), 'utf8');
+  const detector = fs.readFileSync(path.join(root, 'app/src/main/java/de/pokefolio/app/FastCardDetector.java'), 'utf8');
   assert.match(camera, /ImageAnalysis\.STRATEGY_KEEP_ONLY_LATEST/);
   assert.match(camera, /\.addUseCase\(imageAnalysis\)/);
   assert.match(camera, /mapPreviewQuadToCrop/);
   assert.match(overlay, /Path polygon/);
   assert.match(tracker, /SMOOTHING_ALPHA/);
   assert.match(tracker, /stability >= 0\.82f/);
+  assert.match(camera, /fastCardDetector\.shouldAnalyze/);
+  assert.match(detector, /MOVING_INTERVAL_MS = 66L/);
+  assert.match(detector, /STABLE_INTERVAL_MS = 92L/);
+  assert.match(camera, /CardDetectorMs/);
+  assert.doesNotMatch(detector, /recognizeCard|httpGet|compareCardImage|buildPokemonTcg/i);
+});
+
+test('180-Grad-Raichu wird vor der Detail-OCR anhand Kopf und Footer aufgerichtet', () => {
+  const orientation = Recognition.selectBestOrientation({passes: [
+    {variant: 'vollbild-0', text: 'Deho VSTAR\nNintendo', lines: [
+      {text: 'Deho VSTAR', y: 0.65}, {text: 'Nintendo', y: 0.10}
+    ]},
+    {variant: 'kopfzeile-180', region: 'TOP_HEADER', text: 'Raichu\nKP 120', lines: [
+      {text: 'Raichu', y: 0.12}, {text: 'KP 120', y: 0.24}
+    ]},
+    {variant: 'unterkante-180', region: 'BOTTOM_METADATA', text: '050/195', lines: [
+      {text: '050/195', y: 0.72}
+    ]}
+  ]}, 'pokemon');
+  assert.equal(orientation.rotation, 180);
+  const corrected = Recognition.extractHints({passes: [
+    {variant: 'kopfzeile-180', region: 'TOP_HEADER', text: 'Raichu\nKP 120', lines: [
+      {text: 'Raichu', y: 0.12}, {text: 'KP 120', y: 0.24}
+    ]},
+    {variant: 'unterkante-180', region: 'BOTTOM_METADATA', text: '050/195', lines: [
+      {text: '050/195', y: 0.72}
+    ]}
+  ]});
+  assert.equal(corrected.mainTitle, 'Raichu');
+  assert.equal(corrected.collectorNumbers[0].number, '50');
+  assert.equal(corrected.collectorNumbers[0].total, '195');
+});
+
+test('japanische 198/193 AR und chinesische 151/208 R bleiben ohne Titel identifizierbar', () => {
+  const japanese = Recognition.extractHints({passes: [{
+    variant: 'unterkante-metadata-scharf-0', region: 'BOTTOM_METADATA',
+    text: '198/193 AR\nポケモン', lines: [{text: '198/193 AR', y: 0.55}, {text: 'ポケモン', y: 0.8}]
+  }]});
+  assert.equal(japanese.script, 'Japanese');
+  assert.equal(japanese.collectorNumbers[0].number, '198');
+  assert.equal(japanese.collectorNumbers[0].total, '193');
+  assert.equal(japanese.rarity, 'AR');
+  const chinese = Recognition.extractHints({passes: [{
+    variant: 'unterkante-metadata-scharf-0', region: 'BOTTOM_METADATA',
+    text: '151/208 R\n宝可梦', lines: [{text: '151/208 R', y: 0.55}, {text: '宝可梦', y: 0.8}]
+  }]});
+  assert.equal(chinese.script, 'Chinese');
+  assert.equal(chinese.collectorNumbers[0].number, '151');
+  assert.equal(chinese.rarity, 'R');
+});
+
+test('TCG-Profile verwerfen Copyright, Strukturbezeichnungen und Regeltext als Titel', () => {
+  const ygo = Recognition.parseYuGiOhFeatures(Recognition.extractHints({passes: [{
+    variant: 'kopfzeile-0', region: 'TOP_HEADER', text: '[KRIEGER]', lines: [{text: '[KRIEGER]', y: 0.1}]
+  }]}));
+  assert.equal(ygo.name, '');
+  const onePiece = Recognition.parseOnePieceFeatures(Recognition.extractHints({passes: [
+    {variant: 'kopfzeile-onepiece-0', region: 'TOP_HEADER', text: 'You may trash this Character',
+      lines: [{text: 'You may trash this Character', y: 0.1}]},
+    {variant: 'unterkante-onepiece-0', region: 'BOTTOM_METADATA', text: 'OP04-032',
+      lines: [{text: 'OP04-032', y: 0.8}]}
+  ]}));
+  assert.equal(onePiece.name, '');
+  assert.equal(onePiece.cardCode, 'OP04-032');
+});
+
+test('One-Piece-Name wird aus der unteren Titelzone statt aus Regeltext gelesen', () => {
+  const parsed = Recognition.parseOnePieceFeatures(Recognition.extractHints({passes: [
+    {variant: 'untertext-onepiece-0', region: 'LOWER_TEXT', text: 'Baby 5\nYou may trash this Character',
+      lines: [{text: 'Baby 5', y: 0.15}, {text: 'You may trash this Character', y: 0.6}]},
+    {variant: 'unterkante-onepiece-0', region: 'BOTTOM_METADATA', text: 'OP04-032',
+      lines: [{text: 'OP04-032', y: 0.8}]}
+  ]}));
+  assert.equal(parsed.name, 'Baby 5');
+  assert.equal(parsed.cardCode, 'OP04-032');
 });

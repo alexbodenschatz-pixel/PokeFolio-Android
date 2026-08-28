@@ -95,7 +95,7 @@ public final class CameraActivity extends ComponentActivity {
     private FrameLayout.LayoutParams hintLayoutParams;
     private final Runnable focusCenterRunnable = this::focusFrameCenter;
     private final AtomicBoolean liveAnalysisBusy = new AtomicBoolean(false);
-    private final CardDetectionTracker detectionTracker = new CardDetectionTracker();
+    private final FastCardDetector fastCardDetector = new FastCardDetector();
     private volatile CardDetectionTracker.Snapshot liveDetection;
 
     private int dp(int value) {
@@ -333,7 +333,7 @@ public final class CameraActivity extends ComponentActivity {
             useCases.setViewPort(viewPort);
 
             cameraProvider.unbindAll();
-            detectionTracker.reset();
+            fastCardDetector.reset();
             liveDetection = null;
             overlay.clearDetectedCard();
             camera = cameraProvider.bindToLifecycle(this, selector, useCases.build());
@@ -368,13 +368,17 @@ public final class CameraActivity extends ComponentActivity {
 
     /** Low-resolution, latest-frame-only analysis of the outer physical card contour. */
     private void analyzePreviewFrame(ImageProxy image) {
+        long now = android.os.SystemClock.uptimeMillis();
+        if (!fastCardDetector.shouldAnalyze(now)) {
+            image.close();
+            return;
+        }
         if (!liveAnalysisBusy.compareAndSet(false, true)) {
             image.close();
             return;
         }
         Bitmap frame = null;
         Bitmap upright = null;
-        Bitmap search = null;
         try {
             frame = luminanceBitmap(image);
             int rotation = image.getImageInfo().getRotationDegrees();
@@ -388,30 +392,21 @@ public final class CameraActivity extends ComponentActivity {
             int top = clamp(Math.round(guide.top / viewHeight * upright.getHeight()), 0, upright.getHeight() - 2);
             int right = clamp(Math.round(guide.right / viewWidth * upright.getWidth()), left + 2, upright.getWidth());
             int bottom = clamp(Math.round(guide.bottom / viewHeight * upright.getHeight()), top + 2, upright.getHeight());
-            search = Bitmap.createBitmap(upright, left, top, right - left, bottom - top);
-            CardImageProcessor.PhysicalCardDetection detection =
-                    CardImageProcessor.analyzePhysicalCard(search);
-            PointF[] viewQuad = null;
-            float confidence = 0f;
-            if (detection != null) {
-                confidence = detection.confidence;
-                viewQuad = new PointF[4];
-                for (int index = 0; index < 4; index++) {
-                    float frameX = left + detection.quad[index].x;
-                    float frameY = top + detection.quad[index].y;
-                    viewQuad[index] = new PointF(
-                            frameX / upright.getWidth() * viewWidth,
-                            frameY / upright.getHeight() * viewHeight);
-                }
-            }
-            CardDetectionTracker.Snapshot snapshot = detectionTracker.update(
-                    viewQuad, confidence, viewWidth, viewHeight, android.os.SystemClock.uptimeMillis());
+            FastCardDetector.Result result = fastCardDetector.detect(
+                    upright, new Rect(left, top, right, bottom), viewWidth, viewHeight, now);
+            CardDetectionTracker.Snapshot snapshot = result.snapshot;
             liveDetection = snapshot;
             runOnUiThread(() -> applyLiveDetection(snapshot));
+            FastCardDetector.Metrics metrics = fastCardDetector.metrics(now);
+            if (metrics.windowComplete) {
+                Log.d(TAG, String.format(Locale.US,
+                        "CARD_PERF PreviewFPS=%.1f DetectionFPS=%.1f CardDetectorMs=%.2f TrackingMs=%.3f",
+                        metrics.previewFps, metrics.detectionFps, metrics.detectorMs, metrics.trackingMs));
+                fastCardDetector.beginNextMetricsWindow(now);
+            }
         } catch (Exception error) {
             Log.w(TAG, "CARD_DETECTION frame analysis failed", error);
         } finally {
-            if (search != null && search != upright && !search.isRecycled()) search.recycle();
             if (upright != null && upright != frame && !upright.isRecycled()) upright.recycle();
             if (frame != null && !frame.isRecycled()) frame.recycle();
             image.close();

@@ -60,6 +60,7 @@ import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.regex.Pattern;
 
 /** Hosts the local application UI and exposes narrow OCR/network bridges. */
 public final class MainActivity extends Activity {
@@ -70,6 +71,13 @@ public final class MainActivity extends Activity {
     private static final int CAMERA_PERMISSION = 2001;
     private static final int MAX_BRIDGE_IMAGE_BYTES = 14_000_000;
     private static final int MAX_REFERENCE_IMAGE_BYTES = 8_000_000;
+    private static final Pattern POKEMON_NUMBER_PATTERN = Pattern.compile(
+            "(?i)\\b(?:[A-Z]{0,4}[0-9OILSB|]{1,3})\\s*[/／]\\s*(?:[A-Z]{0,4}[0-9OILSB|]{1,3})\\b");
+    private static final Pattern YUGIOH_PASSCODE_PATTERN = Pattern.compile("(?:^|\\D)(\\d{8})(?!\\d)");
+    private static final Pattern YUGIOH_SET_PATTERN = Pattern.compile(
+            "(?i)\\b[A-Z0-9]{2,8}-(?:(?:DE|EN|FR|EU|IT|PT|SP|GE|AE)[A-Z]?)?[A-Z]?\\d{2,4}\\b");
+    private static final Pattern ONE_PIECE_CODE_PATTERN = Pattern.compile(
+            "(?i)\\b(?:(?:OP|ST|EB|PRB|EX|DON)\\s*-?\\s*\\d{1,2}\\s*-\\s*\\d{3}|P\\s*-\\s*\\d{3})\\b");
 
     private WebView webView;
     private ValueCallback<Uri[]> fileCallback;
@@ -116,7 +124,7 @@ public final class MainActivity extends Activity {
         settings.setAllowContentAccess(true);
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
         settings.setMediaPlaybackRequiresUserGesture(false);
-        settings.setUserAgentString(settings.getUserAgentString() + " PokeFolio/0.16.0");
+        settings.setUserAgentString(settings.getUserAgentString() + " PokeFolio/0.16.1");
 
         webView.addJavascriptInterface(new NativeBridge(), "PokeNative");
         webView.setWebViewClient(new WebViewClient() {
@@ -241,7 +249,15 @@ public final class MainActivity extends Activity {
     public final class NativeBridge {
         @JavascriptInterface
         public void recognizeCard(String dataUrl, String requestId, String language) {
-            bridgeExecutor.execute(() -> startCardRecognition(dataUrl, requestId, language));
+            bridgeExecutor.execute(() -> startCardRecognition(dataUrl, requestId, language, "auto"));
+        }
+
+        /** New UI path: the manual TCG selection is authoritative during staged OCR. */
+        @JavascriptInterface
+        public void recognizeCardProfiled(
+                String dataUrl, String requestId, String language, String profile
+        ) {
+            bridgeExecutor.execute(() -> startCardRecognition(dataUrl, requestId, language, profile));
         }
 
         /** Kept for compatibility with an older cached UI. */
@@ -489,7 +505,7 @@ public final class MainActivity extends Activity {
             connection.setReadTimeout(8000);
             connection.setInstanceFollowRedirects(false);
             connection.setRequestProperty("Accept", "image/avif,image/webp,image/*");
-            connection.setRequestProperty("User-Agent", "PokeFolio/0.16.0 Android");
+            connection.setRequestProperty("User-Agent", "PokeFolio/0.16.1 Android");
             int status = connection.getResponseCode();
             if (status < 200 || status >= 300) {
                 throw new IOException("Kartenbild HTTP " + status);
@@ -542,12 +558,18 @@ public final class MainActivity extends Activity {
         return BitmapFactory.decodeByteArray(bytes, 0, bytes.length, options);
     }
 
-    private void startCardRecognition(String dataUrl, String requestId, String language) {
+    private void startCardRecognition(
+            String dataUrl, String requestId, String language, String requestedProfile
+    ) {
         JSONObject output = new JSONObject();
+        Bitmap bitmap = null;
         try {
+            long recognitionStarted = System.nanoTime();
             output.put("requestId", requestId);
             String ocrLanguage = normalizeOcrLanguage(language);
+            String profile = normalizeRecognitionProfile(requestedProfile);
             output.put("language", ocrLanguage);
+            output.put("profile", profile);
             int comma = dataUrl.indexOf(',');
             String encoded = comma >= 0 ? dataUrl.substring(comma + 1) : dataUrl;
             byte[] bytes = Base64.decode(encoded, Base64.DEFAULT);
@@ -568,28 +590,27 @@ public final class MainActivity extends Activity {
             BitmapFactory.Options options = new BitmapFactory.Options();
             options.inSampleSize = sample;
             options.inPreferredConfig = Bitmap.Config.ARGB_8888;
-            Bitmap bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.length, options);
+            bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.length, options);
             if (bitmap == null) {
                 throw new IllegalArgumentException("Das Bild konnte nicht dekodiert werden.");
             }
 
-            List<CardImageProcessor.OcrVariant> variants = CardImageProcessor.createOcrVariants(bitmap);
-            bitmap.recycle();
+            List<CardImageProcessor.OcrVariant> orientationVariants =
+                    CardImageProcessor.createOrientationOcrVariants(bitmap);
             TextRecognizer recognizer = createTextRecognizer(ocrLanguage);
             if (isDebugBuild()) {
-                Log.d(TAG, "OCR language=" + ocrLanguage + " variants=" + variants.size());
+                Log.d(TAG, "OCR_STAGE orientation language=" + ocrLanguage
+                        + " profile=" + profile + " probes=" + orientationVariants.size());
             }
-            recognizeVariant(
-                    requestId,
-                    output,
-                    recognizer,
-                    variants,
-                    0,
-                    new JSONArray(),
-                    new LinkedHashSet<>()
+            recognizeOrientationVariant(
+                    requestId, output, recognizer, bitmap, profile, orientationVariants, 0,
+                    new JSONArray(), new OrientationSelection(), recognitionStarted,
+                    System.nanoTime()
             );
+            bitmap = null; // Ownership moved to the asynchronous orientation stage.
         } catch (Exception error) {
             Log.e(TAG, "OCR setup failed", error);
+            if (bitmap != null && !bitmap.isRecycled()) bitmap.recycle();
             try {
                 output.put("requestId", requestId);
                 output.put("ok", false);
@@ -598,6 +619,177 @@ public final class MainActivity extends Activity {
                 // JSONObject only fails for unsupported values.
             }
             sendJs("onNativeOcrResult", output);
+        }
+    }
+
+    private static String normalizeRecognitionProfile(String value) {
+        String profile = String.valueOf(value == null ? "auto" : value)
+                .trim().toLowerCase(Locale.ROOT);
+        return "pokemon".equals(profile) || "yugioh".equals(profile) || "onepiece".equals(profile)
+                ? profile : "auto";
+    }
+
+    private void recognizeOrientationVariant(
+            String requestId,
+            JSONObject output,
+            TextRecognizer recognizer,
+            Bitmap source,
+            String profile,
+            List<CardImageProcessor.OcrVariant> variants,
+            int index,
+            JSONArray probeDiagnostics,
+            OrientationSelection selection,
+            long recognitionStarted,
+            long orientationStarted
+    ) {
+        if (index >= variants.size()) {
+            float orientationMs = elapsedMs(orientationStarted);
+            String effectiveProfile = "auto".equals(profile)
+                    ? selection.detectedProfile
+                    : profile;
+            if ("auto".equals(effectiveProfile)) effectiveProfile = "pokemon";
+            List<CardImageProcessor.OcrVariant> detailed =
+                    CardImageProcessor.createProfileOcrVariants(
+                            source, selection.rotation, effectiveProfile);
+            source.recycle();
+            try {
+                output.put("orientation", selection.rotation);
+                output.put("orientationScore", selection.score);
+                output.put("detectedProfile", effectiveProfile);
+                output.put("orientationProbes", probeDiagnostics);
+                output.put("orientationMs", orientationMs);
+            } catch (Exception ignored) {
+                // Continue with best-effort diagnostics.
+            }
+            if (isDebugBuild()) {
+                Log.d(TAG, String.format(Locale.US,
+                        "OCR_STAGE orientation_complete rotation=%d score=%.2f ms=%.2f profile=%s detailed=%d",
+                        selection.rotation, selection.score, orientationMs,
+                        effectiveProfile, detailed.size()));
+            }
+            recognizeVariant(requestId, output, recognizer, detailed, 0, new JSONArray(),
+                    new LinkedHashSet<>(), System.nanoTime(), recognitionStarted,
+                    selection.rotation, orientationMs);
+            return;
+        }
+
+        CardImageProcessor.OcrVariant variant = variants.get(index);
+        InputImage image = InputImage.fromBitmap(variant.bitmap, 0);
+        recognizer.process(image).addOnCompleteListener(bridgeExecutor, task -> {
+            String textValue = "";
+            float score = 0f;
+            try {
+                if (task.isSuccessful() && task.getResult() != null) {
+                    Text text = task.getResult();
+                    textValue = text.getText().trim();
+                    score = orientationProbeScore(text, variant.bitmap.getWidth(),
+                            variant.bitmap.getHeight(), profile);
+                }
+                int rotation = rotationFromVariant(variant.name);
+                String detectedProfile = detectRecognitionProfile(textValue);
+                selection.consider(rotation, score, detectedProfile);
+                JSONObject probe = new JSONObject();
+                probe.put("rotation", rotation);
+                probe.put("score", score);
+                probe.put("profile", detectedProfile);
+                probe.put("textLength", textValue.length());
+                probeDiagnostics.put(probe);
+                if (isDebugBuild()) {
+                    Log.d(TAG, String.format(Locale.US,
+                            "OCR_ORIENTATION rotation=%d score=%.2f textLength=%d",
+                            rotation, score, textValue.length()));
+                }
+            } catch (Exception error) {
+                Log.w(TAG, "Unable to evaluate orientation probe", error);
+            } finally {
+                variant.bitmap.recycle();
+            }
+            recognizeOrientationVariant(requestId, output, recognizer, source, profile,
+                    variants, index + 1, probeDiagnostics, selection, recognitionStarted,
+                    orientationStarted);
+        });
+    }
+
+    private static float orientationProbeScore(Text text, int width, int height, String profile) {
+        float score = 0f;
+        for (Text.TextBlock block : text.getTextBlocks()) {
+            for (Text.Line line : block.getLines()) {
+                String raw = line.getText();
+                String upper = raw.toUpperCase(Locale.ROOT);
+                Rect bounds = line.getBoundingBox();
+                float y = bounds == null ? 0.5f : bounds.centerY() / (float) Math.max(1, height);
+                boolean top = y <= 0.38f;
+                boolean bottom = y >= 0.55f;
+                if (POKEMON_NUMBER_PATTERN.matcher(upper).find()) score += bottom ? 8f : 1.2f;
+                if (upper.matches(".*\\b(?:KP|HP)\\s*[0-9OIL|]{2,3}\\b.*")) score += top ? 4.5f : 0.4f;
+                if (YUGIOH_PASSCODE_PATTERN.matcher(upper).find()) score += bottom ? 9f : 1f;
+                if (YUGIOH_SET_PATTERN.matcher(upper).find()) score += bottom ? 7f : 1.2f;
+                if (upper.matches(".*\\b(?:ATK|DEF)\\s*[:/]?\\s*\\d{1,5}\\b.*")) {
+                    score += bottom ? 3.5f : 0.5f;
+                }
+                if (ONE_PIECE_CODE_PATTERN.matcher(upper).find()) score += bottom ? 9f : 1f;
+                if (upper.matches(".*\\b(?:CHARACTER|LEADER|COUNTER|POWER|COST|DON!!)\\b.*")) {
+                    score += bottom ? 2.4f : 0.5f;
+                }
+                if (upper.matches(".*(?:NINTENDO|CREATURES|GAME FREAK|KONAMI|BANDAI|©).*")) {
+                    score += bottom ? 1.8f : -1.2f;
+                }
+                int letters = raw.replaceAll("[^\\p{L}]", "").length();
+                score += Math.min(0.35f, letters / 120f);
+            }
+        }
+        if ("pokemon".equals(profile) && score > 0f) score *= 1.04f;
+        else if ("yugioh".equals(profile) && score > 0f) score *= 1.05f;
+        else if ("onepiece".equals(profile) && score > 0f) score *= 1.05f;
+        return score;
+    }
+
+    private static int rotationFromVariant(String value) {
+        String name = String.valueOf(value);
+        for (int rotation : new int[]{0, 90, 180, 270}) {
+            if (name.endsWith("-" + rotation)) return rotation;
+        }
+        return 0;
+    }
+
+    private static String detectRecognitionProfile(String rawText) {
+        String upper = String.valueOf(rawText == null ? "" : rawText)
+                .toUpperCase(Locale.ROOT);
+        int pokemon = 0;
+        int yugioh = 0;
+        int onePiece = 0;
+        if (POKEMON_NUMBER_PATTERN.matcher(upper).find()) pokemon += 3;
+        if (upper.matches("(?s).*\\b(?:KP|HP)\\s*[0-9OIL|]{2,3}\\b.*")) pokemon += 3;
+        if (upper.matches("(?s).*(?:ENTWICKELT SICH AUS|BASIC|PHASE 1|STAGE 1).*")) pokemon += 1;
+        if (YUGIOH_PASSCODE_PATTERN.matcher(upper).find()) yugioh += 7;
+        if (YUGIOH_SET_PATTERN.matcher(upper).find()) yugioh += 5;
+        if (upper.matches("(?s).*\\bATK\\s*[:/]?\\s*\\d{1,5}.*")) yugioh += 3;
+        if (upper.matches("(?s).*\\bDEF\\s*[:/]?\\s*\\d{1,5}.*")) yugioh += 3;
+        if (ONE_PIECE_CODE_PATTERN.matcher(upper).find()) onePiece += 8;
+        if (upper.matches("(?s).*\\b(?:DON!!|COUNTER|CHARACTER|LEADER)\\b.*")) onePiece += 3;
+
+        int best = Math.max(pokemon, Math.max(yugioh, onePiece));
+        if (best <= 0) return "auto";
+        if (onePiece == best) return "onepiece";
+        if (yugioh == best) return "yugioh";
+        return "pokemon";
+    }
+
+    private static float elapsedMs(long startedAt) {
+        return (System.nanoTime() - startedAt) / 1_000_000f;
+    }
+
+    private static final class OrientationSelection {
+        int rotation;
+        float score = -Float.MAX_VALUE;
+        String detectedProfile = "auto";
+
+        void consider(int candidateRotation, float candidateScore, String candidateProfile) {
+            if (candidateScore > score) {
+                rotation = candidateRotation;
+                score = candidateScore;
+                detectedProfile = candidateProfile == null ? "auto" : candidateProfile;
+            }
         }
     }
 
@@ -632,7 +824,11 @@ public final class MainActivity extends Activity {
             List<CardImageProcessor.OcrVariant> variants,
             int index,
             JSONArray passes,
-            LinkedHashSet<String> uniqueTexts
+            LinkedHashSet<String> uniqueTexts,
+            long detailedStarted,
+            long recognitionStarted,
+            int orientation,
+            float orientationMs
     ) {
         if (index >= variants.size()) {
             try {
@@ -643,10 +839,20 @@ public final class MainActivity extends Activity {
                 if (uniqueTexts.isEmpty()) {
                     output.put("error", "Auf dem Bild wurde kein lesbarer Kartentext gefunden.");
                 }
+                output.put("orientation", orientation);
+                output.put("orientationMs", orientationMs);
+                output.put("detailedOcrMs", elapsedMs(detailedStarted));
+                output.put("totalOcrMs", elapsedMs(recognitionStarted));
             } catch (Exception ignored) {
                 // Keep the response best-effort.
             }
             recognizer.close();
+            if (isDebugBuild()) {
+                Log.d(TAG, String.format(Locale.US,
+                        "OCR_PERF OrientationMs=%.2f DetailedOcrMs=%.2f TotalOcrMs=%.2f rotation=%d passes=%d",
+                        orientationMs, elapsedMs(detailedStarted), elapsedMs(recognitionStarted),
+                        orientation, variants.size()));
+            }
             sendJs("onNativeOcrResult", output);
             return;
         }
@@ -698,7 +904,8 @@ public final class MainActivity extends Activity {
             }
             passes.put(pass);
             variant.bitmap.recycle();
-            recognizeVariant(requestId, output, recognizer, variants, index + 1, passes, uniqueTexts);
+            recognizeVariant(requestId, output, recognizer, variants, index + 1, passes, uniqueTexts,
+                    detailedStarted, recognitionStarted, orientation, orientationMs);
         });
     }
 
@@ -724,7 +931,7 @@ public final class MainActivity extends Activity {
             connection.setRequestMethod("GET");
             connection.setRequestProperty("Accept", "application/json");
             connection.setRequestProperty("Cache-Control", "no-cache");
-            connection.setRequestProperty("User-Agent", "PokeFolio/0.16.0 Android");
+            connection.setRequestProperty("User-Agent", "PokeFolio/0.16.1 Android");
             status = connection.getResponseCode();
             InputStream stream = status >= 200 && status < 400
                     ? connection.getInputStream()

@@ -203,6 +203,26 @@ public final class CardImageProcessor {
         return new PhysicalCardDetection(detection);
     }
 
+    /**
+     * Preview-only contour pass. It uses a smaller working image and a deliberately bounded
+     * hypothesis set; the full detector still refines the high-resolution capture afterwards.
+     */
+    public static PhysicalCardDetection analyzePhysicalCardFast(Bitmap source) {
+        Bitmap analysis = scaleDown(source, 180);
+        CardDetection detection = detectCard(analysis, true);
+        if (detection == null) {
+            if (analysis != source) analysis.recycle();
+            return null;
+        }
+        if (analysis != source) {
+            detection = scaleDetection(detection,
+                    source.getWidth() / (float) analysis.getWidth(),
+                    source.getHeight() / (float) analysis.getHeight());
+            analysis.recycle();
+        }
+        return new PhysicalCardDetection(detection);
+    }
+
     /** Rotation helper for CameraX analysis frames (which do not carry EXIF metadata). */
     public static Bitmap rotateForAnalysis(Bitmap source, int degrees) {
         int normalized = ((degrees % 360) + 360) % 360;
@@ -403,6 +423,66 @@ public final class CardImageProcessor {
         if (!isVariantBitmap(variants, base) && !base.isRecycled()) {
             base.recycle();
         }
+        return variants;
+    }
+
+    /**
+     * Four inexpensive whole-card probes used only to determine upright orientation. Full
+     * regional OCR is intentionally not created here.
+     */
+    public static List<OcrVariant> createOrientationOcrVariants(Bitmap source) {
+        Bitmap base = scaleDown(source, 920);
+        List<OcrVariant> variants = new ArrayList<>();
+        for (int rotation : new int[]{0, 90, 180, 270}) {
+            Bitmap rotated = rotate(base, rotation);
+            Bitmap probe = scaleDown(rotated, 760);
+            variants.add(new OcrVariant("orientierung-" + rotation, probe));
+            if (rotated != probe && !rotated.isRecycled()) rotated.recycle();
+        }
+        if (base != source && !base.isRecycled()) base.recycle();
+        return variants;
+    }
+
+    /**
+     * Creates detailed OCR only for the already selected upright rotation and TCG profile.
+     * This replaces the former 4x multiplication of every high-resolution OCR region.
+     */
+    public static List<OcrVariant> createProfileOcrVariants(
+            Bitmap source,
+            int rotation,
+            String profile
+    ) {
+        int normalizedRotation = ((rotation % 360) + 360) % 360;
+        Bitmap rotated = rotate(source, normalizedRotation);
+        Bitmap normal = scaleDown(rotated, 1500);
+        List<OcrVariant> variants = new ArrayList<>();
+        variants.add(new OcrVariant("vollbild-" + normalizedRotation, normal));
+
+        float ratio = Math.min(normal.getWidth(), normal.getHeight())
+                / (float) Math.max(1, Math.max(normal.getWidth(), normal.getHeight()));
+        if (ratio >= 0.42f && ratio <= 0.80f) {
+            // The normalized geometry stays authoritative; a rotation only changes text
+            // orientation. A 180-degree correction remains portrait and is the common case.
+            Bitmap card = normal.getWidth() <= normal.getHeight()
+                    ? fitCardToCanvas(normal, NORMALIZED_WIDTH, NORMALIZED_HEIGHT)
+                    : normal.copy(Bitmap.Config.ARGB_8888, false);
+            String kind = String.valueOf(profile == null ? "auto" : profile).toLowerCase();
+            if ("yugioh".equals(kind)) {
+                addHeaderOcrVariants(variants, card, normalizedRotation);
+                addYuGiOhMetadataOcrVariants(variants, card, normalizedRotation);
+            } else if ("onepiece".equals(kind)) {
+                addOnePieceNameOcrVariants(variants, card, normalizedRotation);
+                addOnePieceMetadataOcrVariants(variants, card, normalizedRotation);
+            } else {
+                addHeaderOcrVariants(variants, card, normalizedRotation);
+                addSecondaryHeaderOcrVariants(variants, card, normalizedRotation);
+                addMiddleTextOcrVariants(variants, card, normalizedRotation);
+                addLowerTextOcrVariant(variants, card, normalizedRotation);
+                addCollectorOcrVariants(variants, card, normalizedRotation);
+            }
+            if (card != normal && !card.isRecycled()) card.recycle();
+        }
+        if (rotated != normal && !rotated.isRecycled()) rotated.recycle();
         return variants;
     }
 
@@ -762,6 +842,10 @@ public final class CardImageProcessor {
      * best rectangle is line-fitted, which avoids locking onto one strong artwork/text-box edge.
      */
     private static CardDetection detectCard(Bitmap bitmap) {
+        return detectCard(bitmap, false);
+    }
+
+    private static CardDetection detectCard(Bitmap bitmap, boolean fastPreview) {
         int width = bitmap.getWidth();
         int height = bitmap.getHeight();
         if (width < 80 || height < 80) {
@@ -793,12 +877,19 @@ public final class CardImageProcessor {
 
         // Text boxes can contain more strong lines than the outer border. Keep enough separated
         // hypotheses so a low-contrast rounded bottom/top edge is still evaluated.
-        int[] leftPeaks = strongestSeparatedPeaks(verticalEnergy, 1, Math.round(width * 0.49f), 11);
-        int[] rightPeaks = strongestSeparatedPeaks(verticalEnergy, Math.round(width * 0.51f), width - 2, 11);
+        int sidePeakCount = fastPreview ? 4 : 11;
+        int horizontalPeakCount = fastPreview ? 5 : 18;
+        int rectangleLimit = fastPreview ? 6 : 40;
+        int[] leftPeaks = strongestSeparatedPeaks(
+                verticalEnergy, 1, Math.round(width * 0.49f), sidePeakCount);
+        int[] rightPeaks = strongestSeparatedPeaks(
+                verticalEnergy, Math.round(width * 0.51f), width - 2, sidePeakCount);
         // Cards contain many strong horizontal attack/rule lines. Keep a wider horizontal pool so
         // a rounded or reflection-softened physical top/bottom edge is not discarded too early.
-        int[] topPeaks = strongestSeparatedPeaks(horizontalEnergy, 1, Math.round(height * 0.49f), 18);
-        int[] bottomPeaks = strongestSeparatedPeaks(horizontalEnergy, Math.round(height * 0.51f), height - 2, 18);
+        int[] topPeaks = strongestSeparatedPeaks(
+                horizontalEnergy, 1, Math.round(height * 0.49f), horizontalPeakCount);
+        int[] bottomPeaks = strongestSeparatedPeaks(
+                horizontalEnergy, Math.round(height * 0.51f), height - 2, horizontalPeakCount);
         List<RectCandidate> rectangles = new ArrayList<>();
         float verticalMean = mean(verticalEnergy);
         float horizontalMean = mean(horizontalEnergy);
@@ -830,7 +921,7 @@ public final class CardImageProcessor {
                                 left, top, right, bottom,
                                 aspectScore * 0.53f + edgeScore * 0.22f
                                         + coverageScore * 0.15f + centerScore * 0.10f
-                        ), 40);
+                        ), rectangleLimit);
                     }
                 }
             }
@@ -856,8 +947,10 @@ public final class CardImageProcessor {
                     intersect(bottomLine, rightLine),
                     intersect(bottomLine, leftLine)
             };
-            extendToSideEdgeEndpoints(
-                    luminance, width, height, quad, leftLine, rightLine, baselineGradient);
+            if (!fastPreview) {
+                extendToSideEdgeEndpoints(
+                        luminance, width, height, quad, leftLine, rightLine, baselineGradient);
+            }
             if (!plausibleQuad(quad, width, height)) continue;
             float area = polygonArea(quad);
             float averageWidth = (distance(quad[0], quad[1]) + distance(quad[3], quad[2])) / 2f;
@@ -875,22 +968,33 @@ public final class CardImageProcessor {
             // from every known physical-card ratio must not outrank the actual outer edge.
             float aspectTolerance = 0.07f + (1f - oppositeBalance) * 0.55f;
             float aspectScore = tradingCardAspectScore(ratio, aspectTolerance);
-            EdgeEvidence evidence = edgeEvidence(
-                    pixels, luminance, width, height, quad, baselineGradient);
             float coverage = area / Math.max(1f, width * height);
             float coverageScore = clamp01((coverage - 0.10f) / 0.48f);
             float geometryScore = quadGeometryScore(quad);
             float borderCompleteness = quadBorderCompleteness(quad, width, height);
-            float endpointTermination = endpointTerminationScore(
-                    luminance, width, height, quad, leftLine, rightLine, baselineGradient);
-            float score = aspectScore * 0.33f
-                    + evidence.strength * 0.10f
-                    + evidence.continuity * 0.12f
-                    + evidence.separation * 0.15f
-                    + coverageScore * 0.04f
-                    + geometryScore * 0.06f
-                    + endpointTermination * 0.16f
-                    + borderCompleteness * 0.04f;
+            float score;
+            if (fastPreview) {
+                // Projection strength, aspect, geometry and completeness are sufficient for the
+                // guide polygon. Expensive edge-continuity sampling is reserved for capture.
+                score = rectangle.score * 0.48f
+                        + aspectScore * 0.25f
+                        + coverageScore * 0.08f
+                        + geometryScore * 0.11f
+                        + borderCompleteness * 0.08f;
+            } else {
+                EdgeEvidence evidence = edgeEvidence(
+                        pixels, luminance, width, height, quad, baselineGradient);
+                float endpointTermination = endpointTerminationScore(
+                        luminance, width, height, quad, leftLine, rightLine, baselineGradient);
+                score = aspectScore * 0.33f
+                        + evidence.strength * 0.10f
+                        + evidence.continuity * 0.12f
+                        + evidence.separation * 0.15f
+                        + coverageScore * 0.04f
+                        + geometryScore * 0.06f
+                        + endpointTermination * 0.16f
+                        + borderCompleteness * 0.04f;
+            }
             if (score > bestScore) {
                 bestScore = score;
                 best = new CardDetection(
@@ -1646,6 +1750,56 @@ public final class CardImageProcessor {
         variants.add(new OcrVariant("unterkante-metadata-scharf-" + rotation, sharpenForOcr(metadataGray)));
         metadataGray.recycle();
         metadata.recycle();
+    }
+
+    /** Yu-Gi-Oh! set code, ATK/DEF and the 8-digit passcode live below the artwork. */
+    private static void addYuGiOhMetadataOcrVariants(
+            List<OcrVariant> variants, Bitmap card, int rotation
+    ) {
+        addSemanticRoi(variants, card, 0.54f, 0.86f, 1300,
+                "untertext-yugioh-normal-" + rotation, true);
+        addSemanticRoi(variants, card, 0.76f, 1f, 1800,
+                "unterkante-yugioh-passcode-" + rotation, true);
+    }
+
+    /** One Piece character names are physically low on the card but semantically the title. */
+    private static void addOnePieceNameOcrVariants(
+            List<OcrVariant> variants, Bitmap card, int rotation
+    ) {
+        addSemanticRoi(variants, card, 0.58f, 0.88f, 1450,
+                "kopfzeile-onepiece-normal-" + rotation, true);
+    }
+
+    /** One Piece card code and counter metadata are concentrated at the lower/right edge. */
+    private static void addOnePieceMetadataOcrVariants(
+            List<OcrVariant> variants, Bitmap card, int rotation
+    ) {
+        addSemanticRoi(variants, card, 0.70f, 1f, 1700,
+                "unterkante-onepiece-code-" + rotation, true);
+    }
+
+    private static void addSemanticRoi(
+            List<OcrVariant> variants,
+            Bitmap card,
+            float topFraction,
+            float bottomFraction,
+            int targetWidth,
+            String name,
+            boolean addEnhanced
+    ) {
+        int top = clamp(Math.round(card.getHeight() * topFraction), 0, card.getHeight() - 2);
+        int bottom = clamp(Math.round(card.getHeight() * bottomFraction), top + 2, card.getHeight());
+        Bitmap roi = Bitmap.createBitmap(card, 0, top, card.getWidth(), bottom - top);
+        Bitmap scaled = Bitmap.createScaledBitmap(
+                roi,
+                targetWidth,
+                Math.max(2, Math.round(roi.getHeight() * targetWidth / (float) roi.getWidth())),
+                true
+        );
+        variants.add(new OcrVariant(name, scaled));
+        if (addEnhanced) variants.add(new OcrVariant(name.replace("-normal-", "-kontrast-"),
+                enhanceForOcr(scaled)));
+        if (roi != card) roi.recycle();
     }
 
     /** Stage/evolution line below the title. Kept separate so it cannot become the main title. */

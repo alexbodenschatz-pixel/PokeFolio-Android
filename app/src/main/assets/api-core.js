@@ -230,16 +230,16 @@
     const setCode = String(data.setCode || '').trim().toUpperCase();
     const passcode = String(data.passcode || '').replace(/\D/g, '');
     const name = String(manual || data.name || '').replace(/\s+/g, ' ').trim();
-    if (setCode) {
-      urls.push('https://db.ygoprodeck.com/api/v7/cardsetsinfo.php?'
-        + new URLSearchParams({setcode: setCode}).toString());
-    }
     const localized = /^(?:de|fr|it|pt)$/i.test(String(language || ''))
       ? String(language).toLowerCase() : '';
     if (/^\d{8}$/.test(passcode)) {
       const params = {id: passcode};
       if (localized) params.language = localized;
       urls.push('https://db.ygoprodeck.com/api/v7/cardinfo.php?' + new URLSearchParams(params).toString());
+    }
+    if (setCode) {
+      urls.push('https://db.ygoprodeck.com/api/v7/cardsetsinfo.php?'
+        + new URLSearchParams({setcode: setCode}).toString());
     }
     if (name) {
       const params = {fname: name, num: '30', offset: '0'};
