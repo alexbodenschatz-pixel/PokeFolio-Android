@@ -1,5 +1,6 @@
 package de.pokefolio.app;
 
+import android.content.ContentResolver;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
@@ -10,17 +11,46 @@ import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.PointF;
 import android.graphics.RectF;
+import android.net.Uri;
 
 import androidx.exifinterface.media.ExifInterface;
 
 import java.io.File;
 import java.io.IOException;
+import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.List;
 
 /** Image normalization shared by camera captures and gallery OCR. */
 public final class CardImageProcessor {
     private CardImageProcessor() {
+    }
+
+    /**
+     * Result of the one and only source-orientation normalization step. The returned pixels are
+     * physically upright according to EXIF; downstream card-layout orientation must start from
+     * this bitmap and must never consult the source EXIF tag again.
+     */
+    public static final class NormalizedSource {
+        public final Bitmap bitmap;
+        public final int originalExifOrientation;
+        public final boolean sourceExifApplied;
+        public final int exifRotationDegrees;
+        public final boolean mirrored;
+
+        NormalizedSource(
+                Bitmap bitmap,
+                int originalExifOrientation,
+                boolean sourceExifApplied,
+                int exifRotationDegrees,
+                boolean mirrored
+        ) {
+            this.bitmap = bitmap;
+            this.originalExifOrientation = originalExifOrientation;
+            this.sourceExifApplied = sourceExifApplied;
+            this.exifRotationDegrees = exifRotationDegrees;
+            this.mirrored = mirrored;
+        }
     }
 
     public static final class OcrVariant {
@@ -266,6 +296,99 @@ public final class CardImageProcessor {
             oriented.recycle();
         }
         return scaled;
+    }
+
+    /**
+     * Decodes a gallery/content URI without resolving it to a filesystem path. EXIF is read from
+     * a dedicated stream, pixels are decoded from fresh streams, and all eight EXIF transforms
+     * are applied exactly once before the bitmap enters crop/OCR/matching.
+     */
+    public static NormalizedSource decodeAndOrient(
+            ContentResolver resolver,
+            Uri uri,
+            int maxDimension
+    ) throws IOException {
+        if (resolver == null || uri == null) throw new IOException("Das Upload-Bild ist nicht lesbar.");
+        int orientation = ExifInterface.ORIENTATION_NORMAL;
+        try (InputStream stream = resolver.openInputStream(uri)) {
+            if (stream == null) throw new IOException("Das Upload-Bild ist nicht mehr verfügbar.");
+            ExifInterface exif = new ExifInterface(stream);
+            orientation = sanitizeExifOrientation(exif.getAttributeInt(
+                    ExifInterface.TAG_ORIENTATION,
+                    ExifInterface.ORIENTATION_NORMAL
+            ));
+        } catch (IOException exifError) {
+            // PNGs, screenshots and some provider-backed images have no readable EXIF block.
+            // Their decoded pixel orientation is already authoritative.
+            orientation = ExifInterface.ORIENTATION_NORMAL;
+        }
+
+        BitmapFactory.Options bounds = new BitmapFactory.Options();
+        bounds.inJustDecodeBounds = true;
+        try (InputStream stream = resolver.openInputStream(uri)) {
+            if (stream == null) throw new IOException("Das Upload-Bild ist nicht mehr verfügbar.");
+            BitmapFactory.decodeStream(stream, null, bounds);
+        }
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
+            throw new IOException("Das Upload-Bildformat wird nicht unterstützt.");
+        }
+        int sampleSize = 1;
+        while (Math.max(bounds.outWidth / sampleSize, bounds.outHeight / sampleSize)
+                > maxDimension * 1.35f) {
+            sampleSize *= 2;
+        }
+        BitmapFactory.Options options = new BitmapFactory.Options();
+        options.inSampleSize = sampleSize;
+        options.inPreferredConfig = Bitmap.Config.ARGB_8888;
+        Bitmap decoded;
+        try (InputStream stream = resolver.openInputStream(uri)) {
+            if (stream == null) throw new IOException("Das Upload-Bild ist nicht mehr verfügbar.");
+            decoded = BitmapFactory.decodeStream(stream, null, options);
+        }
+        if (decoded == null) throw new IOException("Das Upload-Bild konnte nicht dekodiert werden.");
+
+        Bitmap oriented = applyExifOrientation(decoded, orientation);
+        if (oriented != decoded) decoded.recycle();
+        Bitmap scaled = scaleDown(oriented, maxDimension);
+        if (scaled != oriented) oriented.recycle();
+        return new NormalizedSource(
+                scaled,
+                orientation,
+                orientation != ExifInterface.ORIENTATION_NORMAL,
+                exifRotationDegrees(orientation),
+                isMirroredExifOrientation(orientation)
+        );
+    }
+
+    /** Package-visible for device-side regression tests. */
+    static Bitmap applyExifOrientation(Bitmap source, int orientation) {
+        Matrix matrix = exifMatrix(sanitizeExifOrientation(orientation));
+        return matrix.isIdentity()
+                ? source
+                : Bitmap.createBitmap(source, 0, 0, source.getWidth(), source.getHeight(), matrix, true);
+    }
+
+    private static int sanitizeExifOrientation(int orientation) {
+        return orientation >= ExifInterface.ORIENTATION_NORMAL
+                && orientation <= ExifInterface.ORIENTATION_ROTATE_270
+                ? orientation : ExifInterface.ORIENTATION_NORMAL;
+    }
+
+    private static int exifRotationDegrees(int orientation) {
+        if (orientation == ExifInterface.ORIENTATION_ROTATE_180
+                || orientation == ExifInterface.ORIENTATION_FLIP_VERTICAL) return 180;
+        if (orientation == ExifInterface.ORIENTATION_TRANSPOSE
+                || orientation == ExifInterface.ORIENTATION_ROTATE_90) return 90;
+        if (orientation == ExifInterface.ORIENTATION_TRANSVERSE
+                || orientation == ExifInterface.ORIENTATION_ROTATE_270) return 270;
+        return 0;
+    }
+
+    private static boolean isMirroredExifOrientation(int orientation) {
+        return orientation == ExifInterface.ORIENTATION_FLIP_HORIZONTAL
+                || orientation == ExifInterface.ORIENTATION_FLIP_VERTICAL
+                || orientation == ExifInterface.ORIENTATION_TRANSPOSE
+                || orientation == ExifInterface.ORIENTATION_TRANSVERSE;
     }
 
     private static Matrix exifMatrix(int orientation) {

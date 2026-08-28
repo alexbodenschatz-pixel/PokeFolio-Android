@@ -26,9 +26,11 @@ import android.webkit.WebView;
 import android.webkit.WebViewClient;
 
 import androidx.core.graphics.Insets;
+import androidx.core.content.FileProvider;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowCompat;
 import androidx.core.view.WindowInsetsCompat;
+import androidx.exifinterface.media.ExifInterface;
 
 import com.google.mlkit.vision.common.InputImage;
 import com.google.mlkit.vision.text.Text;
@@ -44,6 +46,8 @@ import org.json.JSONObject;
 
 import java.io.BufferedReader;
 import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
@@ -81,6 +85,7 @@ public final class MainActivity extends Activity {
 
     private WebView webView;
     private ValueCallback<Uri[]> fileCallback;
+    /** One-shot metadata for either an authoritative CameraX crop or a normalized upload. */
     private String pendingFileCaptureMetadata = "";
     private String bulkScannerRequestId;
     private ExecutorService bridgeExecutor;
@@ -124,7 +129,7 @@ public final class MainActivity extends Activity {
         settings.setAllowContentAccess(true);
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
         settings.setMediaPlaybackRequiresUserGesture(false);
-        settings.setUserAgentString(settings.getUserAgentString() + " PokeFolio/0.16.1");
+        settings.setUserAgentString(settings.getUserAgentString() + " PokeFolio/0.16.2");
 
         webView.addJavascriptInterface(new NativeBridge(), "PokeNative");
         webView.setWebViewClient(new WebViewClient() {
@@ -505,7 +510,7 @@ public final class MainActivity extends Activity {
             connection.setReadTimeout(8000);
             connection.setInstanceFollowRedirects(false);
             connection.setRequestProperty("Accept", "image/avif,image/webp,image/*");
-            connection.setRequestProperty("User-Agent", "PokeFolio/0.16.1 Android");
+            connection.setRequestProperty("User-Agent", "PokeFolio/0.16.2 Android");
             int status = connection.getResponseCode();
             if (status < 200 || status >= 300) {
                 throw new IOException("Kartenbild HTTP " + status);
@@ -648,13 +653,18 @@ public final class MainActivity extends Activity {
                     ? selection.detectedProfile
                     : profile;
             if ("auto".equals(effectiveProfile)) effectiveProfile = "pokemon";
+            int appliedRotation = selection.resolvedRotation();
             List<CardImageProcessor.OcrVariant> detailed =
                     CardImageProcessor.createProfileOcrVariants(
-                            source, selection.rotation, effectiveProfile);
+                            source, appliedRotation, effectiveProfile);
             source.recycle();
             try {
-                output.put("orientation", selection.rotation);
+                output.put("orientation", appliedRotation);
+                output.put("orientationBestRotation", selection.rotation);
                 output.put("orientationScore", selection.score);
+                output.put("orientationSecondScore", selection.secondScoreValue());
+                output.put("orientationMargin", selection.margin());
+                output.put("orientationConfident", selection.isConfident());
                 output.put("detectedProfile", effectiveProfile);
                 output.put("orientationProbes", probeDiagnostics);
                 output.put("orientationMs", orientationMs);
@@ -663,13 +673,14 @@ public final class MainActivity extends Activity {
             }
             if (isDebugBuild()) {
                 Log.d(TAG, String.format(Locale.US,
-                        "OCR_STAGE orientation_complete rotation=%d score=%.2f ms=%.2f profile=%s detailed=%d",
-                        selection.rotation, selection.score, orientationMs,
-                        effectiveProfile, detailed.size()));
+                        "OCR_STAGE orientation_complete best=%d applied=%d score=%.2f second=%.2f margin=%.2f confident=%s ms=%.2f profile=%s detailed=%d",
+                        selection.rotation, appliedRotation, selection.score,
+                        selection.secondScoreValue(), selection.margin(), selection.isConfident(),
+                        orientationMs, effectiveProfile, detailed.size()));
             }
             recognizeVariant(requestId, output, recognizer, detailed, 0, new JSONArray(),
                     new LinkedHashSet<>(), System.nanoTime(), recognitionStarted,
-                    selection.rotation, orientationMs);
+                    appliedRotation, orientationMs);
             return;
         }
 
@@ -782,14 +793,38 @@ public final class MainActivity extends Activity {
     private static final class OrientationSelection {
         int rotation;
         float score = -Float.MAX_VALUE;
+        int secondRotation;
+        float secondScore = -Float.MAX_VALUE;
         String detectedProfile = "auto";
 
         void consider(int candidateRotation, float candidateScore, String candidateProfile) {
             if (candidateScore > score) {
+                secondRotation = rotation;
+                secondScore = score;
                 rotation = candidateRotation;
                 score = candidateScore;
                 detectedProfile = candidateProfile == null ? "auto" : candidateProfile;
+            } else if (candidateScore > secondScore) {
+                secondRotation = candidateRotation;
+                secondScore = candidateScore;
             }
+        }
+
+        float secondScoreValue() {
+            return secondScore == -Float.MAX_VALUE ? 0f : secondScore;
+        }
+
+        float margin() {
+            return Math.max(0f, score - secondScoreValue());
+        }
+
+        boolean isConfident() {
+            if (rotation == 0) return true;
+            return score >= 2.0f && margin() >= Math.max(1.15f, score * 0.14f);
+        }
+
+        int resolvedRotation() {
+            return isConfident() ? rotation : 0;
         }
     }
 
@@ -931,7 +966,7 @@ public final class MainActivity extends Activity {
             connection.setRequestMethod("GET");
             connection.setRequestProperty("Accept", "application/json");
             connection.setRequestProperty("Cache-Control", "no-cache");
-            connection.setRequestProperty("User-Agent", "PokeFolio/0.16.1 Android");
+            connection.setRequestProperty("User-Agent", "PokeFolio/0.16.2 Android");
             status = connection.getResponseCode();
             InputStream stream = status >= 200 && status < 400
                     ? connection.getInputStream()
@@ -1125,18 +1160,130 @@ public final class MainActivity extends Activity {
         if (requestCode != FILE_CHOOSER || fileCallback == null) {
             return;
         }
-        Uri[] results = null;
-        if (resultCode == RESULT_OK) {
+        if (resultCode != RESULT_OK || data == null) {
+            fileCallback.onReceiveValue(null);
+            fileCallback = null;
+            return;
+        }
+
+        if (data.getBooleanExtra(CameraActivity.EXTRA_NORMALIZED_CARD, false)) {
             synchronized (this) {
                 pendingFileCaptureMetadata = captureMetadataJson(data);
             }
-            results = WebChromeClient.FileChooserParams.parseResult(resultCode, data);
+            Uri[] results = WebChromeClient.FileChooserParams.parseResult(resultCode, data);
             if ((results == null || results.length == 0) && data != null && data.getData() != null) {
                 results = new Uri[]{data.getData()};
             }
+            fileCallback.onReceiveValue(results);
+            fileCallback = null;
+            return;
         }
-        fileCallback.onReceiveValue(results);
+
+        Uri sourceUri = data.getData();
+        if (sourceUri == null && data.getClipData() != null && data.getClipData().getItemCount() > 0) {
+            sourceUri = data.getClipData().getItemAt(0).getUri();
+        }
+        if (sourceUri == null) {
+            fileCallback.onReceiveValue(null);
+            fileCallback = null;
+            return;
+        }
+        final Uri selectedUri = sourceUri;
+        final ValueCallback<Uri[]> callback = fileCallback;
         fileCallback = null;
+        bridgeExecutor.execute(() -> {
+            try {
+                NormalizedUpload normalized = normalizeGalleryUpload(selectedUri);
+                synchronized (MainActivity.this) {
+                    pendingFileCaptureMetadata = normalized.metadata.toString();
+                }
+                runOnUiThread(() -> callback.onReceiveValue(new Uri[]{normalized.uri}));
+            } catch (Exception error) {
+                Log.e(TAG, "UPLOAD_ORIENTATION normalization failed type=decode", error);
+                runOnUiThread(() -> callback.onReceiveValue(null));
+            }
+        });
+    }
+
+    /**
+     * Gallery files are normalized before WebView sees them. The generated JPEG contains
+     * physically oriented pixels and an explicit NORMAL tag, making it the single source of
+     * truth for all later canvas, crop, OCR and matching stages.
+     */
+    private NormalizedUpload normalizeGalleryUpload(Uri sourceUri) throws Exception {
+        CardImageProcessor.NormalizedSource source = CardImageProcessor.decodeAndOrient(
+                getContentResolver(), sourceUri, 2800);
+        File directory = new File(getCacheDir(), "normalized-uploads");
+        if (!directory.isDirectory() && !directory.mkdirs()) {
+            source.bitmap.recycle();
+            throw new IOException("Der interne Upload-Speicher ist nicht verfügbar.");
+        }
+        pruneNormalizedUploads(directory);
+        File output = File.createTempFile("pokefolio-upload-", ".jpg", directory);
+        try {
+            try (FileOutputStream stream = new FileOutputStream(output)) {
+                if (!source.bitmap.compress(Bitmap.CompressFormat.JPEG, 94, stream)) {
+                    throw new IOException("Das normalisierte Upload-Bild konnte nicht gespeichert werden.");
+                }
+            }
+            ExifInterface neutralExif = new ExifInterface(output.getAbsolutePath());
+            neutralExif.setAttribute(ExifInterface.TAG_ORIENTATION,
+                    String.valueOf(ExifInterface.ORIENTATION_NORMAL));
+            neutralExif.saveAttributes();
+            Uri normalizedUri = FileProvider.getUriForFile(
+                    this, getPackageName() + ".fileprovider", output);
+            grantUriPermission(getPackageName(), normalizedUri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            JSONObject metadata = new JSONObject();
+            metadata.put("sourceKind", "upload");
+            metadata.put("sourceExifApplied", true);
+            metadata.put("sourceExifTransformApplied", source.sourceExifApplied);
+            metadata.put("sourceExifOriginalOrientation", source.originalExifOrientation);
+            metadata.put("sourceExifOrientation", ExifInterface.ORIENTATION_NORMAL);
+            metadata.put("sourceExifRotationDegrees", source.exifRotationDegrees);
+            metadata.put("sourceExifMirrored", source.mirrored);
+            metadata.put("bitmapOrientationNormalized", true);
+            metadata.put("width", source.bitmap.getWidth());
+            metadata.put("height", source.bitmap.getHeight());
+            if (isDebugBuild()) {
+                Log.d(TAG, "UPLOAD_ORIENTATION source=content-uri"
+                        + " originalExif=" + source.originalExifOrientation
+                        + " applied=true transformApplied=" + source.sourceExifApplied
+                        + " rotation=" + source.exifRotationDegrees
+                        + " mirrored=" + source.mirrored
+                        + " finalExif=NORMAL"
+                        + " width=" + source.bitmap.getWidth()
+                        + " height=" + source.bitmap.getHeight());
+            }
+            return new NormalizedUpload(normalizedUri, metadata);
+        } catch (Exception error) {
+            if (output.exists() && !output.delete()) {
+                Log.w(TAG, "Unable to remove failed normalized upload");
+            }
+            throw error;
+        } finally {
+            source.bitmap.recycle();
+        }
+    }
+
+    private static void pruneNormalizedUploads(File directory) {
+        File[] files = directory.listFiles((dir, name) -> name.startsWith("pokefolio-upload-")
+                && name.endsWith(".jpg"));
+        if (files == null || files.length <= 12) return;
+        Arrays.sort(files, (left, right) -> Long.compare(left.lastModified(), right.lastModified()));
+        for (int index = 0; index < files.length - 12; index++) {
+            if (!files[index].delete()) Log.w(TAG, "Unable to prune old normalized upload");
+        }
+    }
+
+    private static final class NormalizedUpload {
+        final Uri uri;
+        final JSONObject metadata;
+
+        NormalizedUpload(Uri uri, JSONObject metadata) {
+            this.uri = uri;
+            this.metadata = metadata;
+        }
     }
 
     private String captureMetadataJson(Intent data) {

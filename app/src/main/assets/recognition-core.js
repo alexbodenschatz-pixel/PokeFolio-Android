@@ -2444,7 +2444,7 @@
 
   /** Pure fallback used by tests and older native bridges that do not return an orientation. */
   function selectBestOrientation(ocrResult, selected) {
-    let best = {rotation: 0, score: -1};
+    const ranked = [];
     [0, 90, 180, 270].forEach(rotation => {
       const passes = (ocrResult && ocrResult.passes || []).filter(pass =>
         String(pass.variant || '').endsWith('-' + rotation));
@@ -2455,9 +2455,22 @@
       const score = orientationScore(kind, hints)
         + Number(probabilities[kind] || 0) * 2
         + passes.reduce((sum, pass) => sum + String(pass.text || '').length, 0) / 1600;
-      if (score > best.score) best = {rotation, score};
+      ranked.push({rotation, score});
     });
-    return best;
+    ranked.sort((left, right) => right.score - left.score);
+    const best = ranked[0] || {rotation: 0, score: 0};
+    const second = ranked[1] || {rotation: 0, score: 0};
+    const margin = Math.max(0, best.score - second.score);
+    const confident = best.rotation === 0
+      || (best.score >= 2 && margin >= Math.max(1.15, best.score * 0.14));
+    return {
+      rotation: confident ? best.rotation : 0,
+      bestRotation: best.rotation,
+      score: best.score,
+      secondScore: second.score,
+      margin,
+      confident
+    };
   }
 
   function orientationScore(kind, hints) {

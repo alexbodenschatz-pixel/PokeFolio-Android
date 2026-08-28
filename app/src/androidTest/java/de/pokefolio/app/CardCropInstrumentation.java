@@ -13,8 +13,11 @@ import android.graphics.Path;
 import android.graphics.PointF;
 import android.graphics.Rect;
 import android.graphics.Shader;
+import android.net.Uri;
 import android.os.Bundle;
 import android.util.Log;
+
+import androidx.exifinterface.media.ExifInterface;
 
 import java.util.Locale;
 import java.io.File;
@@ -36,7 +39,8 @@ public final class CardCropInstrumentation extends Instrumentation {
         try {
             int syntheticCases = runCropCases();
             int geometryCases = runPreviewMappingCase() + runSafeFallbackCase() + runTrackingCase()
-                    + runFastDetectorCadenceCase() + runFastDetectorPerformanceCase();
+                    + runFastDetectorCadenceCase() + runFastDetectorPerformanceCase()
+                    + runExifOrientationCases();
             int externalCases = runExternalPhotoCases();
             int total = syntheticCases + geometryCases + externalCases;
             result.putString("stream", "\nCardCropInstrumentation: " + total + "/" + total
@@ -47,6 +51,97 @@ public final class CardCropInstrumentation extends Instrumentation {
             result.putString("stream", "\nCardCropInstrumentation FAILED: " + error + "\n");
             finish(Activity.RESULT_CANCELED, result);
         }
+    }
+
+    private int runExifOrientationCases() throws Exception {
+        int[] orientations = {
+                ExifInterface.ORIENTATION_NORMAL,
+                ExifInterface.ORIENTATION_FLIP_HORIZONTAL,
+                ExifInterface.ORIENTATION_ROTATE_180,
+                ExifInterface.ORIENTATION_FLIP_VERTICAL,
+                ExifInterface.ORIENTATION_TRANSPOSE,
+                ExifInterface.ORIENTATION_ROTATE_90,
+                ExifInterface.ORIENTATION_TRANSVERSE,
+                ExifInterface.ORIENTATION_ROTATE_270
+        };
+        int[] inverses = {
+                ExifInterface.ORIENTATION_NORMAL,
+                ExifInterface.ORIENTATION_FLIP_HORIZONTAL,
+                ExifInterface.ORIENTATION_ROTATE_180,
+                ExifInterface.ORIENTATION_FLIP_VERTICAL,
+                ExifInterface.ORIENTATION_TRANSPOSE,
+                ExifInterface.ORIENTATION_ROTATE_270,
+                ExifInterface.ORIENTATION_TRANSVERSE,
+                ExifInterface.ORIENTATION_ROTATE_90
+        };
+        int completed = 0;
+        for (int index = 0; index < orientations.length; index++) {
+            Bitmap source = orientationPattern();
+            Bitmap transformed = CardImageProcessor.applyExifOrientation(source, orientations[index]);
+            boolean swaps = orientations[index] >= ExifInterface.ORIENTATION_TRANSPOSE;
+            assertTrue("EXIF dimensions " + orientations[index],
+                    transformed.getWidth() == (swaps ? source.getHeight() : source.getWidth())
+                            && transformed.getHeight() == (swaps ? source.getWidth() : source.getHeight()));
+            Bitmap restored = CardImageProcessor.applyExifOrientation(transformed, inverses[index]);
+            assertTrue("EXIF inverse " + orientations[index], restored.sameAs(source));
+            if (restored != transformed) restored.recycle();
+            if (transformed != source) transformed.recycle();
+            source.recycle();
+            completed++;
+        }
+
+        File jpeg = new File(getTargetContext().getCacheDir(), "upload-exif-rotate90.jpg");
+        Bitmap jpegSource = orientationPattern();
+        try (FileOutputStream stream = new FileOutputStream(jpeg)) {
+            assertTrue("EXIF JPEG written", jpegSource.compress(Bitmap.CompressFormat.JPEG, 100, stream));
+        }
+        ExifInterface exif = new ExifInterface(jpeg.getAbsolutePath());
+        exif.setAttribute(ExifInterface.TAG_ORIENTATION,
+                String.valueOf(ExifInterface.ORIENTATION_ROTATE_90));
+        exif.saveAttributes();
+        CardImageProcessor.NormalizedSource decoded = CardImageProcessor.decodeAndOrient(
+                getTargetContext().getContentResolver(), Uri.fromFile(jpeg), 1000);
+        assertTrue("ContentResolver EXIF applied", decoded.sourceExifApplied);
+        assertTrue("ContentResolver original EXIF retained for diagnostics",
+                decoded.originalExifOrientation == ExifInterface.ORIENTATION_ROTATE_90);
+        assertTrue("ContentResolver EXIF dimensions",
+                decoded.bitmap.getWidth() == jpegSource.getHeight()
+                        && decoded.bitmap.getHeight() == jpegSource.getWidth());
+        decoded.bitmap.recycle();
+        jpegSource.recycle();
+        if (!jpeg.delete()) Log.w(TAG, "Unable to remove EXIF test JPEG");
+
+        completed += runUploadWithoutExif("upload-no-exif.jpg", Bitmap.CompressFormat.JPEG);
+        completed += runUploadWithoutExif("upload-screenshot.png", Bitmap.CompressFormat.PNG);
+        return completed + 1;
+    }
+
+    private int runUploadWithoutExif(String name, Bitmap.CompressFormat format) throws Exception {
+        File file = new File(getTargetContext().getCacheDir(), name);
+        Bitmap source = orientationPattern();
+        try (FileOutputStream stream = new FileOutputStream(file)) {
+            assertTrue(name + " written", source.compress(format, 100, stream));
+        }
+        CardImageProcessor.NormalizedSource decoded = CardImageProcessor.decodeAndOrient(
+                getTargetContext().getContentResolver(), Uri.fromFile(file), 1000);
+        assertTrue(name + " keeps NORMAL pixels", !decoded.sourceExifApplied
+                && decoded.originalExifOrientation == ExifInterface.ORIENTATION_NORMAL);
+        assertTrue(name + " keeps dimensions", decoded.bitmap.getWidth() == source.getWidth()
+                && decoded.bitmap.getHeight() == source.getHeight());
+        decoded.bitmap.recycle();
+        source.recycle();
+        if (!file.delete()) Log.w(TAG, "Unable to remove " + name);
+        return 1;
+    }
+
+    private static Bitmap orientationPattern() {
+        Bitmap bitmap = Bitmap.createBitmap(4, 3, Bitmap.Config.ARGB_8888);
+        for (int y = 0; y < bitmap.getHeight(); y++) {
+            for (int x = 0; x < bitmap.getWidth(); x++) {
+                bitmap.setPixel(x, y, Color.rgb(20 + x * 45, 25 + y * 70, 30 + (x + y) * 20));
+            }
+        }
+        return bitmap;
     }
 
     /** Optional real-photo probes are copied into target cache by the local QA script. */

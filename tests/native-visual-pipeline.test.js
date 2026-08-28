@@ -46,7 +46,9 @@ test('richtet mit kleinen Probes aus und startet vollständige OCR nur für eine
   assert.match(processor, /createProfileOcrVariants/);
   assert.match(activity, /recognizeOrientationVariant/);
   assert.match(activity, /OCR_STAGE orientation_complete/);
-  assert.match(activity, /output\.put\("orientation", selection\.rotation\)/);
+  assert.match(activity, /output\.put\("orientation", appliedRotation\)/);
+  assert.match(activity, /output\.put\("orientationMargin", selection\.margin\(\)\)/);
+  assert.match(activity, /selection\.resolvedRotation\(\)/);
   assert.match(activity, /OCR_PERF OrientationMs=/);
   assert.match(app, /PokeNative\.recognizeCardProfiled/);
   assert.match(app, /Richte Karte aus/);

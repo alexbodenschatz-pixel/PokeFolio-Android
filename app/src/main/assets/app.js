@@ -53,6 +53,7 @@ const pendingVisual = new Map();
 const pendingPreparation = new Map();
 const previewUrls = new Map();
 const normalizedCaptureMetadata = new Map();
+const sourceImageMetadata = new Map();
 
 /** The native normalized card is authoritative after detection; CSS must only contain it. */
 function displayNormalizedCard(id, prepared) {
@@ -252,8 +253,18 @@ function bindPhoto(id) {
     const file = input.files[0];
     if (!file) return;
     const captureMetadata = consumeNativeCaptureMetadata();
+    if (captureMetadata) sourceImageMetadata.set(id, captureMetadata);
+    else sourceImageMetadata.delete(id);
     if (captureMetadata && captureMetadata.normalized) normalizedCaptureMetadata.set(id, captureMetadata);
     else normalizedCaptureMetadata.delete(id);
+    if (captureMetadata && captureMetadata.bitmapOrientationNormalized) {
+      console.debug('[PokeFolio Upload] EXIF_NORMALIZED source=' + (captureMetadata.sourceKind || 'upload')
+        + ' original=' + captureMetadata.sourceExifOriginalOrientation
+        + ' final=' + captureMetadata.sourceExifOrientation
+        + ' rotation=' + (captureMetadata.sourceExifRotationDegrees || 0)
+        + ' mirrored=' + Boolean(captureMetadata.sourceExifMirrored)
+        + ' pixels=' + captureMetadata.width + 'x' + captureMetadata.height);
+    }
     if (previewUrls.has(id)) URL.revokeObjectURL(previewUrls.get(id));
     const previewUrl = URL.createObjectURL(file);
     previewUrls.set(id, previewUrl);
@@ -1248,12 +1259,21 @@ function nativeOcr(dataUrl, language, profile = selectedTcg || 'auto') {
 function mergeOcrResults(primary, fallback, requestedLanguage) {
   const passes = [...(primary && primary.passes || []), ...(fallback && fallback.passes || [])];
   const texts = [primary && primary.text, fallback && fallback.text].filter(Boolean);
+  const primaryStrength = primary && primary.orientationConfident !== false
+    ? Number(primary.orientationScore || 0) + Number(primary.orientationMargin || 0) : -1;
+  const fallbackStrength = fallback && fallback.orientationConfident !== false
+    ? Number(fallback.orientationScore || 0) + Number(fallback.orientationMargin || 0) : -1;
+  const orientationSource = fallbackStrength > primaryStrength ? fallback : primary;
   return {
     ...(primary || {}),
     ok: Boolean(primary && primary.ok || fallback && fallback.ok),
     language: requestedLanguage || primary && primary.language || '',
-    orientation: fallback && Number.isFinite(Number(fallback.orientation))
-      ? Number(fallback.orientation) : primary && primary.orientation,
+    orientation: orientationSource && Number.isFinite(Number(orientationSource.orientation))
+      ? Number(orientationSource.orientation) : 0,
+    orientationScore: Number(orientationSource && orientationSource.orientationScore || 0),
+    orientationSecondScore: Number(orientationSource && orientationSource.orientationSecondScore || 0),
+    orientationMargin: Number(orientationSource && orientationSource.orientationMargin || 0),
+    orientationConfident: orientationSource ? orientationSource.orientationConfident !== false : false,
     orientationMs: Number(primary && primary.orientationMs || 0)
       + Number(fallback && fallback.orientationMs || 0),
     detailedOcrMs: Number(primary && primary.detailedOcrMs || 0)
@@ -1426,6 +1446,13 @@ function nativeGet(url) {
 }
 
 function chooseRecognitionRotation(ocrResult) {
+  if (ocrResult && ocrResult.orientationConfident === false) {
+    console.debug('[PokeFolio Orientation] KEEP_SOURCE reason=low-margin best='
+      + Number(ocrResult.orientationBestRotation || ocrResult.orientation || 0)
+      + ' score=' + Number(ocrResult.orientationScore || 0).toFixed(2)
+      + ' margin=' + Number(ocrResult.orientationMargin || 0).toFixed(2));
+    return 0;
+  }
   if (ocrResult && [0, 90, 180, 270].includes(Number(ocrResult.orientation))) {
     return Number(ocrResult.orientation);
   }
@@ -2620,6 +2647,7 @@ async function runBulkRecognition(dataUrl, previewUrl, normalizedCapture = null)
         console.warn('[PokeFolio Bulk] Kartenkontur unsicher: ' + error.message);
       }
     }
+    if (normalizedCapture) prepared = {...prepared, sourceOrientation: normalizedCapture};
     if (bulkPreviewUrl && bulkPreviewUrl.startsWith('blob:')) URL.revokeObjectURL(bulkPreviewUrl);
     bulkSourceDataUrl = prepared.dataUrl || dataUrl;
     bulkPreviewUrl = bulkSourceDataUrl;
@@ -2752,10 +2780,11 @@ $('#bulkGalleryButton').onclick = () => $('#bulkFile').click();
 $('#bulkFile').onchange = async event => {
   const file = event.target.files && event.target.files[0];
   if (!file) return;
+  const sourceMetadata = consumeNativeCaptureMetadata();
   const preview = URL.createObjectURL(file);
   try {
     const dataUrl = await ocrDataUrl(file);
-    await runBulkRecognition(dataUrl, preview);
+    await runBulkRecognition(dataUrl, preview, sourceMetadata);
   } catch (error) {
     URL.revokeObjectURL(preview);
     setBulkStatus('bad', 'Bild konnte nicht verarbeitet werden', error.message);
@@ -2963,6 +2992,7 @@ async function runRecognition(manual = false) {
   try {
     const dataUrl = await ocrDataUrl(file);
     let prepared;
+    const sourceMetadata = sourceImageMetadata.get('front') || null;
     const normalizedCapture = normalizedCaptureMetadata.get('front');
     if (normalizedCapture && normalizedCapture.normalized) {
       prepared = {...normalizedCapture, dataUrl, prepared: true};
@@ -2975,6 +3005,7 @@ async function runRecognition(manual = false) {
         console.warn('[PokeFolio Learning] Kartenkontur unsicher: ' + error.message);
       }
     }
+    if (sourceMetadata) prepared = {...prepared, sourceOrientation: sourceMetadata};
     displayNormalizedCard('front', prepared);
     setRecState('busy', 'Richte Karte aus …', 'Bestimme die aufrechte Kartenorientierung vor der Detail-OCR.');
     const ocrAnalysis = await recognizeCardFeatures(
@@ -3526,6 +3557,7 @@ function clearGradingPhotos(keepFront = false) {
       previewUrls.delete(id);
     }
     normalizedCaptureMetadata.delete(id);
+    sourceImageMetadata.delete(id);
   });
   if (!keepFront) {
     gradingDraft.frontDataUrl = '';
@@ -3953,6 +3985,7 @@ function reset() {
     if (previewUrls.has(id)) URL.revokeObjectURL(previewUrls.get(id));
     previewUrls.delete(id);
     normalizedCaptureMetadata.delete(id);
+    sourceImageMetadata.delete(id);
   });
   ['name', 'set', 'number'].forEach(id => $('#' + id).value = '');
   renderIdentificationActions();
