@@ -141,7 +141,7 @@ test('erzeugt einen deutschsprachigen TCGdex-Ausweichweg für Name und Collector
   assert.ok(urls.some(url => url.startsWith('https://api.tcgdex.net/v2/de/cards?')));
   assert.ok(urls.some(url => url.includes('name=Glurak+ex')));
   assert.ok(urls.some(url => url.includes('localId=25')));
-  assert.ok(urls.every(url => !/cards\?localId=/.test(url)));
+  assert.ok(urls.some(url => /cards\?localId=25/.test(url)));
   assert.ok(urls.every(url => url.includes('pagination%3AitemsPerPage=100')));
 });
 

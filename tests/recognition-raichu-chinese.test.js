@@ -38,7 +38,8 @@ test('liest chinesische Footer-Metadaten per Consensus und verwendet HP nie als 
   assert.equal(hints.script, 'Chinese');
   assert.equal(hints.language, 'zh-CN');
   assert.equal(hints.cardType, 'pokemon');
-  assert.equal(hints.mainTitle, '');
+  assert.equal(hints.mainTitle, '\u96f7\u4e18');
+  assert.equal(hints.localizedName, '\u96f7\u4e18');
   assert.equal(hints.hp, '150');
   assert.equal(hints.collectorNumbers[0].number, '151');
   assert.equal(hints.collectorNumbers[0].total, '208');

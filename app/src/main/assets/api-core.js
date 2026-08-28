@@ -196,6 +196,16 @@
     const numbers = [...new Set((hints && hints.collectorNumbers || []).slice(0, 2)
       .map(item => String(item.number || '').toUpperCase().replace(/[^A-Z0-9]/g, ''))
       .filter(Boolean))];
+    const setCodes = [...new Set((hints && hints.pokemonSetCodes || [])
+      .filter(item => Number(item.votes) >= 1.1)
+      .map(item => String(item.value || '').trim())
+      .filter(value => /^[A-Z0-9]{2,8}$/i.test(value)))];
+    const urls = [];
+    // Exact regional print endpoints are cheapest and most precise. A 404 is settled
+    // independently and must not cancel localId/name fallbacks.
+    if (numbers[0]) setCodes.slice(0, 2).forEach(setId => {
+      urls.push(`${TCGDEX_ENDPOINT}/${lang}/cards/${encodeURIComponent(setId + '-' + numbers[0])}`);
+    });
     const variants = [];
     const cardType = String(hints && hints.cardType || 'unknown');
     if ((cardType === 'trainer' || cardType === 'energy') && numbers.length) {
@@ -205,21 +215,21 @@
       if (names[0]) variants.push({name: names[0], localId: numbers[0]});
       names.forEach(name => variants.push({name}));
     } else {
+      // Collector number is the primary retrieval key, especially for Asian cards whose
+      // localized title OCR may be absent. Names remain confirmation/fallback signals.
+      numbers.forEach(localId => variants.push({localId}));
+      if (names[0] && numbers[0]) variants.push({name: names[0], localId: numbers[0]});
       names.forEach(name => variants.push({name}));
-      // A localId such as 48 occurs in many unrelated sets. It is useful only as
-      // a fallback when OCR found no reliable Pokemon name; otherwise the combined
-      // query is both more precise and dramatically cheaper to hydrate.
-      if (!names.length) numbers.forEach(localId => variants.push({localId}));
-      if (names[0] && numbers[0]) variants.unshift({name: names[0], localId: numbers[0]});
     }
-    return [...new Set(variants.map(parameters => {
+    variants.forEach(parameters => {
       const query = new URLSearchParams({
         ...parameters,
         'pagination:page': '1',
         'pagination:itemsPerPage': '100'
       });
-      return `${TCGDEX_ENDPOINT}/${lang}/cards?${query.toString()}`;
-    }))].slice(0, 5);
+      urls.push(`${TCGDEX_ENDPOINT}/${lang}/cards?${query.toString()}`);
+    });
+    return [...new Set(urls)].slice(0, 7);
   }
 
   /** Settles every variant independently so one bad endpoint never cancels the other results. */

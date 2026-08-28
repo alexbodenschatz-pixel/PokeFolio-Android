@@ -336,6 +336,7 @@ function renderRecognitionFeatures(hints) {
   ];
   const rows = [
     ['Schrift', hints.script || 'nicht sicher erkannt'],
+    ['Lokalisierter Name', hints.localizedName || 'nicht erkannt'],
     ['Region', hints.region || 'nicht sicher erkannt'],
     ['Kartentyp', cardTypeLabel],
     ['Haupttitel', hints.mainTitle || identity.baseName || 'nicht zuverlässig erkannt'],
@@ -349,6 +350,13 @@ function renderRecognitionFeatures(hints) {
     ['Collector Number', collector
       ? [collector.number, collector.total].filter(Boolean).join('/')
       : 'nicht erkannt'],
+    ['Bottom OCR', hints.ocrByRegion && hints.ocrByRegion.bottom || 'nicht erkannt'],
+    ['Candidate Retrieval', hints.candidateRetrievalStrategy || 'noch offen'],
+    ['Candidate Count', Number.isFinite(Number(hints.candidateCount))
+      ? String(hints.candidateCount) : 'noch offen'],
+    ['Artwork Match', Number.isFinite(Number(hints.bestArtworkScore))
+      ? Math.round(Number(hints.bestArtworkScore) * 100) + ' %' : 'noch offen'],
+    ['Final Identity', hints.finalCanonicalIdentity || 'noch nicht bestimmt'],
     ['Seltenheit', hints.rarity || 'nicht erkannt'],
     ['Set', setCode && setCode.value || 'nicht erkannt'],
     ['Attacken', (hints.attackHints || []).slice(0, 3).map(item => item.value).join(', ') || 'nicht erkannt'],
@@ -403,6 +411,8 @@ function debugRecognitionFeatures(hints) {
     + ` Sprache=${hints && hints.language || '<unsicher>'}`
     + ` Script=${hints && hints.script || '<unsicher>'}`
     + ` Region=${hints && hints.region || '<unsicher>'}`
+    + ` CandidateRetrieval=${hints && hints.candidateRetrievalStrategy || '<offen>'}`
+    + ` CandidateCount=${Number.isFinite(Number(hints && hints.candidateCount)) ? hints.candidateCount : '<offen>'}`
     + ` Titelquelle=${hints && hints.titleSource || '<keine>'}`
     + ` WholeOCR=${JSON.stringify(hints && hints.ocrByRegion && hints.ocrByRegion.whole || '').slice(0, 500)}`
     + ` TopOCR=${JSON.stringify(hints && hints.ocrByRegion && hints.ocrByRegion.top || '').slice(0, 500)}`
@@ -422,6 +432,8 @@ function debugRecognitionCandidates(stage, candidatesToLog) {
     const details = candidate.matchDetails || {};
     console.debug('[PokeFolio Recognition] Stufe=' + stage
       + ` Rang=${index + 1} Kandidat=${candidate.name || '<ohne Titel>'}`
+      + ` CanonicalIdentity=${candidate.canonicalIdentity || '<unbekannt>'}`
+      + ` LocalizedName=${candidate.localizedName || '<unbekannt>'}`
       + ` Nummer=${candidate.number || '<keine>'}`
       + ` Set=${candidate.set || '<unbekannt>'}`
       + ` FinalIdentity=${Math.round((Number(candidate.identificationScore) || Number(candidate.confidence) || 0) * 100)}%`
@@ -1507,6 +1519,8 @@ function pokemonCardFromApi(card) {
     cardType: Recognition.normalizedPokemonCardType(card.supertype),
     id: card.id,
     name: card.name,
+    canonicalIdentity: card.name,
+    localizedName: card.name,
     number: card.number,
     set: card.set && card.set.name,
     setId: card.set && card.set.id,
@@ -1552,11 +1566,15 @@ function pokemonCardFromTcgdex(card, language = 'de') {
   const cardCount = set.cardCount || {};
   const imageSmall = tcgdexImageUrl(card.image, 'low');
   const imageLarge = tcgdexImageUrl(card.image, 'high');
-  return {
+  const dexId = Array.isArray(card.dexId) ? card.dexId : [];
+  return PokeAsia.enrichCanonical({
     tcg: 'pokemon',
     cardType: Recognition.normalizedPokemonCardType(card.category),
     id: 'tcgdex:' + card.id,
     name: card.name,
+    localizedName: card.name,
+    dexId,
+    speciesId: Number(dexId[0]) || 0,
     number: card.localId || card.number || '',
     set: set.name || '',
     setId: set.id || String(card.id || '').split('-')[0],
@@ -1589,7 +1607,7 @@ function pokemonCardFromTcgdex(card, language = 'de') {
     genericPrice: null,
     source: `TCGdex (${languageLabel(language)})`,
     price: null
-  };
+  });
 }
 
 async function mapWithConcurrency(values, concurrency, mapper) {
@@ -1646,6 +1664,12 @@ function mergePokemonCandidate(current, incoming, language) {
   return {
     ...current,
     name: preferIncomingText && incoming.name ? incoming.name : current.name || incoming.name,
+    localizedName: preferIncomingText && incoming.localizedName
+      ? incoming.localizedName : current.localizedName || incoming.localizedName || current.name || incoming.name,
+    canonicalIdentity: current.canonicalIdentity || incoming.canonicalIdentity || '',
+    speciesId: current.speciesId || incoming.speciesId || 0,
+    dexId: current.dexId && current.dexId.length ? current.dexId : incoming.dexId || [],
+    canonicalNames: {...(incoming.canonicalNames || {}), ...(current.canonicalNames || {})},
     set: preferIncomingText && incoming.set ? incoming.set : current.set || incoming.set,
     setId: current.setId || incoming.setId,
     series: current.series || incoming.series,
@@ -1707,8 +1731,13 @@ async function pokemonSearch(hints, manual = '', runToken) {
   // Chinese use a controlled structured fallback instead of mixing arbitrary results.
   const language = ({de: 'de', en: 'en', ja: 'ja', 'zh-TW': 'zh-tw', 'zh-CN': 'zh-tw'})[requestedLanguage] || 'en';
   const candidateLanguage = language === 'zh-tw' ? 'zh-TW' : language;
+  const retrievalStrategy = PokeAsia.retrievalStrategy(hints);
+  hints.candidateRetrievalStrategy = retrievalStrategy;
+  const regionalPrints = PokeAsia.exactRegionalPrints(hints);
   const pokemonTcgUrls = Api.buildPokemonTcgUrls(hints, manual);
   const tcgdexUrls = Api.buildTcgdexUrls(hints, manual, language);
+  console.debug('[PokeFolio Recognition] Candidate Retrieval=' + retrievalStrategy
+    + ' RegionalExact=' + regionalPrints.length);
   console.debug('[PokeFolio Recognition] Stufe=Suchanfrage Quelle=PokemonTCG URLs=' + (pokemonTcgUrls.join(' | ') || '<keine>'));
   console.debug('[PokeFolio Recognition] Stufe=Suchanfrage Quelle=TCGdex URLs=' + (tcgdexUrls.join(' | ') || '<keine>'));
   const pokemonTcgPromise = Api.settleSearchVariants(
@@ -1732,7 +1761,11 @@ async function pokemonSearch(hints, manual = '', runToken) {
   });
   const tcgdexBriefs = new Map();
   tcgdex.values.forEach(response => {
-    const list = Array.isArray(response.value) ? response.value : response.value && response.value.data || [];
+    const list = Array.isArray(response.value)
+      ? response.value
+      : Array.isArray(response.value && response.value.data)
+        ? response.value.data
+        : response.value && response.value.id ? [response.value] : [];
     list.forEach(card => tcgdexBriefs.set(card.id, card));
   });
   let tcgdexToHydrate = [...tcgdexBriefs.values()];
@@ -1752,7 +1785,11 @@ async function pokemonSearch(hints, manual = '', runToken) {
   const tcgdexCards = [...tcgdexBriefs.values()].map(brief => hydratedById.get(brief.id) || brief);
 
   const variants = new Map();
-  [...pokemonTcgCards.values(), ...tcgdexCards.map(card => pokemonCardFromTcgdex(card, candidateLanguage))].forEach(candidate => {
+  [
+    ...regionalPrints,
+    ...pokemonTcgCards.values(),
+    ...tcgdexCards.map(card => pokemonCardFromTcgdex(card, candidateLanguage))
+  ].map(candidate => PokeAsia.enrichCanonical(candidate)).forEach(candidate => {
     const key = pokemonVariantKey(candidate);
     variants.set(key, mergePokemonCandidate(variants.get(key), candidate, candidateLanguage));
   });
@@ -1790,8 +1827,28 @@ async function pokemonSearch(hints, manual = '', runToken) {
   });
   debugRecognitionCandidates('TextRanking', broadlyRanked);
 
+  const exactPrinted = broadlyRanked.filter(candidate => {
+    const details = candidate.matchDetails || {};
+    return details.collector === 'match' && details.set === 'match';
+  });
+  const earlyExit = exactPrinted.length === 1
+    && Number(exactPrinted[0].identificationScore || exactPrinted[0].confidence) >= 0.90
+    ? 'NUMBER_SET'
+    : '';
+  if (earlyExit) {
+    console.debug('[PokeFolio Recognition] EARLY_EXIT TCG=POKEMON Strategy=NUMBER_SET cardId='
+      + exactPrinted[0].id);
+  }
+
   return {
     candidates: broadlyRanked,
+    earlyExit,
+    diagnostics: {
+      retrievalStrategy,
+      beforeFiltering: localizedVariants.length,
+      afterFiltering: identityFiltered.length,
+      regionalExact: regionalPrints.length
+    },
     status: language !== 'en'
       ? {primarySource: 'tcgdex-' + language, fallbackSource: 'pokemon-tcg', primary: tcgdex, fallback: pokemonTcg}
       : {primarySource: 'pokemon-tcg', fallbackSource: 'tcgdex-en', primary: pokemonTcg, fallback: tcgdex}
@@ -3044,6 +3101,11 @@ async function runRecognition(manual = false) {
       lookup = {candidates: [], status: emptyLookupStatus()};
     }
     hints.recognitionPerformance.apiMs = performance.now() - apiStartedAt;
+    hints.candidateRetrievalStrategy = lookup.diagnostics && lookup.diagnostics.retrievalStrategy
+      || hints.candidateRetrievalStrategy || (lookup.earlyExit ? lookup.earlyExit : 'STRUCTURED_FALLBACK');
+    hints.candidateCount = lookup.diagnostics && Number.isFinite(Number(lookup.diagnostics.afterFiltering))
+      ? Number(lookup.diagnostics.afterFiltering)
+      : (lookup.candidates || []).length;
     if (run !== recognitionRun) return null;
     let foundCandidates = mergeLocalOfflineCandidates(lookup.candidates, learningScan);
     if (!hasExactStructuredIdentity(kind, foundCandidates, lookup)
@@ -3061,6 +3123,13 @@ async function runRecognition(manual = false) {
       .filter(candidate => candidate.confidence >= 0.45);
     else if (kind === 'onepiece') foundCandidates = Recognition.rankOnePieceCandidates(foundCandidates, hints, '', 7)
       .filter(candidate => candidate.confidence >= 0.45);
+    hints.bestArtworkScore = foundCandidates.length && Number.isFinite(Number(foundCandidates[0].artworkScore))
+      ? Number(foundCandidates[0].artworkScore) : null;
+    hints.finalCanonicalIdentity = foundCandidates.length
+      ? foundCandidates[0].canonicalIdentity || foundCandidates[0].name || '' : '';
+    if (!hints.localizedName && foundCandidates.length) {
+      hints.localizedName = foundCandidates[0].localizedName || '';
+    }
     if (!foundCandidates.length && serviceError) throw serviceError;
     hints.recognitionPerformance.totalMs = performance.now() - recognitionStartedAt;
     renderRecognitionFeatures(hints);

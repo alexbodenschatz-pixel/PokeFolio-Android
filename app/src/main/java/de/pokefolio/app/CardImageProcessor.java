@@ -575,11 +575,26 @@ public final class CardImageProcessor {
             int rotation,
             String profile
     ) {
+        return createProfileOcrVariants(source, rotation, profile, "");
+    }
+
+    public static List<OcrVariant> createProfileOcrVariants(
+            Bitmap source,
+            int rotation,
+            String profile,
+            String language
+    ) {
         int normalizedRotation = ((rotation % 360) + 360) % 360;
         Bitmap rotated = rotate(source, normalizedRotation);
         Bitmap normal = scaleDown(rotated, 1500);
         List<OcrVariant> variants = new ArrayList<>();
-        variants.add(new OcrVariant("vollbild-" + normalizedRotation, normal));
+        String kind = String.valueOf(profile == null ? "auto" : profile).toLowerCase();
+        String locale = String.valueOf(language == null ? "" : language).toLowerCase();
+        boolean asianPokemon = "pokemon".equals(kind)
+                && (locale.startsWith("ja") || locale.startsWith("ko") || locale.startsWith("zh"));
+        if (!asianPokemon) {
+            variants.add(new OcrVariant("vollbild-" + normalizedRotation, normal));
+        }
 
         float ratio = Math.min(normal.getWidth(), normal.getHeight())
                 / (float) Math.max(1, Math.max(normal.getWidth(), normal.getHeight()));
@@ -589,7 +604,6 @@ public final class CardImageProcessor {
             Bitmap card = normal.getWidth() <= normal.getHeight()
                     ? fitCardToCanvas(normal, NORMALIZED_WIDTH, NORMALIZED_HEIGHT)
                     : normal.copy(Bitmap.Config.ARGB_8888, false);
-            String kind = String.valueOf(profile == null ? "auto" : profile).toLowerCase();
             if ("yugioh".equals(kind)) {
                 addHeaderOcrVariants(variants, card, normalizedRotation);
                 addYuGiOhMetadataOcrVariants(variants, card, normalizedRotation);
@@ -597,13 +611,25 @@ public final class CardImageProcessor {
                 addOnePieceNameOcrVariants(variants, card, normalizedRotation);
                 addOnePieceMetadataOcrVariants(variants, card, normalizedRotation);
             } else {
-                addHeaderOcrVariants(variants, card, normalizedRotation);
-                addSecondaryHeaderOcrVariants(variants, card, normalizedRotation);
-                addMiddleTextOcrVariants(variants, card, normalizedRotation);
-                addLowerTextOcrVariant(variants, card, normalizedRotation);
-                addCollectorOcrVariants(variants, card, normalizedRotation);
+                if (asianPokemon) {
+                    // Asian identity resolution is number-first. Restrict expensive regional OCR
+                    // to bottom metadata and the actual title ROI; body/copyright text must not
+                    // become a search query. Whole-card OCR is one final context pass only.
+                    addCollectorOcrVariants(variants, card, normalizedRotation);
+                    addHeaderOcrVariants(variants, card, normalizedRotation);
+                    variants.add(new OcrVariant("vollbild-" + normalizedRotation, normal));
+                } else {
+                    addHeaderOcrVariants(variants, card, normalizedRotation);
+                    addSecondaryHeaderOcrVariants(variants, card, normalizedRotation);
+                    addMiddleTextOcrVariants(variants, card, normalizedRotation);
+                    addLowerTextOcrVariant(variants, card, normalizedRotation);
+                    addCollectorOcrVariants(variants, card, normalizedRotation);
+                }
             }
             if (card != normal && !card.isRecycled()) card.recycle();
+        }
+        if (variants.isEmpty()) {
+            variants.add(new OcrVariant("vollbild-" + normalizedRotation, normal));
         }
         if (rotated != normal && !rotated.isRecycled()) rotated.recycle();
         return variants;
