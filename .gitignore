@@ -4,6 +4,9 @@
 local.properties
 build/
 **/build/
+**/bin/
+**/obj/
+windows/artifacts/
 captures/
 .externalNativeBuild/
 .cxx/

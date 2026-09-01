@@ -1,0 +1,48 @@
+.pf-desktop-launch {
+  border: 1px solid rgba(83, 226, 196, .42);
+  border-radius: 999px;
+  background: rgba(18, 129, 119, .18);
+  color: #b8fff1;
+  padding: .55rem .9rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.pf-eos-studio { padding-bottom: 3rem; }
+.pf-eos-heading,
+.pf-eos-status,
+.pf-live-toolbar,
+.pf-eos-actions,
+.pf-capture-sides { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+.pf-eos-heading h1 { margin: .15rem 0 0; }
+.pf-eos-status { margin: 1rem 0; }
+.pf-eos-status > div { display: grid; gap: .28rem; }
+.pf-eos-grid { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(280px, .7fr); gap: 1rem; }
+.pf-live-view { display: grid; gap: 1rem; min-width: 0; }
+.pf-live-canvas {
+  display: grid;
+  place-items: center;
+  min-height: 420px;
+  border-radius: 20px;
+  overflow: hidden;
+  border: 1px solid rgba(133, 160, 184, .22);
+  background: radial-gradient(circle at center, rgba(22, 65, 78, .65), rgba(4, 11, 19, .96));
+}
+.pf-live-canvas > * { grid-area: 1 / 1; }
+.pf-live-canvas img { width: 100%; height: 100%; max-height: 570px; object-fit: contain; object-position: center; }
+.pf-live-canvas > div { display: grid; justify-items: center; gap: .5rem; max-width: 330px; text-align: center; color: #9db0bf; }
+.pf-live-canvas > div > span { display: grid; place-items: center; width: 92px; aspect-ratio: 1; border-radius: 50%; border: 1px solid rgba(83, 226, 196, .32); color: #65e8d3; font-weight: 900; font-size: 1.25rem; }
+.pf-capture-sides { justify-content: flex-start; }
+.pf-capture-sides button { border: 1px solid rgba(133, 160, 184, .28); border-radius: 999px; background: transparent; color: #aab9c6; padding: .55rem .9rem; }
+.pf-capture-sides button.active { border-color: #51e1c6; background: rgba(30, 181, 156, .17); color: #d6fff7; }
+.pf-eos-actions { justify-content: flex-start; flex-wrap: wrap; }
+.pf-eos-sidebar { display: grid; align-content: start; gap: 1rem; }
+.pf-eos-sidebar .card { margin: 0; }
+.pf-eos-sidebar h2 { margin: .25rem 0; font-size: 1.05rem; }
+.pf-scan-history { max-height: 210px; overflow: auto; margin: .75rem 0 0; padding-left: 1.25rem; color: #b6c5d1; }
+.pf-scan-history li { margin: .45rem 0; }
+
+@media (max-width: 900px) {
+  .pf-eos-grid { grid-template-columns: 1fr; }
+  .pf-live-canvas { min-height: 330px; }
+}
