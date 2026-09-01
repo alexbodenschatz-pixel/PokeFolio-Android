@@ -1,0 +1,15 @@
+<Project>
+  <!--
+    WebView2 currently contributes its WPF assembly even to pure WinForms projects,
+    which creates an unrelated WindowsBase version warning. Remove only that unused
+    facade; Core and WinForms references remain package-managed.
+    See MicrosoftEdge/WebView2Feedback#5219.
+  -->
+  <Target Name="RemoveUnusedWebView2WpfReference"
+          BeforeTargets="ResolveAssemblyReferences"
+          Condition="'$(UseWPF)' != 'true'">
+    <ItemGroup>
+      <Reference Remove="@(Reference)" Condition="'%(Reference.Filename)' == 'Microsoft.Web.WebView2.Wpf'" />
+    </ItemGroup>
+  </Target>
+</Project>

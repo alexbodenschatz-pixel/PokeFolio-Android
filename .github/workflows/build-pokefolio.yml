@@ -1,8 +1,12 @@
-name: Build PokeFolio Android APK
+name: Build PokeFolio Android and Windows
 
 on:
   workflow_dispatch:
   push:
+    branches:
+      - main
+      - 'feature/**'
+  pull_request:
     branches:
       - main
 
@@ -10,7 +14,7 @@ permissions:
   contents: read
 
 jobs:
-  build:
+  android:
     runs-on: ubuntu-latest
     timeout-minutes: 35
 
@@ -58,5 +62,55 @@ jobs:
         with:
           name: PokeFolio-Android-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 30
+
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Test shared JavaScript core
+        shell: pwsh
+        run: node --test tests/*.test.js
+
+      - name: Restore Windows solution
+        shell: pwsh
+        run: dotnet restore windows/PokeFolio.Desktop.sln
+
+      - name: Build Windows desktop host
+        shell: pwsh
+        run: dotnet build windows/PokeFolio.Desktop.sln -c Release --no-restore
+
+      - name: Test Windows bridge and capture abstractions
+        shell: pwsh
+        run: dotnet test windows/PokeFolio.Desktop.sln -c Release --no-build --logger "console;verbosity=normal"
+
+      - name: Validate packaged shared assets
+        shell: pwsh
+        run: dotnet run --project windows/PokeFolio.Desktop/PokeFolio.Desktop.csproj -c Release --no-build -- --self-test
+
+      - name: Publish Windows desktop foundation
+        shell: pwsh
+        run: dotnet publish windows/PokeFolio.Desktop/PokeFolio.Desktop.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false -o windows/artifacts/PokeFolio-Desktop
+
+      - name: Upload Windows desktop artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PokeFolio-Windows-desktop-foundation
+          path: windows/artifacts/PokeFolio-Desktop
           if-no-files-found: error
           retention-days: 30
