@@ -17,7 +17,14 @@ internal static class Program
                 return 2;
             }
 
-            Console.WriteLine($"PokeFolio Desktop self-test passed ({result.AssetCount} shared assets).\n");
+            var runtime = DesktopRuntimeSelfTest.Run();
+            if (!runtime.Success)
+            {
+                foreach (var error in runtime.Errors) Console.Error.WriteLine(error);
+                return 3;
+            }
+
+            Console.WriteLine($"PokeFolio Desktop self-test passed ({result.AssetCount} shared assets; {string.Join(", ", runtime.Checks)}).\n");
             return 0;
         }
 

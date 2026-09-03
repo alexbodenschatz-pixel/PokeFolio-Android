@@ -1,24 +1,30 @@
-# PokéFolio Android + Windows Desktop Foundation
+# PokéFolio für Android und Windows
 
-PokéFolio ist eine eigenständige Android-App zum Scannen, Erkennen, Vorprüfen und Sammeln von Trading Cards. Die App kombiniert eine native CameraX-Kamera und ML-Kit-OCR mit einer lokalen deutschsprachigen Oberfläche.
+PokéFolio ist eine eigenständige App zum Scannen, Erkennen, Vorprüfen und Sammeln von Trading Cards. Android kombiniert CameraX und ML Kit mit dem gemeinsamen HTML/CSS/JavaScript-Core. Der Windows-Host nutzt .NET 8, WinForms, WebView2, lokale Windows-OCR und OpenCV-basierte Kartenverarbeitung, ohne den Android-Scanner zu ersetzen.
 
-## Build
+## Android bauen
 
 Voraussetzungen: JDK 17 und Android SDK 36.
 
 ```text
-./gradlew :app:assembleDebug
+./gradlew testDebugUnitTest lintDebug assembleDebug
 ```
 
-Die Debug-APK wird unter `app/build/outputs/apk/debug/app-debug.apk` erzeugt. GitHub Actions baut Android und die Windows-Desktop-Grundlage und lädt beide Ergebnisse als Artefakte hoch.
+Die Debug-APK liegt anschließend unter `app/build/outputs/apk/debug/app-debug.apk`.
 
-## Windows Desktop
-
-Die Windows-Grundlage unter `windows/PokeFolio.Desktop` verwendet .NET 8, WinForms und Microsoft WebView2. Sie bindet den vorhandenen Web-Core direkt aus `app/src/main/assets` ein; Recognition-, Collection-, Grading-, Varianten-, Learning- und API-Logik werden nicht dupliziert.
+## Windows bauen
 
 ```text
+dotnet restore windows/PokeFolio.Desktop.sln
 dotnet build windows/PokeFolio.Desktop.sln -c Release
 dotnet test windows/PokeFolio.Desktop.sln -c Release
+dotnet run --project windows/PokeFolio.Desktop/PokeFolio.Desktop.csproj -- --self-test
 ```
 
-Weitere Architektur- und Visual-Studio-Hinweise stehen in `windows/README.md`. Der vorhandene `pokefolio-test.keystore` ist nur für öffentliche Test-/Debug-Builds vorgesehen. Ein Release muss mit einem privaten Schlüssel außerhalb des Repositorys signiert werden; proprietäre Canon-EDSDK-Dateien werden nicht versioniert.
+Die Windows-App verwendet direkt die Web-Assets aus `app/src/main/assets`; Recognition-, Collection-, Grading-, Varianten-, Learning-, Preis- und Bulk-Logik werden nicht dupliziert. Details zu Vision, lokaler OCR, EOS Studio und der optionalen Canon-Adaptereinrichtung stehen in [windows/README.md](windows/README.md).
+
+GitHub Actions baut und testet Android sowie Windows und veröffentlicht ein Debug-APK und einen selbstenthaltenden Windows-Publish-Ordner als Artefakte.
+
+## Sicherheit
+
+Der vorhandene `pokefolio-test.keystore` ist ausschließlich ein öffentlicher Test-/Debug-Schlüssel. Release-Signierung muss einen privaten Schlüssel außerhalb des Repositorys verwenden. API-Schlüssel, Zugangsdaten und proprietäre Canon-EDSDK-Dateien dürfen nicht versioniert werden.

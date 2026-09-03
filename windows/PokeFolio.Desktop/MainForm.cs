@@ -2,6 +2,8 @@ using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.WinForms;
 using PokeFolio.Desktop.Bridge;
 using PokeFolio.Desktop.Capture;
+using PokeFolio.Desktop.Recognition;
+using PokeFolio.Desktop.Vision;
 
 namespace PokeFolio.Desktop;
 
@@ -11,6 +13,8 @@ public sealed class MainForm : Form
     private readonly SharedWebAssetLocator assets = new();
     private HttpBridgeService? httpBridge;
     private PokeNativeBridge? nativeBridge;
+    private VisualComparisonService? visualComparison;
+    private CanonEosCapture? canonCapture;
 
     public MainForm()
     {
@@ -74,7 +78,18 @@ public sealed class MainForm : Form
 
         var callbackDispatcher = new WebView2CallbackDispatcher(ExecuteScriptOnUiAsync);
         var fileCapture = new WindowsFileCapture(SelectImageFileAsync);
-        var captureDevices = new ICardCaptureDevice[] { fileCapture, new CanonEosCapture() };
+        canonCapture = new CanonEosCapture();
+        var captureDevices = new ICardCaptureDevice[] { fileCapture, canonCapture };
+        var codec = new ImageDataUrlCodec();
+        var vision = new WindowsVisionPipeline(codec, new CardDetector(),
+            new CardPerspectiveCorrector(), new ImageQualityAnalyzer());
+        var textRecognition = new WindowsTextRecognitionService();
+        var regions = new CardRegionExtractor();
+        var identifierParser = new CardIdentifierParser();
+        var orientation = new CardOrientationNormalizer(textRecognition, regions, identifierParser);
+        var recognition = new WindowsCardRecognitionService(vision, textRecognition, regions,
+            identifierParser, orientation);
+        visualComparison = new VisualComparisonService(vision, codec, new CardVisualMatcher());
         httpBridge = new HttpBridgeService();
         nativeBridge = new PokeNativeBridge(
             callbackDispatcher,
@@ -82,7 +97,12 @@ public sealed class MainForm : Form
             new LocalDataService(),
             new DesktopStatusService(),
             fileCapture,
-            captureDevices);
+            captureDevices,
+            vision,
+            codec,
+            recognition,
+            visualComparison,
+            canonCapture);
 
         webView.CoreWebView2.AddHostObjectToScript("PokeNative", nativeBridge);
         var bootstrap = await File.ReadAllTextAsync(Path.Combine(assets.DesktopRoot, "desktop-bootstrap.js"));
@@ -94,6 +114,9 @@ public sealed class MainForm : Form
     {
         if (disposing)
         {
+            nativeBridge?.Dispose();
+            if (canonCapture is not null) canonCapture.DisposeAsync().AsTask().GetAwaiter().GetResult();
+            visualComparison?.Dispose();
             httpBridge?.Dispose();
             webView.Dispose();
         }

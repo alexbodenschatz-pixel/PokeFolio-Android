@@ -101,16 +101,18 @@ jobs:
 
       - name: Validate packaged shared assets
         shell: pwsh
-        run: dotnet run --project windows/PokeFolio.Desktop/PokeFolio.Desktop.csproj -c Release --no-build -- --self-test
+        # Invoke the managed entry point directly. A WinExe apphost can keep a headless
+        # Windows runner attached even after a CLI-only path returns.
+        run: dotnet windows/PokeFolio.Desktop/bin/Release/net8.0-windows10.0.19041.0/PokeFolio.Desktop.dll --self-test
 
-      - name: Publish Windows desktop foundation
+      - name: Publish Windows vision and EOS desktop host
         shell: pwsh
         run: dotnet publish windows/PokeFolio.Desktop/PokeFolio.Desktop.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false -o windows/artifacts/PokeFolio-Desktop
 
       - name: Upload Windows desktop artifact
         uses: actions/upload-artifact@v4
         with:
-          name: PokeFolio-Windows-desktop-foundation
+          name: PokeFolio-Windows-vision-eos
           path: windows/artifacts/PokeFolio-Desktop
           if-no-files-found: error
           retention-days: 30
