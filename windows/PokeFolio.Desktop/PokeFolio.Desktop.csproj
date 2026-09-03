@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <NoWarn>$(NoWarn);CS9057</NoWarn>
+    <AssemblyName>PokeFolio.Desktop</AssemblyName>
+    <RootNamespace>PokeFolio.Desktop</RootNamespace>
+    <Version>0.16.5</Version>
+    <AssemblyVersion>0.16.5.0</AssemblyVersion>
+    <FileVersion>0.16.5.0</FileVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4191.47" />
+    <!-- Apache-2.0 licensed OpenCV wrapper/runtime. Native binaries come from NuGet, never git. -->
+    <PackageReference Include="OpenCvSharp4" Version="4.13.0.20260627" ExcludeAssets="analyzers" />
+    <PackageReference Include="OpenCvSharp4.runtime.win" Version="4.13.0.20260627" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The Android and Windows hosts consume one authoritative JavaScript core. -->
+    <Content Include="..\..\app\src\main\assets\**\*">
+      <Link>WebAssets\%(RecursiveDir)%(Filename)%(Extension)</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+    <Content Include="WebHost\**\*">
+      <Link>DesktopAssets\%(RecursiveDir)%(Filename)%(Extension)</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+  </ItemGroup>
+</Project>

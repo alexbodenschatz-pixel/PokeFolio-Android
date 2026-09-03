@@ -4,8 +4,15 @@
 local.properties
 build/
 **/build/
+**/bin/
+**/obj/
+windows/artifacts/
 captures/
 .externalNativeBuild/
 .cxx/
 .local-tools/
 *.log
+windows/CanonSdk/
+windows/**/EDSDK*.dll
+windows/**/EdsImage*.dll
+windows/**/PokeFolio.Canon.EdsdkAdapter.dll
