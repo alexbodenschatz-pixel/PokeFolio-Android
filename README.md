@@ -1,6 +1,6 @@
 # PokéFolio für Android und Windows
 
-PokéFolio ist eine eigenständige App zum Scannen, Erkennen, Vorprüfen und Sammeln von Trading Cards. Android kombiniert CameraX und ML Kit mit dem gemeinsamen HTML/CSS/JavaScript-Core. Der Windows-Host nutzt .NET 8, WinForms, WebView2, lokale Windows-OCR und OpenCV-basierte Kartenverarbeitung, ohne den Android-Scanner zu ersetzen.
+PokéFolio ist eine eigenständige App zum Scannen, Erkennen, Vorprüfen und Sammeln von Trading Cards. Android kombiniert CameraX und ML Kit mit dem gemeinsamen HTML/CSS/JavaScript-Core. Der Windows-Host nutzt .NET 10 LTS, WinForms, WebView2, lokale Windows-OCR und OpenCV-basierte Kartenverarbeitung, ohne den Android-Scanner zu ersetzen.
 
 ## Android bauen
 

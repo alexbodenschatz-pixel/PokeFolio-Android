@@ -6,6 +6,7 @@ on:
     branches:
       - main
       - 'feature/**'
+      - 'codex/**'
   pull_request:
     branches:
       - main
@@ -73,10 +74,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Set up .NET 8
+      - name: Set up .NET 10 LTS
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '8.0.x'
+          dotnet-version: '10.0.x'
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -103,7 +104,7 @@ jobs:
         shell: pwsh
         # Invoke the managed entry point directly. A WinExe apphost can keep a headless
         # Windows runner attached even after a CLI-only path returns.
-        run: dotnet windows/PokeFolio.Desktop/bin/Release/net8.0-windows10.0.19041.0/PokeFolio.Desktop.dll --self-test
+        run: dotnet windows/PokeFolio.Desktop/bin/Release/net10.0-windows10.0.19041.0/PokeFolio.Desktop.dll --self-test
 
       - name: Publish Windows vision and EOS desktop host
         shell: pwsh
