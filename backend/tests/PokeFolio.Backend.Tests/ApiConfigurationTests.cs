@@ -22,6 +22,14 @@ public sealed class ApiConfigurationTests
         using HttpResponseMessage response = await client.GetAsync("/health/live");
 
         Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+
+        using HttpResponseMessage challenge = await client.PostAsync(
+            "/api/v1/auth/logout",
+            content: null);
+        Assert.AreEqual(HttpStatusCode.Unauthorized, challenge.StatusCode);
+        Assert.AreEqual(
+            "application/problem+json",
+            challenge.Content.Headers.ContentType?.MediaType);
     }
 
     private sealed class TestApiFactory : WebApplicationFactory<global::Program>

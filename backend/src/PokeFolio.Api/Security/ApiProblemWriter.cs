@@ -12,7 +12,6 @@ public static class ApiProblemWriter
         CancellationToken cancellationToken)
     {
         response.StatusCode = status;
-        response.ContentType = "application/problem+json";
         return response.WriteAsJsonAsync(
             new ProblemDetails
             {
@@ -20,6 +19,8 @@ public static class ApiProblemWriter
                 Title = title,
                 Extensions = { ["code"] = code }
             },
+            options: null,
+            contentType: "application/problem+json",
             cancellationToken);
     }
 }
