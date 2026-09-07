@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using PokeFolio.Api.Auth;
+using PokeFolio.Api.Devices;
 using PokeFolio.Api.Security;
 using PokeFolio.Domain.Abstractions;
 using PokeFolio.Infrastructure.Identity;
@@ -29,6 +30,7 @@ builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<AuthTokenService>();
 builder.Services.AddSingleton<LoginTimingProtector>();
 builder.Services.AddScoped<AuthSessionService>();
+builder.Services.AddScoped<DeviceManagementService>();
 builder.Services.AddScoped<ActiveDeviceSessionValidator>();
 
 builder.Services.AddDbContext<PokeFolioDbContext>((services, options) =>
@@ -134,6 +136,7 @@ app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapAuthEndpoints();
+app.MapDeviceEndpoints();
 
 app.MapGet("/health/live", () => Results.Ok(new
 {

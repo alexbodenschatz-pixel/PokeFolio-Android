@@ -230,6 +230,88 @@ public sealed class PostgreSqlIsolationTests
                 .ReadFromJsonAsync<AuthSessionResponse>();
             Assert.IsNotNull(relogged);
 
+            client.DefaultRequestHeaders.Authorization = null;
+            using HttpResponseMessage otherLoginResponse = await client.PostAsJsonAsync(
+                "/api/v1/auth/login",
+                new LoginCommand(
+                    "auth-a@example.test",
+                    "A secure PokeFolio password 1!",
+                    "Windows Laptop",
+                    "windows"));
+            Assert.AreEqual(HttpStatusCode.OK, otherLoginResponse.StatusCode);
+            AuthSessionResponse? otherSession = await otherLoginResponse.Content
+                .ReadFromJsonAsync<AuthSessionResponse>();
+            Assert.IsNotNull(otherSession);
+
+            client.DefaultRequestHeaders.Authorization =
+                new AuthenticationHeaderValue("Bearer", relogged.AccessToken);
+            using (HttpResponseMessage devicesResponse = await client.GetAsync("/api/v1/devices"))
+            {
+                Assert.AreEqual(HttpStatusCode.OK, devicesResponse.StatusCode);
+                DeviceResponse[]? devices = await devicesResponse.Content
+                    .ReadFromJsonAsync<DeviceResponse[]>();
+                Assert.IsNotNull(devices);
+                Assert.HasCount(2, devices);
+                Assert.AreEqual(1, devices.Count(device => device.Current));
+                Assert.IsTrue(devices.Single(device => device.Current).Id == relogged.Device.Id);
+                Assert.IsTrue(devices.Any(device => device.Id == otherSession.Device.Id));
+            }
+
+            using (HttpResponseMessage currentDeviceDelete = await client.DeleteAsync(
+                       $"/api/v1/devices/{relogged.Device.Id}"))
+            {
+                Assert.AreEqual(HttpStatusCode.Conflict, currentDeviceDelete.StatusCode);
+                Assert.AreEqual(
+                    "application/problem+json",
+                    currentDeviceDelete.Content.Headers.ContentType?.MediaType);
+            }
+
+            using (HttpResponseMessage crossUserDelete = await client.DeleteAsync(
+                       $"/api/v1/devices/{userB.Device.Id}"))
+            {
+                Assert.AreEqual(HttpStatusCode.NotFound, crossUserDelete.StatusCode);
+            }
+
+            using (HttpResponseMessage targetDelete = await client.DeleteAsync(
+                       $"/api/v1/devices/{otherSession.Device.Id}"))
+            {
+                Assert.AreEqual(HttpStatusCode.NoContent, targetDelete.StatusCode);
+            }
+
+            client.DefaultRequestHeaders.Authorization =
+                new AuthenticationHeaderValue("Bearer", otherSession.AccessToken);
+            using (HttpResponseMessage targetRevoked = await client.GetAsync("/api/v1/devices"))
+            {
+                Assert.AreEqual(HttpStatusCode.Unauthorized, targetRevoked.StatusCode);
+            }
+
+            client.DefaultRequestHeaders.Authorization = null;
+            using HttpResponseMessage thirdLoginResponse = await client.PostAsJsonAsync(
+                "/api/v1/auth/login",
+                new LoginCommand(
+                    "auth-a@example.test",
+                    "A secure PokeFolio password 1!",
+                    "Tablet",
+                    "android"));
+            Assert.AreEqual(HttpStatusCode.OK, thirdLoginResponse.StatusCode);
+            AuthSessionResponse? thirdSession = await thirdLoginResponse.Content
+                .ReadFromJsonAsync<AuthSessionResponse>();
+            Assert.IsNotNull(thirdSession);
+
+            client.DefaultRequestHeaders.Authorization =
+                new AuthenticationHeaderValue("Bearer", relogged.AccessToken);
+            using (HttpResponseMessage revokeOthers = await client.DeleteAsync("/api/v1/devices"))
+            {
+                Assert.AreEqual(HttpStatusCode.NoContent, revokeOthers.StatusCode);
+            }
+
+            client.DefaultRequestHeaders.Authorization =
+                new AuthenticationHeaderValue("Bearer", thirdSession.AccessToken);
+            using (HttpResponseMessage otherDevicesRevoked = await client.GetAsync("/api/v1/devices"))
+            {
+                Assert.AreEqual(HttpStatusCode.Unauthorized, otherDevicesRevoked.StatusCode);
+            }
+
             client.DefaultRequestHeaders.Authorization =
                 new AuthenticationHeaderValue("Bearer", relogged.AccessToken);
             using HttpResponseMessage logout = await client.PostAsync(
