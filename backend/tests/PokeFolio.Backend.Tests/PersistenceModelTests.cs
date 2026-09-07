@@ -23,6 +23,7 @@ public sealed class PersistenceModelTests
         Type[] privateTypes =
         [
             typeof(CollectionHolding),
+            typeof(ConsumedRefreshToken),
             typeof(DeviceSession),
             typeof(ProcessedSyncOperation),
             typeof(UserChange)
@@ -72,6 +73,23 @@ public sealed class PersistenceModelTests
             false,
             holdingIdentityIndex.GetAreNullsDistinct(),
             "A null VariantId must not allow duplicate holdings for the same card identity.");
+    }
+
+    [TestMethod]
+    public void ConsumedRefreshTokenCannotReferenceAnotherUsersDevice()
+    {
+        using var database = CreateContext(Guid.NewGuid());
+        IModel designTimeModel = database.GetService<IDesignTimeModel>().Model;
+        IEntityType token = designTimeModel.FindEntityType(typeof(ConsumedRefreshToken))!;
+        IForeignKey deviceOwnershipForeignKey = token.GetForeignKeys().Single(foreignKey =>
+            foreignKey.PrincipalEntityType.ClrType == typeof(DeviceSession));
+
+        CollectionAssert.AreEqual(
+            DeviceOperationForeignKey,
+            deviceOwnershipForeignKey.Properties.Select(property => property.Name).ToArray());
+        CollectionAssert.AreEqual(
+            UserDevicePrincipalKey,
+            deviceOwnershipForeignKey.PrincipalKey.Properties.Select(property => property.Name).ToArray());
     }
 
     [TestMethod]

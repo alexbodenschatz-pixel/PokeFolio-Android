@@ -18,6 +18,7 @@ public sealed class PokeFolioDbContext(
 
     public DbSet<CatalogCard> Cards => Set<CatalogCard>();
     public DbSet<CollectionHolding> CollectionHoldings => Set<CollectionHolding>();
+    public DbSet<ConsumedRefreshToken> ConsumedRefreshTokens => Set<ConsumedRefreshToken>();
     public DbSet<DeviceSession> DeviceSessions => Set<DeviceSession>();
     public DbSet<ProcessedSyncOperation> ProcessedSyncOperations => Set<ProcessedSyncOperation>();
     public DbSet<UserChange> UserChanges => Set<UserChange>();
@@ -71,6 +72,33 @@ public sealed class PokeFolioDbContext(
                 .OnDelete(DeleteBehavior.Cascade);
             entity.HasQueryFilter(device =>
                 CurrentUserId.HasValue && (Guid?)device.UserId == CurrentUserId);
+        });
+
+        builder.Entity<ConsumedRefreshToken>(entity =>
+        {
+            entity.ToTable("consumed_refresh_tokens", "identity");
+            entity.HasKey(token => token.TokenHash);
+            entity.Property(token => token.TokenHash)
+                .HasColumnName("token_hash")
+                .HasMaxLength(64);
+            entity.Property(token => token.UserId).HasColumnName("user_id");
+            entity.Property(token => token.DeviceSessionId).HasColumnName("device_session_id");
+            entity.Property(token => token.TokenFamilyId).HasColumnName("token_family_id");
+            entity.Property(token => token.ConsumedAt).HasColumnName("consumed_at");
+            entity.Property(token => token.ExpiresAt).HasColumnName("expires_at");
+            entity.HasIndex(token => token.ExpiresAt);
+            entity.HasIndex(token => new { token.UserId, token.TokenFamilyId });
+            entity.HasOne(token => token.User)
+                .WithMany()
+                .HasForeignKey(token => token.UserId)
+                .OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(token => token.DeviceSession)
+                .WithMany()
+                .HasForeignKey(token => new { token.UserId, token.DeviceSessionId })
+                .HasPrincipalKey(device => new { device.UserId, device.Id })
+                .OnDelete(DeleteBehavior.Cascade);
+            entity.HasQueryFilter(token =>
+                CurrentUserId.HasValue && (Guid?)token.UserId == CurrentUserId);
         });
     }
 

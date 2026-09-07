@@ -1,6 +1,13 @@
+using System.Net;
+using System.Net.Http.Headers;
+using System.Net.Http.Json;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using Npgsql;
+using PokeFolio.Api.Auth;
 using PokeFolio.Domain.Abstractions;
 using PokeFolio.Domain.Collection;
 using PokeFolio.Infrastructure.Catalog;
@@ -13,6 +20,10 @@ namespace PokeFolio.Backend.Tests;
 [TestClass]
 public sealed class PostgreSqlIsolationTests
 {
+    private static readonly byte[] ApiSigningKey = Enumerable.Range(1, 32)
+        .Select(value => (byte)value)
+        .ToArray();
+
     [TestMethod]
     [TestCategory("PostgreSQL")]
     public async Task MigrationEnforcesOwnershipFiltersAndNullableHoldingIdentity()
@@ -121,6 +132,172 @@ public sealed class PostgreSqlIsolationTests
         {
             await DropDatabaseAsync(serverConnectionString, databaseName);
         }
+    }
+
+    [TestMethod]
+    [TestCategory("PostgreSQL")]
+    public async Task AuthenticationFlowRotatesRefreshTokensAndIsolatesDeviceSessions()
+    {
+        string? serverConnectionString = Environment.GetEnvironmentVariable("POKEFOLIO_TEST_POSTGRES");
+        if (string.IsNullOrWhiteSpace(serverConnectionString))
+        {
+            Assert.Inconclusive(
+                "Set POKEFOLIO_TEST_POSTGRES to run the isolated PostgreSQL authentication test.");
+            return;
+        }
+
+        string databaseName = $"pokefolio_test_{Guid.NewGuid():N}";
+        string testConnectionString = await CreateDatabaseAsync(serverConnectionString, databaseName);
+
+        try
+        {
+            await using (PokeFolioDbContext migrationContext = CreateContext(testConnectionString, null))
+            {
+                await migrationContext.Database.MigrateAsync();
+            }
+
+            using var factory = new PokeFolioApiFactory(testConnectionString);
+            using HttpClient client = factory.CreateClient(new WebApplicationFactoryClientOptions
+            {
+                AllowAutoRedirect = false
+            });
+
+            using (HttpResponseMessage unauthenticated = await client.PostAsync(
+                       "/api/v1/auth/logout",
+                       content: null))
+            {
+                Assert.AreEqual(HttpStatusCode.Unauthorized, unauthenticated.StatusCode);
+                Assert.AreEqual(
+                    "application/problem+json",
+                    unauthenticated.Content.Headers.ContentType?.MediaType);
+            }
+
+            AuthSessionResponse userA = await RegisterAsync(
+                client,
+                "auth-a@example.test",
+                "Pixel Phone");
+            AuthSessionResponse userB = await RegisterAsync(
+                client,
+                "auth-b@example.test",
+                "Windows PC");
+
+            await AssertDeviceIsolationAsync(
+                testConnectionString,
+                "auth-a@example.test",
+                userA.Device.Id,
+                userB.Device.Id);
+            await AssertDeviceIsolationAsync(
+                testConnectionString,
+                "auth-b@example.test",
+                userB.Device.Id,
+                userA.Device.Id);
+
+            using HttpResponseMessage invalidLogin = await client.PostAsJsonAsync(
+                "/api/v1/auth/login",
+                new LoginCommand(
+                    "auth-a@example.test",
+                    "Wrong password 1!",
+                    "Attacker",
+                    "windows"));
+            Assert.AreEqual(HttpStatusCode.Unauthorized, invalidLogin.StatusCode);
+
+            AuthSessionResponse rotated = await RefreshAsync(client, userA.RefreshToken);
+            Assert.AreNotEqual(userA.RefreshToken, rotated.RefreshToken);
+            Assert.AreEqual(userA.Device.Id, rotated.Device.Id);
+
+            using HttpResponseMessage replay = await client.PostAsJsonAsync(
+                "/api/v1/auth/refresh",
+                new RefreshCommand(userA.RefreshToken));
+            Assert.AreEqual(HttpStatusCode.Unauthorized, replay.StatusCode);
+
+            client.DefaultRequestHeaders.Authorization =
+                new AuthenticationHeaderValue("Bearer", rotated.AccessToken);
+            using HttpResponseMessage revokedAccess = await client.PostAsync(
+                "/api/v1/auth/logout",
+                content: null);
+            Assert.AreEqual(HttpStatusCode.Unauthorized, revokedAccess.StatusCode);
+
+            client.DefaultRequestHeaders.Authorization = null;
+            using HttpResponseMessage loginResponse = await client.PostAsJsonAsync(
+                "/api/v1/auth/login",
+                new LoginCommand(
+                    "auth-a@example.test",
+                    "A secure PokeFolio password 1!",
+                    "Pixel Phone 2",
+                    "android"));
+            Assert.AreEqual(HttpStatusCode.OK, loginResponse.StatusCode);
+            AuthSessionResponse? relogged = await loginResponse.Content
+                .ReadFromJsonAsync<AuthSessionResponse>();
+            Assert.IsNotNull(relogged);
+
+            client.DefaultRequestHeaders.Authorization =
+                new AuthenticationHeaderValue("Bearer", relogged.AccessToken);
+            using HttpResponseMessage logout = await client.PostAsync(
+                "/api/v1/auth/logout",
+                content: null);
+            Assert.AreEqual(HttpStatusCode.NoContent, logout.StatusCode);
+
+            using HttpResponseMessage loggedOutAccess = await client.PostAsync(
+                "/api/v1/auth/logout",
+                content: null);
+            Assert.AreEqual(HttpStatusCode.Unauthorized, loggedOutAccess.StatusCode);
+        }
+        finally
+        {
+            await DropDatabaseAsync(serverConnectionString, databaseName);
+        }
+    }
+
+    private static async Task<AuthSessionResponse> RegisterAsync(
+        HttpClient client,
+        string email,
+        string deviceName)
+    {
+        using HttpResponseMessage response = await client.PostAsJsonAsync(
+            "/api/v1/auth/register",
+            new RegisterCommand(
+                email,
+                "A secure PokeFolio password 1!",
+                deviceName,
+                deviceName.StartsWith("Windows", StringComparison.Ordinal) ? "windows" : "android"));
+        Assert.AreEqual(HttpStatusCode.Created, response.StatusCode);
+        AuthSessionResponse? session = await response.Content.ReadFromJsonAsync<AuthSessionResponse>();
+        Assert.IsNotNull(session);
+        return session;
+    }
+
+    private static async Task<AuthSessionResponse> RefreshAsync(HttpClient client, string refreshToken)
+    {
+        using HttpResponseMessage response = await client.PostAsJsonAsync(
+            "/api/v1/auth/refresh",
+            new RefreshCommand(refreshToken));
+        Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+        AuthSessionResponse? session = await response.Content.ReadFromJsonAsync<AuthSessionResponse>();
+        Assert.IsNotNull(session);
+        return session;
+    }
+
+    private static async Task AssertDeviceIsolationAsync(
+        string connectionString,
+        string email,
+        Guid ownDeviceId,
+        Guid otherDeviceId)
+    {
+        Guid userId;
+        await using (PokeFolioDbContext lookupContext = CreateContext(connectionString, null))
+        {
+            userId = await lookupContext.Users
+                .Where(user => user.Email == email)
+                .Select(user => user.Id)
+                .SingleAsync();
+        }
+
+        await using PokeFolioDbContext userContext = CreateContext(connectionString, userId);
+        DeviceSession[] visible = await userContext.DeviceSessions.AsNoTracking().ToArrayAsync();
+        Assert.HasCount(1, visible);
+        Assert.AreEqual(ownDeviceId, visible[0].Id);
+        Assert.IsNull(await userContext.DeviceSessions.AsNoTracking()
+            .SingleOrDefaultAsync(device => device.Id == otherDeviceId));
     }
 
     private static async Task AssertUserCanOnlySeeOwnHoldingAsync(
@@ -235,4 +412,26 @@ public sealed class PostgreSqlIsolationTests
     }
 
     private sealed record StubUserContext(Guid? UserId) : IUserContext;
+
+    private sealed class PokeFolioApiFactory(string connectionString)
+        : WebApplicationFactory<global::Program>
+    {
+        protected override void ConfigureWebHost(IWebHostBuilder builder)
+        {
+            builder.UseEnvironment("Testing");
+            builder.ConfigureAppConfiguration((_, configuration) =>
+            {
+                configuration.AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["ConnectionStrings:PokeFolio"] = connectionString,
+                    ["Auth:Issuer"] = "pokefolio-integration-tests",
+                    ["Auth:Audience"] = "pokefolio-test-clients",
+                    ["Auth:SigningKey"] = Convert.ToBase64String(ApiSigningKey),
+                    ["Auth:SigningKeyId"] = "integration-test-key",
+                    ["Auth:AccessTokenMinutes"] = "10",
+                    ["Auth:RefreshTokenDays"] = "30"
+                });
+            });
+        }
+    }
 }
