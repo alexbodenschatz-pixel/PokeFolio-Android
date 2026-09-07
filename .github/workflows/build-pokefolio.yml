@@ -15,6 +15,57 @@ permissions:
   contents: read
 
 jobs:
+  backend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up .NET 10 LTS
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore backend
+        run: dotnet restore backend/PokeFolio.Backend.slnx
+
+      - name: Restore migration tool
+        run: dotnet tool restore
+
+      - name: Build backend
+        run: dotnet build backend/PokeFolio.Backend.slnx -c Release --no-restore
+
+      - name: Test backend domain and persistence model
+        env:
+          POKEFOLIO_TEST_POSTGRES: Host=localhost;Port=5432;Username=postgres;Database=postgres;Include Error Detail=false
+        run: dotnet test backend/PokeFolio.Backend.slnx -c Release --no-build --logger "console;verbosity=normal"
+
+      - name: Verify committed migration matches the model
+        env:
+          POKEFOLIO_DB_CONNECTION: Host=localhost;Port=5432;Username=postgres;Database=postgres;Include Error Detail=false
+        run: >-
+          dotnet tool run dotnet-ef -- migrations has-pending-model-changes
+          --no-build
+          --project backend/src/PokeFolio.Infrastructure
+          --startup-project backend/src/PokeFolio.Api
+          --context PokeFolioDbContext
+          --configuration Release
+
   android:
     runs-on: ubuntu-latest
     timeout-minutes: 35

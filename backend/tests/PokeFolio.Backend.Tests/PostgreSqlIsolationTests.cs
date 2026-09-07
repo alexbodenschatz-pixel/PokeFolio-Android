@@ -1,0 +1,238 @@
+using Microsoft.EntityFrameworkCore;
+using Microsoft.VisualStudio.TestTools.UnitTesting;
+using Npgsql;
+using PokeFolio.Domain.Abstractions;
+using PokeFolio.Domain.Collection;
+using PokeFolio.Infrastructure.Catalog;
+using PokeFolio.Infrastructure.Identity;
+using PokeFolio.Infrastructure.Persistence;
+using PokeFolio.Infrastructure.Sync;
+
+namespace PokeFolio.Backend.Tests;
+
+[TestClass]
+public sealed class PostgreSqlIsolationTests
+{
+    [TestMethod]
+    [TestCategory("PostgreSQL")]
+    public async Task MigrationEnforcesOwnershipFiltersAndNullableHoldingIdentity()
+    {
+        string? serverConnectionString = Environment.GetEnvironmentVariable("POKEFOLIO_TEST_POSTGRES");
+        if (string.IsNullOrWhiteSpace(serverConnectionString))
+        {
+            Assert.Inconclusive(
+                "Set POKEFOLIO_TEST_POSTGRES to run the isolated PostgreSQL integration test.");
+            return;
+        }
+
+        string databaseName = $"pokefolio_test_{Guid.NewGuid():N}";
+        string testConnectionString = await CreateDatabaseAsync(serverConnectionString, databaseName);
+
+        try
+        {
+            await using (PokeFolioDbContext migrationContext = CreateContext(testConnectionString, null))
+            {
+                await migrationContext.Database.MigrateAsync();
+            }
+
+            Guid userAId = Guid.NewGuid();
+            Guid userBId = Guid.NewGuid();
+            Guid cardId = Guid.NewGuid();
+            Guid userADeviceId = Guid.NewGuid();
+            Guid userAHoldingId = Guid.NewGuid();
+            Guid userBHoldingId = Guid.NewGuid();
+            DateTimeOffset now = DateTimeOffset.UtcNow;
+
+            await using (PokeFolioDbContext seedContext = CreateContext(testConnectionString, null))
+            {
+                seedContext.Users.AddRange(
+                    CreateUser(userAId, "user-a@example.test", now),
+                    CreateUser(userBId, "user-b@example.test", now));
+                seedContext.Cards.Add(new CatalogCard
+                {
+                    Id = cardId,
+                    Tcg = "pokemon",
+                    Provider = "integration-test",
+                    ProviderCardId = "sv-test-001",
+                    Name = "Isolation Test Card",
+                    SetCode = "SVT",
+                    Number = "001/100",
+                    CreatedAt = now,
+                    UpdatedAt = now
+                });
+                seedContext.DeviceSessions.Add(new DeviceSession
+                {
+                    Id = userADeviceId,
+                    UserId = userAId,
+                    TokenFamilyId = Guid.NewGuid(),
+                    RefreshTokenHash = new string('a', 64),
+                    DeviceName = "Integration test device",
+                    Platform = "test",
+                    CreatedAt = now,
+                    LastSeenAt = now,
+                    ExpiresAt = now.AddDays(1)
+                });
+                seedContext.CollectionHoldings.AddRange(
+                    CreateHolding(userAHoldingId, userAId, cardId, now),
+                    CreateHolding(userBHoldingId, userBId, cardId, now));
+                await seedContext.SaveChangesAsync();
+            }
+
+            await AssertUserCanOnlySeeOwnHoldingAsync(
+                testConnectionString,
+                userAId,
+                userAHoldingId,
+                userBHoldingId);
+            await AssertUserCanOnlySeeOwnHoldingAsync(
+                testConnectionString,
+                userBId,
+                userBHoldingId,
+                userAHoldingId);
+
+            await using (PokeFolioDbContext anonymousContext = CreateContext(testConnectionString, null))
+            {
+                Assert.AreEqual(0, await anonymousContext.CollectionHoldings.CountAsync());
+            }
+
+            await using (PokeFolioDbContext duplicateContext = CreateContext(testConnectionString, userAId))
+            {
+                duplicateContext.CollectionHoldings.Add(
+                    CreateHolding(Guid.NewGuid(), userAId, cardId, now.AddSeconds(1)));
+                await Assert.ThrowsExactlyAsync<DbUpdateException>(
+                    async () => await duplicateContext.SaveChangesAsync());
+            }
+
+            await using (PokeFolioDbContext crossUserOperationContext =
+                CreateContext(testConnectionString, userBId))
+            {
+                crossUserOperationContext.ProcessedSyncOperations.Add(new ProcessedSyncOperation
+                {
+                    UserId = userBId,
+                    DeviceSessionId = userADeviceId,
+                    OperationId = Guid.NewGuid(),
+                    Status = "applied",
+                    ProcessedAt = now.AddSeconds(2)
+                });
+                await Assert.ThrowsExactlyAsync<DbUpdateException>(
+                    async () => await crossUserOperationContext.SaveChangesAsync());
+            }
+        }
+        finally
+        {
+            await DropDatabaseAsync(serverConnectionString, databaseName);
+        }
+    }
+
+    private static async Task AssertUserCanOnlySeeOwnHoldingAsync(
+        string connectionString,
+        Guid userId,
+        Guid ownHoldingId,
+        Guid otherHoldingId)
+    {
+        await using PokeFolioDbContext context = CreateContext(connectionString, userId);
+        CollectionHolding[] visible = await context.CollectionHoldings.AsNoTracking().ToArrayAsync();
+        Assert.HasCount(1, visible);
+        Assert.AreEqual(ownHoldingId, visible[0].Id);
+        Assert.IsNull(await context.CollectionHoldings.AsNoTracking()
+            .SingleOrDefaultAsync(holding => holding.Id == otherHoldingId));
+    }
+
+    private static ApplicationUser CreateUser(Guid id, string email, DateTimeOffset now) => new()
+    {
+        Id = id,
+        UserName = email,
+        NormalizedUserName = email.ToUpperInvariant(),
+        Email = email,
+        NormalizedEmail = email.ToUpperInvariant(),
+        SecurityStamp = Guid.NewGuid().ToString("N"),
+        CreatedAt = now,
+        UpdatedAt = now
+    };
+
+    private static CollectionHolding CreateHolding(
+        Guid id,
+        Guid userId,
+        Guid cardId,
+        DateTimeOffset now) =>
+        CollectionHolding.Create(
+            id,
+            userId,
+            cardId,
+            variantId: null,
+            language: "en",
+            variant: "normal",
+            condition: "near-mint",
+            quantity: 1,
+            notes: null,
+            now);
+
+    private static PokeFolioDbContext CreateContext(string connectionString, Guid? userId)
+    {
+        var options = new DbContextOptionsBuilder<PokeFolioDbContext>()
+            .UseNpgsql(connectionString)
+            .Options;
+        return new PokeFolioDbContext(options, new StubUserContext(userId));
+    }
+
+    private static async Task<string> CreateDatabaseAsync(
+        string serverConnectionString,
+        string databaseName)
+    {
+        var adminBuilder = new NpgsqlConnectionStringBuilder(serverConnectionString)
+        {
+            Database = "postgres",
+            Pooling = false
+        };
+        await using var connection = new NpgsqlConnection(adminBuilder.ConnectionString);
+        await connection.OpenAsync();
+        await using NpgsqlCommand command = connection.CreateCommand();
+#pragma warning disable CA2100 // The identifier is generated locally and safely quoted.
+        command.CommandText = $"CREATE DATABASE {QuoteIdentifier(databaseName)}";
+#pragma warning restore CA2100
+        await command.ExecuteNonQueryAsync();
+
+        var testBuilder = new NpgsqlConnectionStringBuilder(serverConnectionString)
+        {
+            Database = databaseName,
+            Pooling = false
+        };
+        return testBuilder.ConnectionString;
+    }
+
+    private static async Task DropDatabaseAsync(string serverConnectionString, string databaseName)
+    {
+        NpgsqlConnection.ClearAllPools();
+        var adminBuilder = new NpgsqlConnectionStringBuilder(serverConnectionString)
+        {
+            Database = "postgres",
+            Pooling = false
+        };
+        await using var connection = new NpgsqlConnection(adminBuilder.ConnectionString);
+        await connection.OpenAsync();
+
+        await using (NpgsqlCommand terminate = connection.CreateCommand())
+        {
+            terminate.CommandText = """
+                SELECT pg_terminate_backend(pid)
+                FROM pg_stat_activity
+                WHERE datname = @database_name AND pid <> pg_backend_pid();
+                """;
+            terminate.Parameters.AddWithValue("database_name", databaseName);
+            await terminate.ExecuteNonQueryAsync();
+        }
+
+        await using NpgsqlCommand drop = connection.CreateCommand();
+#pragma warning disable CA2100 // The identifier is generated locally and safely quoted.
+        drop.CommandText = $"DROP DATABASE IF EXISTS {QuoteIdentifier(databaseName)}";
+#pragma warning restore CA2100
+        await drop.ExecuteNonQueryAsync();
+    }
+
+    private static string QuoteIdentifier(string identifier)
+    {
+        using var builder = new NpgsqlCommandBuilder();
+        return builder.QuoteIdentifier(identifier);
+    }
+
+    private sealed record StubUserContext(Guid? UserId) : IUserContext;
+}
