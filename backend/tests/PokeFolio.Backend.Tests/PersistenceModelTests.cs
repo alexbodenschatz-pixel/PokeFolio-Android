@@ -111,6 +111,23 @@ public sealed class PersistenceModelTests
         Assert.IsFalse(string.IsNullOrWhiteSpace(sql));
     }
 
+    [TestMethod]
+    public void CollectionKeysetCursorTranslatesForPostgreSql()
+    {
+        using var database = CreateContext(Guid.NewGuid());
+        Guid afterId = Guid.NewGuid();
+
+        string sql = database.CollectionHoldings
+            .AsNoTracking()
+            .Where(holding => holding.Id.CompareTo(afterId) > 0)
+            .OrderBy(holding => holding.Id)
+            .Take(101)
+            .ToQueryString();
+
+        StringAssert.Contains(sql, "ORDER BY");
+        StringAssert.Contains(sql, "LIMIT");
+    }
+
     private static PokeFolioDbContext CreateContext(Guid? userId)
     {
         var options = new DbContextOptionsBuilder<PokeFolioDbContext>()

@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using PokeFolio.Api.Auth;
+using PokeFolio.Api.Collection;
 using PokeFolio.Api.Devices;
 using PokeFolio.Api.Security;
 using PokeFolio.Domain.Abstractions;
@@ -13,7 +14,11 @@ using PokeFolio.Infrastructure.Identity;
 using PokeFolio.Infrastructure.Persistence;
 
 var builder = WebApplication.CreateBuilder(args);
-builder.Services.AddProblemDetails();
+builder.Services.AddProblemDetails(options =>
+{
+    options.CustomizeProblemDetails = context =>
+        context.ProblemDetails.Extensions["correlationId"] = context.HttpContext.TraceIdentifier;
+});
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<IUserContext, HttpUserContext>();
 
@@ -30,6 +35,7 @@ builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<AuthTokenService>();
 builder.Services.AddSingleton<LoginTimingProtector>();
 builder.Services.AddScoped<AuthSessionService>();
+builder.Services.AddScoped<CollectionReadService>();
 builder.Services.AddScoped<DeviceManagementService>();
 builder.Services.AddScoped<ActiveDeviceSessionValidator>();
 
@@ -136,6 +142,7 @@ app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapAuthEndpoints();
+app.MapCollectionEndpoints();
 app.MapDeviceEndpoints();
 
 app.MapGet("/health/live", () => Results.Ok(new

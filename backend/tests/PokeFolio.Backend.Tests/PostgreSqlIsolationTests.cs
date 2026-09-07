@@ -1,6 +1,8 @@
+using System.Globalization;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Text.Json;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
@@ -8,6 +10,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using Npgsql;
 using PokeFolio.Api.Auth;
+using PokeFolio.Api.Collection;
 using PokeFolio.Domain.Abstractions;
 using PokeFolio.Domain.Collection;
 using PokeFolio.Infrastructure.Catalog;
@@ -378,6 +381,143 @@ public sealed class PostgreSqlIsolationTests
                 "/api/v1/auth/logout",
                 content: null);
             Assert.AreEqual(HttpStatusCode.Unauthorized, loggedOutAccess.StatusCode);
+        }
+        finally
+        {
+            await DropDatabaseAsync(serverConnectionString, databaseName);
+        }
+    }
+
+    [TestMethod]
+    [TestCategory("PostgreSQL")]
+    public async Task CollectionReadsAreStrictlyIsolatedByAuthenticatedUser()
+    {
+        string? serverConnectionString = Environment.GetEnvironmentVariable("POKEFOLIO_TEST_POSTGRES");
+        if (string.IsNullOrWhiteSpace(serverConnectionString))
+        {
+            Assert.Inconclusive(
+                "Set POKEFOLIO_TEST_POSTGRES to run the isolated PostgreSQL collection test.");
+            return;
+        }
+
+        string databaseName = $"pokefolio_test_{Guid.NewGuid():N}";
+        string testConnectionString = await CreateDatabaseAsync(serverConnectionString, databaseName);
+
+        try
+        {
+            await using (PokeFolioDbContext migrationContext = CreateContext(testConnectionString, null))
+            {
+                await migrationContext.Database.MigrateAsync();
+            }
+
+            using var factory = new PokeFolioApiFactory(testConnectionString);
+            using HttpClient client = factory.CreateClient(new WebApplicationFactoryClientOptions
+            {
+                AllowAutoRedirect = false
+            });
+            AuthSessionResponse userA = await RegisterAsync(
+                client,
+                "collection-a@example.test",
+                "Pixel Collection");
+            AuthSessionResponse userB = await RegisterAsync(
+                client,
+                "collection-b@example.test",
+                "Windows Collection");
+
+            Guid userAId;
+            Guid userBId;
+            Guid[] cardIds = [Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid()];
+            Guid[] userAHoldingIds = [Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid()];
+            Guid userBHoldingId = Guid.NewGuid();
+            DateTimeOffset now = DateTimeOffset.UtcNow;
+            await using (PokeFolioDbContext seed = CreateContext(testConnectionString, null))
+            {
+                userAId = await seed.Users
+                    .Where(user => user.Email == "collection-a@example.test")
+                    .Select(user => user.Id)
+                    .SingleAsync();
+                userBId = await seed.Users
+                    .Where(user => user.Email == "collection-b@example.test")
+                    .Select(user => user.Id)
+                    .SingleAsync();
+                seed.Cards.AddRange(cardIds.Select((cardId, index) => new CatalogCard
+                {
+                    Id = cardId,
+                    Tcg = "pokemon",
+                    Provider = "integration-test",
+                    ProviderCardId = $"collection-card-{index}",
+                    Name = $"Collection Test Card {index}",
+                    SetCode = "TEST",
+                    Number = (index + 1).ToString(CultureInfo.InvariantCulture),
+                    CreatedAt = now,
+                    UpdatedAt = now
+                }));
+                seed.CollectionHoldings.AddRange(
+                    CreateHolding(userAHoldingIds[0], userAId, cardIds[0], now),
+                    CreateHolding(userAHoldingIds[1], userAId, cardIds[1], now),
+                    CreateHolding(userAHoldingIds[2], userAId, cardIds[2], now),
+                    CreateHolding(userBHoldingId, userBId, cardIds[3], now));
+                await seed.SaveChangesAsync();
+            }
+
+            client.DefaultRequestHeaders.Authorization =
+                new AuthenticationHeaderValue("Bearer", userA.AccessToken);
+            using HttpResponseMessage firstPageResponse = await client.GetAsync(
+                "/api/v1/collection?limit=2");
+            Assert.AreEqual(HttpStatusCode.OK, firstPageResponse.StatusCode);
+            CollectionPageResponse? firstPage = await firstPageResponse.Content
+                .ReadFromJsonAsync<CollectionPageResponse>();
+            Assert.IsNotNull(firstPage);
+            Assert.HasCount(2, firstPage.Items);
+            Assert.IsNotNull(firstPage.NextCursor);
+
+            using HttpResponseMessage secondPageResponse = await client.GetAsync(
+                $"/api/v1/collection?limit=2&cursor={firstPage.NextCursor}");
+            Assert.AreEqual(HttpStatusCode.OK, secondPageResponse.StatusCode);
+            CollectionPageResponse? secondPage = await secondPageResponse.Content
+                .ReadFromJsonAsync<CollectionPageResponse>();
+            Assert.IsNotNull(secondPage);
+            Assert.HasCount(1, secondPage.Items);
+            Assert.IsNull(secondPage.NextCursor);
+            CollectionAssert.AreEquivalent(
+                userAHoldingIds,
+                firstPage.Items.Concat(secondPage.Items).Select(item => item.Id).ToArray());
+
+            using (HttpResponseMessage invalidCursor = await client.GetAsync(
+                       "/api/v1/collection?cursor=not-a-valid-cursor"))
+            {
+                Assert.AreEqual(HttpStatusCode.BadRequest, invalidCursor.StatusCode);
+            }
+
+            using (HttpResponseMessage owned = await client.GetAsync(
+                       $"/api/v1/collection/{userAHoldingIds[0]}"))
+            {
+                Assert.AreEqual(HttpStatusCode.OK, owned.StatusCode);
+                Assert.AreEqual("\"v1\"", owned.Headers.ETag?.Tag);
+            }
+
+            using (HttpResponseMessage crossUser = await client.GetAsync(
+                       $"/api/v1/collection/{userBHoldingId}"))
+            {
+                Assert.AreEqual(HttpStatusCode.NotFound, crossUser.StatusCode);
+                Assert.AreEqual(
+                    "application/problem+json",
+                    crossUser.Content.Headers.ContentType?.MediaType);
+                using JsonDocument problem = await JsonDocument.ParseAsync(
+                    await crossUser.Content.ReadAsStreamAsync());
+                Assert.IsTrue(problem.RootElement.TryGetProperty("correlationId", out _));
+            }
+
+            client.DefaultRequestHeaders.Authorization =
+                new AuthenticationHeaderValue("Bearer", userB.AccessToken);
+            using HttpResponseMessage manipulated = await client.GetAsync(
+                $"/api/v1/collection?user_id={userAId}");
+            Assert.AreEqual(HttpStatusCode.OK, manipulated.StatusCode);
+            CollectionPageResponse? userBPage = await manipulated.Content
+                .ReadFromJsonAsync<CollectionPageResponse>();
+            Assert.IsNotNull(userBPage);
+            Assert.HasCount(1, userBPage.Items);
+            Assert.AreEqual(userBHoldingId, userBPage.Items[0].Id);
         }
         finally
         {

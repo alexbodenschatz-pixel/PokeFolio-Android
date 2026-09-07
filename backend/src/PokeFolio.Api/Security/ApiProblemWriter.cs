@@ -17,7 +17,11 @@ public static class ApiProblemWriter
             {
                 Status = status,
                 Title = title,
-                Extensions = { ["code"] = code }
+                Extensions =
+                {
+                    ["code"] = code,
+                    ["correlationId"] = response.HttpContext.TraceIdentifier
+                }
             },
             options: null,
             contentType: "application/problem+json",

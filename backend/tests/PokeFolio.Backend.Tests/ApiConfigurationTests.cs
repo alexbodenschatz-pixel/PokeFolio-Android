@@ -1,4 +1,5 @@
 using System.Net;
+using System.Text.Json;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Configuration;
@@ -30,6 +31,9 @@ public sealed class ApiConfigurationTests
         Assert.AreEqual(
             "application/problem+json",
             challenge.Content.Headers.ContentType?.MediaType);
+        using JsonDocument problem = await JsonDocument.ParseAsync(
+            await challenge.Content.ReadAsStreamAsync());
+        Assert.IsTrue(problem.RootElement.TryGetProperty("correlationId", out _));
     }
 
     private sealed class TestApiFactory : WebApplicationFactory<global::Program>
