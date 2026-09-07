@@ -125,8 +125,14 @@ public final class MainActivity extends Activity {
         settings.setJavaScriptEnabled(true);
         settings.setDomStorageEnabled(true);
         settings.setDatabaseEnabled(true);
+        // The entry point and its subresources are packaged under android_asset.
         settings.setAllowFileAccess(true);
-        settings.setAllowContentAccess(true);
+        settings.setAllowContentAccess(false);
+        settings.setAllowFileAccessFromFileURLs(false);
+        settings.setAllowUniversalAccessFromFileURLs(false);
+        settings.setGeolocationEnabled(false);
+        settings.setJavaScriptCanOpenWindowsAutomatically(false);
+        settings.setSupportMultipleWindows(false);
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
         settings.setMediaPlaybackRequiresUserGesture(false);
         settings.setUserAgentString(settings.getUserAgentString() + " PokeFolio/0.16.5");
@@ -141,10 +147,9 @@ public final class MainActivity extends Activity {
 
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
-                Uri uri = request.getUrl();
-                return !("file".equalsIgnoreCase(uri.getScheme())
-                        && uri.getPath() != null
-                        && uri.getPath().startsWith("/android_asset/"));
+                return request == null
+                        || request.getUrl() == null
+                        || !AndroidWebViewSecurityPolicy.isTrustedAssetUrl(request.getUrl().toString());
             }
         });
         webView.setWebChromeClient(new WebChromeClient() {
@@ -158,14 +163,9 @@ public final class MainActivity extends Activity {
 
             @Override
             public void onPermissionRequest(PermissionRequest request) {
-                runOnUiThread(() -> {
-                    if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
-                        request.grant(request.getResources());
-                    } else {
-                        requestPermissions(new String[]{Manifest.permission.CAMERA}, CAMERA_PERMISSION);
-                        request.deny();
-                    }
-                });
+                // Camera capture is native (CameraX/file chooser). The bundled page does not need
+                // WebRTC, geolocation, MIDI or any other privileged browser resource.
+                if (request != null) runOnUiThread(request::deny);
             }
 
             @Override

@@ -64,17 +64,31 @@ public sealed class MainForm : Form
 
         webView.CoreWebView2.Settings.AreDefaultScriptDialogsEnabled = true;
         webView.CoreWebView2.Settings.IsStatusBarEnabled = false;
+        webView.CoreWebView2.Settings.AreDefaultContextMenusEnabled = false;
 #if !DEBUG
         webView.CoreWebView2.Settings.AreDevToolsEnabled = false;
 #endif
         webView.CoreWebView2.SetVirtualHostNameToFolderMapping(
-            "app.pokefolio.local",
+            WebViewSecurityPolicy.ApplicationHost,
             assets.Root,
-            CoreWebView2HostResourceAccessKind.Allow);
+            CoreWebView2HostResourceAccessKind.DenyCors);
         webView.CoreWebView2.SetVirtualHostNameToFolderMapping(
-            "desktop.pokefolio.local",
+            WebViewSecurityPolicy.DesktopAssetHost,
             assets.DesktopRoot,
             CoreWebView2HostResourceAccessKind.Allow);
+
+        // PokeNative is a privileged COM boundary. An untrusted document must never receive it.
+        webView.CoreWebView2.NavigationStarting += (_, args) =>
+        {
+            if (!WebViewSecurityPolicy.IsAllowedTopLevelNavigation(args.Uri)) args.Cancel = true;
+        };
+        webView.CoreWebView2.FrameNavigationStarting += (_, args) =>
+        {
+            if (!WebViewSecurityPolicy.IsAllowedFrameNavigation(args.Uri)) args.Cancel = true;
+        };
+        webView.CoreWebView2.NewWindowRequested += (_, args) => args.Handled = true;
+        webView.CoreWebView2.PermissionRequested += (_, args) =>
+            args.State = CoreWebView2PermissionState.Deny;
 
         var callbackDispatcher = new WebView2CallbackDispatcher(ExecuteScriptOnUiAsync);
         var fileCapture = new WindowsFileCapture(SelectImageFileAsync);
@@ -107,7 +121,7 @@ public sealed class MainForm : Form
         webView.CoreWebView2.AddHostObjectToScript("PokeNative", nativeBridge);
         var bootstrap = await File.ReadAllTextAsync(Path.Combine(assets.DesktopRoot, "desktop-bootstrap.js"));
         await webView.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync(bootstrap);
-        webView.Source = new Uri("https://app.pokefolio.local/index.html");
+        webView.Source = new Uri(WebViewSecurityPolicy.StartPage);
     }
 
     protected override void Dispose(bool disposing)
