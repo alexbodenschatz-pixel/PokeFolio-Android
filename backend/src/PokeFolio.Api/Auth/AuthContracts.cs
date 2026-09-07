@@ -14,6 +14,10 @@ public sealed record LoginCommand(
 
 public sealed record RefreshCommand(string? RefreshToken);
 
+public sealed record ChangePasswordCommand(
+    string? CurrentPassword,
+    string? NewPassword);
+
 public sealed record AuthSessionResponse(
     string AccessToken,
     string RefreshToken,
@@ -40,4 +44,12 @@ public sealed record AuthOperationResult(
 {
     public static AuthOperationResult Success(AuthSessionResponse session) => new(session, null);
     public static AuthOperationResult Failed(AuthFailure failure) => new(null, failure);
+}
+
+public sealed record AuthCommandResult(AuthFailure? Failure)
+{
+    public bool Succeeded => Failure is null;
+
+    public static AuthCommandResult Success() => new(Failure: null);
+    public static AuthCommandResult Failed(AuthFailure failure) => new(failure);
 }

@@ -19,6 +19,8 @@ public static class AuthEndpoints
             .AllowAnonymous()
             .RequireRateLimiting("auth-refresh");
         auth.MapPost("/logout", LogoutAsync);
+        auth.MapPost("/password/change", ChangePasswordAsync)
+            .RequireRateLimiting("auth-sensitive");
         return endpoints;
     }
 
@@ -65,6 +67,27 @@ public static class AuthEndpoints
 
         await sessions.RevokeCurrentDeviceAsync(userId.Value, deviceSessionId.Value, cancellationToken);
         return Results.NoContent();
+    }
+
+    private static async Task<IResult> ChangePasswordAsync(
+        ChangePasswordCommand command,
+        HttpContext context,
+        AuthSessionService sessions,
+        CancellationToken cancellationToken)
+    {
+        Guid? userId = PrincipalIdentity.GetUserId(context.User);
+        Guid? deviceSessionId = PrincipalIdentity.GetDeviceSessionId(context.User);
+        if (!userId.HasValue || !deviceSessionId.HasValue)
+        {
+            return Results.Unauthorized();
+        }
+
+        AuthCommandResult result = await sessions.ChangePasswordAsync(
+            userId.Value,
+            deviceSessionId.Value,
+            command,
+            cancellationToken);
+        return result.Succeeded ? Results.NoContent() : ToProblem(result.Failure!);
     }
 
     private static IResult ToProblem(AuthFailure failure)

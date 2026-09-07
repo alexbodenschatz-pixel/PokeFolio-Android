@@ -312,6 +312,61 @@ public sealed class PostgreSqlIsolationTests
                 Assert.AreEqual(HttpStatusCode.Unauthorized, otherDevicesRevoked.StatusCode);
             }
 
+            client.DefaultRequestHeaders.Authorization = null;
+            using HttpResponseMessage passwordPeerLoginResponse = await client.PostAsJsonAsync(
+                "/api/v1/auth/login",
+                new LoginCommand(
+                    "auth-a@example.test",
+                    "A secure PokeFolio password 1!",
+                    "Password Peer",
+                    "windows"));
+            Assert.AreEqual(HttpStatusCode.OK, passwordPeerLoginResponse.StatusCode);
+            AuthSessionResponse? passwordPeer = await passwordPeerLoginResponse.Content
+                .ReadFromJsonAsync<AuthSessionResponse>();
+            Assert.IsNotNull(passwordPeer);
+
+            client.DefaultRequestHeaders.Authorization =
+                new AuthenticationHeaderValue("Bearer", relogged.AccessToken);
+            using (HttpResponseMessage invalidCurrentPassword = await client.PostAsJsonAsync(
+                       "/api/v1/auth/password/change",
+                       new ChangePasswordCommand(
+                           "Wrong password 1!",
+                           "A newer PokeFolio password 2!")))
+            {
+                Assert.AreEqual(HttpStatusCode.BadRequest, invalidCurrentPassword.StatusCode);
+            }
+
+            using (HttpResponseMessage passwordChanged = await client.PostAsJsonAsync(
+                       "/api/v1/auth/password/change",
+                       new ChangePasswordCommand(
+                           "A secure PokeFolio password 1!",
+                           "A newer PokeFolio password 2!")))
+            {
+                Assert.AreEqual(HttpStatusCode.NoContent, passwordChanged.StatusCode);
+            }
+
+            using (HttpResponseMessage currentStillActive = await client.GetAsync("/api/v1/devices"))
+            {
+                Assert.AreEqual(HttpStatusCode.OK, currentStillActive.StatusCode);
+            }
+
+            client.DefaultRequestHeaders.Authorization =
+                new AuthenticationHeaderValue("Bearer", passwordPeer.AccessToken);
+            using (HttpResponseMessage passwordPeerRevoked = await client.GetAsync("/api/v1/devices"))
+            {
+                Assert.AreEqual(HttpStatusCode.Unauthorized, passwordPeerRevoked.StatusCode);
+            }
+
+            client.DefaultRequestHeaders.Authorization = null;
+            using HttpResponseMessage newPasswordLogin = await client.PostAsJsonAsync(
+                "/api/v1/auth/login",
+                new LoginCommand(
+                    "auth-a@example.test",
+                    "A newer PokeFolio password 2!",
+                    "Password Changed Device",
+                    "android"));
+            Assert.AreEqual(HttpStatusCode.OK, newPasswordLogin.StatusCode);
+
             client.DefaultRequestHeaders.Authorization =
                 new AuthenticationHeaderValue("Bearer", relogged.AccessToken);
             using HttpResponseMessage logout = await client.PostAsync(

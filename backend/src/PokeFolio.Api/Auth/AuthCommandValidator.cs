@@ -32,6 +32,33 @@ public static class AuthCommandValidator
         return errors;
     }
 
+    public static IReadOnlyDictionary<string, string[]> Validate(ChangePasswordCommand command)
+    {
+        var errors = new Dictionary<string, string[]>(StringComparer.Ordinal);
+        int currentLength = command.CurrentPassword?.Length ?? 0;
+        if (currentLength is < 1 or > 128)
+        {
+            errors["currentPassword"] =
+                ["Current password must contain 1 to 128 characters."];
+        }
+
+        int newLength = command.NewPassword?.Length ?? 0;
+        if (newLength is < 12 or > 128)
+        {
+            errors["newPassword"] =
+                ["New password must contain 12 to 128 characters."];
+        }
+        else if (string.Equals(
+                     command.CurrentPassword,
+                     command.NewPassword,
+                     StringComparison.Ordinal))
+        {
+            errors["newPassword"] = ["New password must differ from the current password."];
+        }
+
+        return errors;
+    }
+
     public static string NormalizeEmail(string email) => email.Trim();
     public static string NormalizeDeviceName(string deviceName) => deviceName.Trim();
     public static string NormalizePlatform(string platform) => platform.Trim().ToLowerInvariant();

@@ -176,6 +176,73 @@ public sealed class AuthSessionService(
         CancellationToken cancellationToken) =>
         await RevokeDeviceAsync(userId, deviceSessionId, timeProvider.GetUtcNow(), cancellationToken);
 
+    public async Task<AuthCommandResult> ChangePasswordAsync(
+        Guid userId,
+        Guid currentDeviceSessionId,
+        ChangePasswordCommand command,
+        CancellationToken cancellationToken)
+    {
+        IReadOnlyDictionary<string, string[]> errors = AuthCommandValidator.Validate(command);
+        if (errors.Count > 0)
+        {
+            return AuthCommandResult.Failed(new AuthFailure(
+                StatusCodes.Status400BadRequest,
+                "validation_failed",
+                "One or more fields are invalid.",
+                errors));
+        }
+
+        ApplicationUser? user = await userManager.FindByIdAsync(userId.ToString());
+        if (user is null)
+        {
+            return AuthCommandResult.Failed(new AuthFailure(
+                StatusCodes.Status401Unauthorized,
+                "authentication_required",
+                "Authentication is required."));
+        }
+
+        DateTimeOffset now = timeProvider.GetUtcNow();
+        await using var transaction = await database.Database.BeginTransactionAsync(cancellationToken);
+        user.UpdatedAt = now;
+        IdentityResult result = await userManager.ChangePasswordAsync(
+            user,
+            command.CurrentPassword!,
+            command.NewPassword!);
+        if (!result.Succeeded)
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            bool currentPasswordInvalid = result.Errors.Any(error =>
+                string.Equals(error.Code, "PasswordMismatch", StringComparison.Ordinal));
+            return currentPasswordInvalid
+                ? AuthCommandResult.Failed(new AuthFailure(
+                    StatusCodes.Status400BadRequest,
+                    "invalid_current_password",
+                    "Current password is invalid."))
+                : AuthCommandResult.Failed(new AuthFailure(
+                    StatusCodes.Status400BadRequest,
+                    "password_change_failed",
+                    "Password does not satisfy the account password policy.",
+                    new Dictionary<string, string[]>(StringComparer.Ordinal)
+                    {
+                        ["newPassword"] = result.Errors
+                            .Select(error => error.Description)
+                            .Distinct(StringComparer.Ordinal)
+                            .ToArray()
+                    }));
+        }
+
+        await database.DeviceSessions
+            .Where(device =>
+                device.UserId == userId &&
+                device.Id != currentDeviceSessionId &&
+                device.RevokedAt == null)
+            .ExecuteUpdateAsync(
+                setters => setters.SetProperty(device => device.RevokedAt, now),
+                cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+        return AuthCommandResult.Success();
+    }
+
     private async Task RevokeReplayedTokenFamilyAsync(
         string tokenHash,
         DateTimeOffset now,
