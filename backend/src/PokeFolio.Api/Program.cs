@@ -16,25 +16,30 @@ builder.Services.AddProblemDetails();
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<IUserContext, HttpUserContext>();
 
-AuthTokenOptions authTokenOptions = builder.Configuration
-    .GetSection(AuthTokenOptions.SectionName)
-    .Get<AuthTokenOptions>()
-    ?? throw new InvalidOperationException("Auth configuration is required.");
-authTokenOptions.Validate();
-builder.Services.AddSingleton(authTokenOptions);
+builder.Services.AddSingleton(_ =>
+{
+    AuthTokenOptions options = builder.Configuration
+        .GetSection(AuthTokenOptions.SectionName)
+        .Get<AuthTokenOptions>()
+        ?? throw new InvalidOperationException("Auth configuration is required.");
+    options.Validate();
+    return options;
+});
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<AuthTokenService>();
 builder.Services.AddSingleton<LoginTimingProtector>();
 builder.Services.AddScoped<AuthSessionService>();
 builder.Services.AddScoped<ActiveDeviceSessionValidator>();
 
-string connectionString = builder.Configuration.GetConnectionString("PokeFolio")
-    ?? throw new InvalidOperationException(
-        "ConnectionStrings:PokeFolio is required. Supply it through deployment secret configuration.");
-
-builder.Services.AddDbContext<PokeFolioDbContext>(options =>
+builder.Services.AddDbContext<PokeFolioDbContext>((services, options) =>
+{
+    string connectionString = services.GetRequiredService<IConfiguration>()
+        .GetConnectionString("PokeFolio")
+        ?? throw new InvalidOperationException(
+            "ConnectionStrings:PokeFolio is required. Supply it through deployment secret configuration.");
     options.UseNpgsql(connectionString, npgsql =>
-        npgsql.MigrationsAssembly(typeof(PokeFolioDbContext).Assembly.FullName)));
+        npgsql.MigrationsAssembly(typeof(PokeFolioDbContext).Assembly.FullName));
+});
 
 builder.Services
     .AddIdentityCore<ApplicationUser>(options =>
@@ -54,11 +59,14 @@ builder.Services
 
 builder.Services
     .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
-    .AddJwtBearer(options =>
+    .AddJwtBearer();
+builder.Services
+    .AddOptions<JwtBearerOptions>(JwtBearerDefaults.AuthenticationScheme)
+    .Configure<AuthTokenOptions, IHostEnvironment>((options, authTokenOptions, environment) =>
     {
         options.MapInboundClaims = false;
         options.SaveToken = false;
-        options.IncludeErrorDetails = builder.Environment.IsDevelopment();
+        options.IncludeErrorDetails = environment.IsDevelopment();
         options.TokenValidationParameters = new TokenValidationParameters
         {
             ClockSkew = TimeSpan.FromSeconds(30),
