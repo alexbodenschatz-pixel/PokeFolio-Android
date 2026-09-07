@@ -83,6 +83,16 @@ public sealed class PersistenceModelTests
         Assert.AreEqual(0, card.GetDeclaredQueryFilters().Count);
     }
 
+    [TestMethod]
+    public void AnonymousOwnershipFilterTranslatesWithoutDereferencingNullableUserId()
+    {
+        using var database = CreateContext(null);
+
+        string sql = database.CollectionHoldings.AsNoTracking().ToQueryString();
+
+        Assert.IsFalse(string.IsNullOrWhiteSpace(sql));
+    }
+
     private static PokeFolioDbContext CreateContext(Guid? userId)
     {
         var options = new DbContextOptionsBuilder<PokeFolioDbContext>()

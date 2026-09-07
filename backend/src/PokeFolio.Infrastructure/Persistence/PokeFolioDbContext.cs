@@ -69,7 +69,8 @@ public sealed class PokeFolioDbContext(
                 .WithMany()
                 .HasForeignKey(device => device.UserId)
                 .OnDelete(DeleteBehavior.Cascade);
-            entity.HasQueryFilter(device => CurrentUserId.HasValue && device.UserId == CurrentUserId.Value);
+            entity.HasQueryFilter(device =>
+                CurrentUserId.HasValue && (Guid?)device.UserId == CurrentUserId);
         });
     }
 
@@ -135,7 +136,8 @@ public sealed class PokeFolioDbContext(
                 .WithMany()
                 .HasForeignKey(holding => holding.UserId)
                 .OnDelete(DeleteBehavior.Cascade);
-            entity.HasQueryFilter(holding => CurrentUserId.HasValue && holding.UserId == CurrentUserId.Value);
+            entity.HasQueryFilter(holding =>
+                CurrentUserId.HasValue && (Guid?)holding.UserId == CurrentUserId);
         });
     }
 
@@ -163,7 +165,7 @@ public sealed class PokeFolioDbContext(
                 .HasPrincipalKey(device => new { device.UserId, device.Id })
                 .OnDelete(DeleteBehavior.Cascade);
             entity.HasQueryFilter(operation =>
-                CurrentUserId.HasValue && operation.UserId == CurrentUserId.Value);
+                CurrentUserId.HasValue && (Guid?)operation.UserId == CurrentUserId);
         });
 
         builder.Entity<UserChange>(entity =>
@@ -183,7 +185,8 @@ public sealed class PokeFolioDbContext(
                 .WithMany()
                 .HasForeignKey(change => change.UserId)
                 .OnDelete(DeleteBehavior.Cascade);
-            entity.HasQueryFilter(change => CurrentUserId.HasValue && change.UserId == CurrentUserId.Value);
+            entity.HasQueryFilter(change =>
+                CurrentUserId.HasValue && (Guid?)change.UserId == CurrentUserId);
         });
     }
 }
