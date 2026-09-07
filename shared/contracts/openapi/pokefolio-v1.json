@@ -1,0 +1,1053 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "PokeFolio API",
+    "version": "1.0.0-alpha.1",
+    "description": "Versioned contract for authenticated PokeFolio clients. Private ownership is always derived from the authenticated principal."
+  },
+  "servers": [
+    {
+      "url": "/api/v1"
+    }
+  ],
+  "security": [
+    {
+      "bearerAuth": []
+    }
+  ],
+  "paths": {
+    "/auth/register": {
+      "post": {
+        "operationId": "registerAccount",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegisterCommand"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Account and first device session created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthSession"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "429": {
+            "$ref": "#/components/responses/Problem"
+          }
+        }
+      }
+    },
+    "/auth/login": {
+      "post": {
+        "operationId": "login",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginCommand"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Authenticated device session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthSession"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "401": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "429": {
+            "$ref": "#/components/responses/Problem"
+          }
+        }
+      }
+    },
+    "/auth/refresh": {
+      "post": {
+        "operationId": "refreshSession",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RefreshCommand"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Rotated device session tokens",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthSession"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Problem"
+          }
+        }
+      }
+    },
+    "/auth/logout": {
+      "post": {
+        "operationId": "logout",
+        "responses": {
+          "204": {
+            "description": "Current device token family revoked"
+          },
+          "401": {
+            "$ref": "#/components/responses/Problem"
+          }
+        }
+      }
+    },
+    "/devices": {
+      "get": {
+        "operationId": "listDevices",
+        "responses": {
+          "200": {
+            "description": "Devices belonging to the authenticated account",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Device"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Problem"
+          }
+        }
+      },
+      "delete": {
+        "operationId": "logoutOtherDevices",
+        "responses": {
+          "204": {
+            "description": "All other device token families revoked"
+          },
+          "401": {
+            "$ref": "#/components/responses/Problem"
+          }
+        }
+      }
+    },
+    "/devices/{deviceId}": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/DeviceId"
+        }
+      ],
+      "delete": {
+        "operationId": "revokeDevice",
+        "responses": {
+          "204": {
+            "description": "Selected owned device token family revoked"
+          },
+          "404": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "409": {
+            "$ref": "#/components/responses/Problem"
+          }
+        }
+      }
+    },
+    "/collection": {
+      "get": {
+        "operationId": "listCollection",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Cursor"
+          },
+          {
+            "$ref": "#/components/parameters/PageSize"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Page of holdings owned by the authenticated account",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CollectionPage"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Problem"
+          }
+        }
+      },
+      "post": {
+        "operationId": "createHolding",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateHoldingCommand"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Holding created for the authenticated account",
+            "headers": {
+              "ETag": {
+                "$ref": "#/components/headers/ETag"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CollectionHolding"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "409": {
+            "$ref": "#/components/responses/Problem"
+          }
+        }
+      }
+    },
+    "/collection/{holdingId}": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/HoldingId"
+        }
+      ],
+      "get": {
+        "operationId": "getHolding",
+        "responses": {
+          "200": {
+            "description": "Owned holding",
+            "headers": {
+              "ETag": {
+                "$ref": "#/components/headers/ETag"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CollectionHolding"
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/Problem"
+          }
+        }
+      },
+      "patch": {
+        "operationId": "updateHolding",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IfMatch"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/merge-patch+json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateHoldingCommand"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated holding",
+            "headers": {
+              "ETag": {
+                "$ref": "#/components/headers/ETag"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CollectionHolding"
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "412": {
+            "$ref": "#/components/responses/Problem"
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteHolding",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IfMatch"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Holding tombstoned"
+          },
+          "404": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "412": {
+            "$ref": "#/components/responses/Problem"
+          }
+        }
+      }
+    },
+    "/collection/{holdingId}/quantity-delta": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/HoldingId"
+        }
+      ],
+      "post": {
+        "operationId": "applyQuantityDelta",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QuantityDeltaCommand"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Delta committed atomically and idempotently",
+            "headers": {
+              "ETag": {
+                "$ref": "#/components/headers/ETag"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CollectionHolding"
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "409": {
+            "$ref": "#/components/responses/Problem"
+          }
+        }
+      }
+    },
+    "/sync/operations": {
+      "post": {
+        "operationId": "pushSyncOperations",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SyncOperationBatch"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Per-operation idempotent results",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SyncOperationResultBatch"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Problem"
+          }
+        }
+      }
+    },
+    "/sync/changes": {
+      "get": {
+        "operationId": "pullSyncChanges",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Cursor"
+          },
+          {
+            "$ref": "#/components/parameters/PageSize"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Durable user-scoped change page",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChangePage"
+                }
+              }
+            }
+          },
+          "410": {
+            "$ref": "#/components/responses/Problem"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT"
+      }
+    },
+    "parameters": {
+      "DeviceId": {
+        "name": "deviceId",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "HoldingId": {
+        "name": "holdingId",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "Cursor": {
+        "name": "cursor",
+        "in": "query",
+        "required": false,
+        "schema": {
+          "type": ["string", "null"],
+          "maxLength": 512
+        }
+      },
+      "PageSize": {
+        "name": "limit",
+        "in": "query",
+        "required": false,
+        "schema": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 500,
+          "default": 100
+        }
+      },
+      "IdempotencyKey": {
+        "name": "Idempotency-Key",
+        "in": "header",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "IfMatch": {
+        "name": "If-Match",
+        "in": "header",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 100
+        }
+      }
+    },
+    "headers": {
+      "ETag": {
+        "description": "Opaque optimistic-concurrency version",
+        "schema": {
+          "type": "string"
+        }
+      }
+    },
+    "responses": {
+      "Problem": {
+        "description": "Machine-readable error",
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/ProblemDetails"
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "RegisterCommand": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["email", "password", "deviceName", "platform"],
+        "properties": {
+          "email": {
+            "type": "string",
+            "format": "email",
+            "maxLength": 254
+          },
+          "password": {
+            "type": "string",
+            "minLength": 12,
+            "maxLength": 128
+          },
+          "deviceName": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "platform": {
+            "$ref": "#/components/schemas/DevicePlatform"
+          }
+        }
+      },
+      "LoginCommand": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["email", "password", "deviceName", "platform"],
+        "properties": {
+          "email": {
+            "type": "string",
+            "format": "email",
+            "maxLength": 254
+          },
+          "password": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "deviceName": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "platform": {
+            "$ref": "#/components/schemas/DevicePlatform"
+          }
+        }
+      },
+      "RefreshCommand": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["refreshToken"],
+        "properties": {
+          "refreshToken": {
+            "type": "string",
+            "minLength": 32,
+            "maxLength": 1024
+          }
+        }
+      },
+      "AuthSession": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["accessToken", "refreshToken", "accessTokenExpiresAt", "device"],
+        "properties": {
+          "accessToken": {
+            "type": "string"
+          },
+          "refreshToken": {
+            "type": "string"
+          },
+          "accessTokenExpiresAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "device": {
+            "$ref": "#/components/schemas/Device"
+          }
+        }
+      },
+      "DevicePlatform": {
+        "type": "string",
+        "enum": ["android", "windows", "web", "ios", "macos"]
+      },
+      "Device": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "name", "platform", "createdAt", "lastSeenAt", "current"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "platform": {
+            "$ref": "#/components/schemas/DevicePlatform"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "lastSeenAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "current": {
+            "type": "boolean"
+          }
+        }
+      },
+      "CreateHoldingCommand": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "cardId", "language", "variant", "condition", "quantity"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "cardId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "variantId": {
+            "type": ["string", "null"],
+            "format": "uuid"
+          },
+          "language": {
+            "$ref": "#/components/schemas/CardLanguage"
+          },
+          "variant": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "condition": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 40
+          },
+          "quantity": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000000
+          },
+          "notes": {
+            "type": ["string", "null"],
+            "maxLength": 10000
+          }
+        }
+      },
+      "UpdateHoldingCommand": {
+        "type": "object",
+        "additionalProperties": false,
+        "minProperties": 1,
+        "properties": {
+          "language": {
+            "$ref": "#/components/schemas/CardLanguage"
+          },
+          "variant": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "condition": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 40
+          },
+          "notes": {
+            "type": ["string", "null"],
+            "maxLength": 10000
+          }
+        }
+      },
+      "QuantityDeltaCommand": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["operationId", "delta"],
+        "properties": {
+          "operationId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "delta": {
+            "type": "integer",
+            "minimum": -10000,
+            "maximum": 10000,
+            "description": "Non-zero signed delta applied atomically; zero is rejected by application validation."
+          }
+        }
+      },
+      "CollectionHolding": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "cardId", "language", "variant", "condition", "quantity", "version", "createdAt", "updatedAt"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "cardId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "variantId": {
+            "type": ["string", "null"],
+            "format": "uuid"
+          },
+          "language": {
+            "$ref": "#/components/schemas/CardLanguage"
+          },
+          "variant": {
+            "type": "string"
+          },
+          "condition": {
+            "type": "string"
+          },
+          "quantity": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "notes": {
+            "type": ["string", "null"]
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "CollectionPage": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["items", "nextCursor"],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CollectionHolding"
+            }
+          },
+          "nextCursor": {
+            "type": ["string", "null"]
+          }
+        }
+      },
+      "SyncOperationBatch": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["operations"],
+        "properties": {
+          "operations": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 100,
+            "items": {
+              "$ref": "#/components/schemas/SyncOperation"
+            }
+          }
+        }
+      },
+      "SyncOperation": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/SyncQuantityDeltaOperation"
+          },
+          {
+            "$ref": "#/components/schemas/SyncHoldingUpdateOperation"
+          },
+          {
+            "$ref": "#/components/schemas/SyncHoldingDeleteOperation"
+          }
+        ],
+        "discriminator": {
+          "propertyName": "kind",
+          "mapping": {
+            "holding.quantityDelta": "#/components/schemas/SyncQuantityDeltaOperation",
+            "holding.update": "#/components/schemas/SyncHoldingUpdateOperation",
+            "holding.delete": "#/components/schemas/SyncHoldingDeleteOperation"
+          }
+        }
+      },
+      "SyncQuantityDeltaOperation": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["operationId", "kind", "holdingId", "delta"],
+        "properties": {
+          "operationId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "kind": {
+            "const": "holding.quantityDelta"
+          },
+          "holdingId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "delta": {
+            "type": "integer",
+            "minimum": -10000,
+            "maximum": 10000
+          }
+        }
+      },
+      "SyncHoldingUpdateOperation": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["operationId", "kind", "holdingId", "baseVersion", "changes"],
+        "properties": {
+          "operationId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "kind": {
+            "const": "holding.update"
+          },
+          "holdingId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "baseVersion": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "changes": {
+            "$ref": "#/components/schemas/UpdateHoldingCommand"
+          }
+        }
+      },
+      "SyncHoldingDeleteOperation": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["operationId", "kind", "holdingId", "baseVersion"],
+        "properties": {
+          "operationId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "kind": {
+            "const": "holding.delete"
+          },
+          "holdingId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "baseVersion": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      },
+      "SyncOperationResultBatch": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["results"],
+        "properties": {
+          "results": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SyncOperationResult"
+            }
+          }
+        }
+      },
+      "SyncOperationResult": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["operationId", "status"],
+        "properties": {
+          "operationId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["applied", "duplicate", "conflict", "rejected"]
+          },
+          "entity": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/CollectionHolding"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "problem": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ProblemDetails"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "ChangePage": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["changes", "nextCursor", "hasMore"],
+        "properties": {
+          "changes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChangeEvent"
+            }
+          },
+          "nextCursor": {
+            "type": "string"
+          },
+          "hasMore": {
+            "type": "boolean"
+          }
+        }
+      },
+      "ChangeEvent": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["sequence", "entityType", "entityId", "action", "version", "occurredAt"],
+        "properties": {
+          "sequence": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "entityType": {
+            "type": "string"
+          },
+          "entityId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "action": {
+            "type": "string",
+            "enum": ["upsert", "delete"]
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "payload": {
+            "type": ["object", "null"]
+          },
+          "occurredAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "CardLanguage": {
+        "type": "string",
+        "enum": ["de", "en", "ja", "fr", "it", "es", "ko", "zh-Hans", "zh-Hant"]
+      },
+      "ProblemDetails": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["type", "title", "status", "code", "correlationId"],
+        "properties": {
+          "type": {
+            "type": "string",
+            "format": "uri-reference"
+          },
+          "title": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer",
+            "minimum": 400,
+            "maximum": 599
+          },
+          "detail": {
+            "type": ["string", "null"]
+          },
+          "code": {
+            "type": "string"
+          },
+          "correlationId": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}
