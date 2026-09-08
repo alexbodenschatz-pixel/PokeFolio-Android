@@ -208,17 +208,18 @@ public sealed class CollectionMutationService(
             .AsNoTracking()
             .Where(operation =>
                 operation.UserId == userId &&
-                operation.OperationId == operationId &&
-                operation.Status == "succeeded")
+                operation.OperationId == operationId)
             .Select(operation => new
             {
+                operation.Status,
                 operation.OperationKind,
                 operation.RequestHash,
                 operation.ResponseJson
             })
             .SingleOrDefaultAsync(cancellationToken);
         if (processed is null) return null;
-        if (!string.Equals(processed.OperationKind, operationKind, StringComparison.Ordinal) ||
+        if (!string.Equals(processed.Status, "succeeded", StringComparison.Ordinal) ||
+            !string.Equals(processed.OperationKind, operationKind, StringComparison.Ordinal) ||
             !string.Equals(processed.RequestHash, requestHash, StringComparison.Ordinal))
         {
             return Failed(

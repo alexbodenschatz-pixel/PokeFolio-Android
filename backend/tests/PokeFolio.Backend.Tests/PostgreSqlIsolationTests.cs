@@ -6,6 +6,8 @@ using System.Text.Json;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.Extensions.Configuration;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using Npgsql;
@@ -138,6 +140,85 @@ public sealed class PostgreSqlIsolationTests
                 });
                 await Assert.ThrowsExactlyAsync<DbUpdateException>(
                     async () => await crossUserOperationContext.SaveChangesAsync());
+            }
+        }
+        finally
+        {
+            await DropDatabaseAsync(serverConnectionString, databaseName);
+        }
+    }
+
+    [TestMethod]
+    [TestCategory("PostgreSQL")]
+    public async Task QuantityConstraintUpgradePreservesLegacyValuesWithoutBlockingDeployment()
+    {
+        string? serverConnectionString = Environment.GetEnvironmentVariable("POKEFOLIO_TEST_POSTGRES");
+        if (string.IsNullOrWhiteSpace(serverConnectionString))
+        {
+            Assert.Inconclusive(
+                "Set POKEFOLIO_TEST_POSTGRES to run the PostgreSQL migration upgrade test.");
+            return;
+        }
+
+        string databaseName = $"pokefolio_test_{Guid.NewGuid():N}";
+        string testConnectionString = await CreateDatabaseAsync(serverConnectionString, databaseName);
+
+        try
+        {
+            Guid userId = Guid.NewGuid();
+            Guid cardId = Guid.NewGuid();
+            Guid holdingId = Guid.NewGuid();
+            DateTimeOffset now = DateTimeOffset.UtcNow;
+            await using (PokeFolioDbContext upgrade = CreateContext(testConnectionString, null))
+            {
+                IMigrator migrator = upgrade.Database.GetService<IMigrator>();
+                await migrator.MigrateAsync("20260907165006_AddRefreshTokenReplayTracking");
+                upgrade.Users.Add(CreateUser(userId, "legacy-quantity@example.test", now));
+                upgrade.Cards.Add(new CatalogCard
+                {
+                    Id = cardId,
+                    Tcg = "pokemon",
+                    Provider = "integration-test",
+                    ProviderCardId = "legacy-quantity-card",
+                    Name = "Legacy Quantity Card",
+                    SetCode = "TEST",
+                    Number = "legacy",
+                    CreatedAt = now,
+                    UpdatedAt = now
+                });
+                await upgrade.SaveChangesAsync();
+                int legacyQuantity = CollectionHolding.MaximumQuantity + 1;
+                await upgrade.Database.ExecuteSqlInterpolatedAsync($"""
+                    INSERT INTO collection.holdings
+                        (id, user_id, card_id, variant_id, language, variant, condition,
+                         quantity, notes, version, created_at, updated_at)
+                    VALUES
+                        ({holdingId}, {userId}, {cardId}, NULL, {"de"}, {"normal"}, {"near-mint"},
+                         {legacyQuantity}, NULL, {1L}, {now}, {now})
+                    """);
+
+                await migrator.MigrateAsync();
+            }
+
+            await using var connection = new NpgsqlConnection(testConnectionString);
+            await connection.OpenAsync();
+            await using (NpgsqlCommand quantity = connection.CreateCommand())
+            {
+                quantity.CommandText =
+                    "SELECT quantity FROM collection.holdings WHERE id = @holding_id";
+                quantity.Parameters.AddWithValue("holding_id", holdingId);
+                Assert.AreEqual(
+                    CollectionHolding.MaximumQuantity + 1,
+                    (int)(await quantity.ExecuteScalarAsync())!);
+            }
+            await using (NpgsqlCommand validation = connection.CreateCommand())
+            {
+                validation.CommandText = """
+                    SELECT convalidated
+                    FROM pg_constraint
+                    WHERE conname = 'ck_holdings_quantity_range';
+                    """;
+                Assert.AreEqual(false, (bool)(await validation.ExecuteScalarAsync())!);
             }
         }
         finally
@@ -712,6 +793,29 @@ public sealed class PostgreSqlIsolationTests
                 Assert.AreEqual(HttpStatusCode.Conflict, changedReplay.StatusCode);
             }
 
+            Guid legacyOperationId = Guid.NewGuid();
+            await using (PokeFolioDbContext legacyOperationContext =
+                CreateContext(testConnectionString, userAId))
+            {
+                legacyOperationContext.ProcessedSyncOperations.Add(new ProcessedSyncOperation
+                {
+                    UserId = userAId,
+                    DeviceSessionId = androidSession.Device.Id,
+                    OperationId = legacyOperationId,
+                    Status = "applied",
+                    ProcessedAt = now
+                });
+                await legacyOperationContext.SaveChangesAsync();
+            }
+            using (HttpResponseMessage legacyKeyReuse = await PostWithIdempotencyAsync(
+                       android,
+                       $"/api/v1/collection/{holdingId}/quantity-delta",
+                       legacyOperationId,
+                       new QuantityDeltaCommand(legacyOperationId, 1)))
+            {
+                Assert.AreEqual(HttpStatusCode.Conflict, legacyKeyReuse.StatusCode);
+            }
+
             Guid foreignOperationId = Guid.NewGuid();
             using (HttpResponseMessage crossUser = await PostWithIdempotencyAsync(
                        otherUser,
@@ -734,7 +838,9 @@ public sealed class PostgreSqlIsolationTests
                 .Where(holding => holding.Id == holdingId)
                 .Select(holding => holding.Quantity)
                 .SingleAsync());
-            Assert.AreEqual(4, await verify.ProcessedSyncOperations.CountAsync());
+            Assert.AreEqual(5, await verify.ProcessedSyncOperations.CountAsync());
+            Assert.AreEqual(4, await verify.ProcessedSyncOperations
+                .CountAsync(operation => operation.Status == "succeeded"));
             Assert.AreEqual(4, await verify.UserChanges.CountAsync());
         }
         finally

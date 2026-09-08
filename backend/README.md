@@ -17,6 +17,8 @@ dotnet run --project backend/src/PokeFolio.Api/PokeFolio.Api.csproj
 
 For EF migration tooling, set `POKEFOLIO_DB_CONNECTION` to a development database. Migrations are reviewed artifacts and must not be auto-applied by application startup.
 
+The `BoundHoldingQuantity` migration preserves legacy rows above the current one-million-copy limit. It installs the range constraint as `NOT VALID`, which still rejects new invalid writes, and validates it automatically when no legacy exception exists. If an upgraded database keeps the constraint unvalidated, inventory owners must review and explicitly normalize or split those exceptional rows after a backup; the migration never truncates quantities silently.
+
 `Auth:SigningKey` is mandatory and intentionally empty in `appsettings.json`. Supply it through environment or deployment secret configuration. Access tokens are short-lived JWTs with validated signature, issuer, audience and expiry. Refresh tokens are random opaque values; only SHA-256 hashes are stored. Every access token is also checked against its active server-side device session, so logout and replay revocation take effect immediately.
 
 The PostgreSQL integration test creates and removes a uniquely named temporary database. Point `POKEFOLIO_TEST_POSTGRES` at an administrative test server to enable it; without that variable, the test is reported as skipped. Never point it at a production server.

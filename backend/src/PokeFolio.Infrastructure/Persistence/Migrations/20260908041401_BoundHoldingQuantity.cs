@@ -15,11 +15,25 @@ namespace PokeFolio.Infrastructure.Persistence.Migrations
                 schema: "collection",
                 table: "holdings");
 
-            migrationBuilder.AddCheckConstraint(
-                name: "ck_holdings_quantity_range",
-                schema: "collection",
-                table: "holdings",
-                sql: "quantity >= 0 AND quantity <= 1000000");
+            migrationBuilder.Sql(
+                """
+                ALTER TABLE collection.holdings
+                ADD CONSTRAINT ck_holdings_quantity_range
+                CHECK (quantity >= 0 AND quantity <= 1000000) NOT VALID;
+
+                DO $pokefolio$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1
+                        FROM collection.holdings
+                        WHERE quantity > 1000000
+                    ) THEN
+                        ALTER TABLE collection.holdings
+                        VALIDATE CONSTRAINT ck_holdings_quantity_range;
+                    END IF;
+                END
+                $pokefolio$;
+                """);
         }
 
         /// <inheritdoc />
