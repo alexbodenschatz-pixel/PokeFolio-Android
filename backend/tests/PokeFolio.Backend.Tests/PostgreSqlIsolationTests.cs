@@ -14,6 +14,7 @@ using Microsoft.VisualStudio.TestTools.UnitTesting;
 using Npgsql;
 using PokeFolio.Api.Auth;
 using PokeFolio.Api.Collection;
+using PokeFolio.Api.Sync;
 using PokeFolio.Domain.Abstractions;
 using PokeFolio.Domain.Collection;
 using PokeFolio.Infrastructure.Catalog;
@@ -1147,6 +1148,70 @@ public sealed class PostgreSqlIsolationTests
                        new QuantityDeltaCommand(Guid.NewGuid(), 1)))
             {
                 Assert.AreEqual(HttpStatusCode.BadRequest, missingIdempotency.StatusCode);
+            }
+
+            var pulledChanges = new List<SyncChangeResponse>();
+            string? syncCursor = null;
+            bool hasMore;
+            do
+            {
+                string requestUri = "/api/v1/sync/changes?limit=3";
+                if (syncCursor is not null)
+                {
+                    requestUri += $"&cursor={Uri.EscapeDataString(syncCursor)}";
+                }
+                using HttpResponseMessage pull = await android.GetAsync(requestUri);
+                Assert.AreEqual(HttpStatusCode.OK, pull.StatusCode);
+                SyncChangePageResponse? page = await pull.Content
+                    .ReadFromJsonAsync<SyncChangePageResponse>();
+                Assert.IsNotNull(page);
+                Assert.IsFalse(string.IsNullOrWhiteSpace(page.NextCursor));
+                pulledChanges.AddRange(page.Changes);
+                syncCursor = page.NextCursor;
+                hasMore = page.HasMore;
+            }
+            while (hasMore);
+
+            Assert.HasCount(8, pulledChanges);
+            for (int index = 1; index < pulledChanges.Count; index++)
+            {
+                Assert.IsTrue(
+                    pulledChanges[index].Sequence > pulledChanges[index - 1].Sequence);
+            }
+            Assert.AreEqual(7, pulledChanges.Count(change => change.Action == "upsert"));
+            Assert.AreEqual(1, pulledChanges.Count(change => change.Action == "delete"));
+            Assert.IsTrue(pulledChanges
+                .Where(change => change.Action == "upsert")
+                .All(change => change.Payload?.ValueKind == JsonValueKind.Object));
+            SyncChangeResponse pulledDeletion = pulledChanges.Single(change =>
+                change.EntityId == holdingId && change.Action == "delete");
+            Assert.AreEqual(7L, pulledDeletion.Version);
+            Assert.IsNull(pulledDeletion.Payload);
+
+            using (HttpResponseMessage caughtUp = await android.GetAsync(
+                       $"/api/v1/sync/changes?cursor={Uri.EscapeDataString(syncCursor!)}"))
+            {
+                Assert.AreEqual(HttpStatusCode.OK, caughtUp.StatusCode);
+                SyncChangePageResponse? page = await caughtUp.Content
+                    .ReadFromJsonAsync<SyncChangePageResponse>();
+                Assert.IsNotNull(page);
+                Assert.HasCount(0, page.Changes);
+                Assert.IsFalse(page.HasMore);
+                Assert.AreEqual(syncCursor, page.NextCursor);
+            }
+            using (HttpResponseMessage invalidSyncCursor = await android.GetAsync(
+                       "/api/v1/sync/changes?cursor=not-a-cursor"))
+            {
+                Assert.AreEqual(HttpStatusCode.BadRequest, invalidSyncCursor.StatusCode);
+            }
+            using (HttpResponseMessage isolatedPull = await otherUser.GetAsync(
+                       $"/api/v1/sync/changes?user_id={userAId}"))
+            {
+                Assert.AreEqual(HttpStatusCode.OK, isolatedPull.StatusCode);
+                SyncChangePageResponse? page = await isolatedPull.Content
+                    .ReadFromJsonAsync<SyncChangePageResponse>();
+                Assert.IsNotNull(page);
+                Assert.HasCount(0, page.Changes);
             }
 
             await using PokeFolioDbContext verify = CreateContext(testConnectionString, userAId);

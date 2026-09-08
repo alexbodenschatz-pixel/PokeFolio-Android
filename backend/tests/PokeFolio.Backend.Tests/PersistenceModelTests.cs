@@ -142,6 +142,23 @@ public sealed class PersistenceModelTests
         StringAssert.Contains(sql, "LIMIT");
     }
 
+    [TestMethod]
+    public void SyncChangeCursorTranslatesToABoundedOrderedQuery()
+    {
+        using var database = CreateContext(Guid.NewGuid());
+
+        string sql = database.UserChanges
+            .AsNoTracking()
+            .Where(change => change.Sequence > 42)
+            .OrderBy(change => change.Sequence)
+            .Take(101)
+            .ToQueryString();
+
+        StringAssert.Contains(sql, "ORDER BY");
+        StringAssert.Contains(sql, "LIMIT");
+        StringAssert.Contains(sql, "> 42");
+    }
+
     private static PokeFolioDbContext CreateContext(Guid? userId)
     {
         var options = new DbContextOptionsBuilder<PokeFolioDbContext>()

@@ -131,6 +131,7 @@ test('sync separates commutative deltas from versioned absolute edits and durabl
     .properties.status.enum;
   assert.deepEqual(resultStatuses, ['applied', 'duplicate', 'conflict', 'rejected']);
   assert.ok(contract.paths['/sync/changes'].get);
+  assert.ok(contract.paths['/sync/changes'].get.responses['400']);
   assert.ok(contract.components.schemas.ChangeEvent.required.includes('sequence'));
 });
 

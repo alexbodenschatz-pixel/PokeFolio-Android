@@ -1,6 +1,6 @@
 # PokeFolio backend
 
-The backend is a .NET 10 modular-monolith foundation backed by PostgreSQL 15 or newer (PostgreSQL 17 is the CI baseline). It defines framework Identity storage, user-owned collection/device/sync data, ownership query filters, idempotent operation records and durable change records. Versioned auth, device-management, collection reads and idempotent holding mutations are exposed under `/api/v1`; batched sync remains gated until its pull/push behavior is implemented and tested together.
+The backend is a .NET 10 modular-monolith foundation backed by PostgreSQL 15 or newer (PostgreSQL 17 is the CI baseline). It defines framework Identity storage, user-owned collection/device/sync data, ownership query filters, idempotent operation records and durable change records. Versioned auth, device-management, collection reads, idempotent holding mutations and durable sync pulls are exposed under `/api/v1`; batched sync pushes remain gated until their per-operation behavior is implemented and tested.
 
 ## Local commands
 
@@ -53,5 +53,6 @@ dotnet test backend/PokeFolio.Backend.slnx -c Release
 - absolute holding edits require a strong `If-Match` ETag and fail stale writes with `412`;
 - deletes retain versioned, user-owned soft tombstones so old offline commands cannot target a newly reused identifier;
 - durable collection changes use the contract-level `upsert` and `delete` actions;
+- sync pulls use bounded keyset pagination over monotonic change sequences and never accept a request `user_id`;
 - anonymous auth operations have per-client rate limits and machine-readable 429 responses;
 - missing database configuration fails startup instead of silently selecting an unsafe store.

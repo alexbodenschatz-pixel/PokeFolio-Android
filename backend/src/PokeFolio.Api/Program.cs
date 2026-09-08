@@ -9,6 +9,7 @@ using PokeFolio.Api.Auth;
 using PokeFolio.Api.Collection;
 using PokeFolio.Api.Devices;
 using PokeFolio.Api.Security;
+using PokeFolio.Api.Sync;
 using PokeFolio.Domain.Abstractions;
 using PokeFolio.Infrastructure.Identity;
 using PokeFolio.Infrastructure.Persistence;
@@ -38,6 +39,7 @@ builder.Services.AddScoped<AuthSessionService>();
 builder.Services.AddScoped<CollectionMutationService>();
 builder.Services.AddScoped<CollectionReadService>();
 builder.Services.AddScoped<DeviceManagementService>();
+builder.Services.AddScoped<SyncChangeReadService>();
 builder.Services.AddScoped<ActiveDeviceSessionValidator>();
 
 builder.Services.AddDbContext<PokeFolioDbContext>((services, options) =>
@@ -145,6 +147,7 @@ app.UseAuthorization();
 app.MapAuthEndpoints();
 app.MapCollectionEndpoints();
 app.MapDeviceEndpoints();
+app.MapSyncEndpoints();
 
 app.MapGet("/health/live", () => Results.Ok(new
 {
