@@ -89,7 +89,13 @@ test('collection writes define retry and optimistic-concurrency semantics', () =
     const names = allParameters('/collection/{holdingId}', operation).map(parameterName);
     assert.ok(names.includes('Idempotency-Key'));
     assert.ok(names.includes('If-Match'));
+    assert.ok(operation.responses['400']);
+    assert.ok(operation.responses['409']);
+    assert.ok(operation.responses['412']);
   }
+
+  assert.match(contract.components.parameters.IfMatch.description, /strong holding ETag/i);
+  assert.equal(contract.components.parameters.IfMatch.schema.pattern, '^\\"v[1-9][0-9]*\\"$');
 
   const deltaNames = allParameters('/collection/{holdingId}/quantity-delta', delta).map(parameterName);
   assert.ok(deltaNames.includes('Idempotency-Key'));

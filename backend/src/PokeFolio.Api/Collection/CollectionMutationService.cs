@@ -74,7 +74,7 @@ public sealed class CollectionMutationService(
                 operationKind,
                 requestHash,
                 holding.Id,
-                "created",
+                "upsert",
                 holding.Version,
                 payload,
                 now);
@@ -177,13 +177,181 @@ public sealed class CollectionMutationService(
             operationKind,
             requestHash,
             changed.Id,
-            "updated",
+            "upsert",
             changed.Version,
             payload,
             now);
         await database.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
         return CollectionMutationResult.Success(response);
+    }
+
+    public async Task<CollectionMutationResult> UpdateAsync(
+        Guid userId,
+        Guid deviceSessionId,
+        Guid holdingId,
+        Guid operationId,
+        long expectedVersion,
+        JsonElement command,
+        CancellationToken cancellationToken)
+    {
+        if (!CollectionCommandValidator.TryParseUpdate(
+                command,
+                out UpdateHoldingPatch patch,
+                out IReadOnlyDictionary<string, string[]> errors))
+        {
+            return ValidationFailed(errors);
+        }
+
+        const string operationKind = "holding.update";
+        string requestHash = HashRequest(
+            operationKind,
+            new UpdateFingerprint(holdingId, expectedVersion, patch));
+        try
+        {
+            await using var transaction = await database.Database.BeginTransactionAsync(cancellationToken);
+            await AcquireOperationLockAsync(userId, operationId, cancellationToken);
+            CollectionMutationResult? replay = await FindReplayAsync(
+                userId,
+                operationId,
+                operationKind,
+                requestHash,
+                cancellationToken);
+            if (replay is not null)
+            {
+                await transaction.CommitAsync(cancellationToken);
+                return replay;
+            }
+
+            CollectionHolding? holding = await database.CollectionHoldings.SingleOrDefaultAsync(
+                item => item.UserId == userId && item.Id == holdingId,
+                cancellationToken);
+            if (holding is null)
+            {
+                return Failed(
+                    StatusCodes.Status404NotFound,
+                    "holding_not_found",
+                    "The selected collection holding was not found.");
+            }
+            if (holding.Version != expectedVersion || holding.Version == long.MaxValue)
+            {
+                return PreconditionFailed();
+            }
+
+            DateTimeOffset now = timeProvider.GetUtcNow();
+            holding.UpdateDetails(
+                expectedVersion,
+                patch.HasLanguage
+                    ? CollectionCommandValidator.NormalizeLanguage(patch.Language!)
+                    : holding.Language,
+                patch.HasVariant ? patch.Variant! : holding.Variant,
+                patch.HasCondition ? patch.Condition! : holding.Condition,
+                patch.HasNotes ? patch.Notes : holding.Notes,
+                now);
+            CollectionHoldingResponse response = ToResponse(holding);
+            string payload = JsonSerializer.Serialize(response, JsonOptions);
+            AddSuccessRecords(
+                userId,
+                deviceSessionId,
+                operationId,
+                operationKind,
+                requestHash,
+                holding.Id,
+                "upsert",
+                holding.Version,
+                payload,
+                now);
+            await database.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+            return CollectionMutationResult.Success(response);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            return PreconditionFailed();
+        }
+        catch (DbUpdateException error) when (
+            error.InnerException is PostgresException
+            {
+                SqlState: PostgresErrorCodes.UniqueViolation
+            })
+        {
+            return Failed(
+                StatusCodes.Status409Conflict,
+                "holding_conflict",
+                "Another holding already uses the requested card identity.");
+        }
+    }
+
+    public async Task<CollectionMutationResult> DeleteAsync(
+        Guid userId,
+        Guid deviceSessionId,
+        Guid holdingId,
+        Guid operationId,
+        long expectedVersion,
+        CancellationToken cancellationToken)
+    {
+        const string operationKind = "holding.delete";
+        string requestHash = HashRequest(
+            operationKind,
+            new DeleteFingerprint(holdingId, expectedVersion));
+        try
+        {
+            await using var transaction = await database.Database.BeginTransactionAsync(cancellationToken);
+            await AcquireOperationLockAsync(userId, operationId, cancellationToken);
+            CollectionMutationResult? replay = await FindReplayAsync(
+                userId,
+                operationId,
+                operationKind,
+                requestHash,
+                cancellationToken);
+            if (replay is not null)
+            {
+                await transaction.CommitAsync(cancellationToken);
+                return replay;
+            }
+
+            CollectionHolding? holding = await database.CollectionHoldings.SingleOrDefaultAsync(
+                item => item.UserId == userId && item.Id == holdingId,
+                cancellationToken);
+            if (holding is null)
+            {
+                return Failed(
+                    StatusCodes.Status404NotFound,
+                    "holding_not_found",
+                    "The selected collection holding was not found.");
+            }
+            if (holding.Version != expectedVersion || holding.Version == long.MaxValue)
+            {
+                return PreconditionFailed();
+            }
+
+            DateTimeOffset now = timeProvider.GetUtcNow();
+            holding.MarkDeleted(expectedVersion, now);
+            CollectionHoldingResponse tombstone = ToResponse(holding) with
+            {
+                Quantity = 0
+            };
+            string responseJson = JsonSerializer.Serialize(tombstone, JsonOptions);
+            AddSuccessRecords(
+                userId,
+                deviceSessionId,
+                operationId,
+                operationKind,
+                requestHash,
+                holding.Id,
+                "delete",
+                tombstone.Version,
+                responseJson,
+                now,
+                tombstone: true);
+            await database.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+            return CollectionMutationResult.Success(tombstone);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            return PreconditionFailed();
+        }
     }
 
     private async Task AcquireOperationLockAsync(
@@ -246,7 +414,8 @@ public sealed class CollectionMutationService(
         string action,
         long version,
         string payload,
-        DateTimeOffset now)
+        DateTimeOffset now,
+        bool tombstone = false)
     {
         database.ProcessedSyncOperations.Add(new ProcessedSyncOperation
         {
@@ -266,7 +435,7 @@ public sealed class CollectionMutationService(
             EntityId = holdingId,
             Action = action,
             Version = version,
-            PayloadJson = payload,
+            PayloadJson = tombstone ? null : payload,
             OccurredAt = now
         });
     }
@@ -312,6 +481,16 @@ public sealed class CollectionMutationService(
     private static CollectionMutationResult Failed(int status, string code, string title) =>
         CollectionMutationResult.Failed(new CollectionMutationFailure(status, code, title));
 
+    private static CollectionMutationResult PreconditionFailed() => Failed(
+        StatusCodes.Status412PreconditionFailed,
+        "version_mismatch",
+        "If-Match does not match the current holding version.");
+
     private sealed record RequestFingerprint<TPayload>(string OperationKind, TPayload Payload);
     private sealed record QuantityDeltaFingerprint(Guid HoldingId, QuantityDeltaCommand Command);
+    private sealed record UpdateFingerprint(
+        Guid HoldingId,
+        long ExpectedVersion,
+        UpdateHoldingPatch Patch);
+    private sealed record DeleteFingerprint(Guid HoldingId, long ExpectedVersion);
 }

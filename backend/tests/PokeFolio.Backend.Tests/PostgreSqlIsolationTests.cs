@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -28,6 +29,10 @@ public sealed class PostgreSqlIsolationTests
     private static readonly byte[] ApiSigningKey = Enumerable.Range(1, 32)
         .Select(value => (byte)value)
         .ToArray();
+    private static readonly string[] CanonicalizedLegacyActions =
+        ["upsert", "upsert", "delete"];
+    private static readonly string[] LegacyActions =
+        ["created", "updated", "deleted"];
 
     [TestMethod]
     [TestCategory("PostgreSQL")]
@@ -219,6 +224,177 @@ public sealed class PostgreSqlIsolationTests
                     WHERE conname = 'ck_holdings_quantity_range';
                     """;
                 Assert.AreEqual(false, (bool)(await validation.ExecuteScalarAsync())!);
+            }
+        }
+        finally
+        {
+            await DropDatabaseAsync(serverConnectionString, databaseName);
+        }
+    }
+
+    [TestMethod]
+    [TestCategory("PostgreSQL")]
+    public async Task UnknownLegacyChangeActionStopsUpgradeWithoutMutatingTheRow()
+    {
+        string? serverConnectionString = Environment.GetEnvironmentVariable("POKEFOLIO_TEST_POSTGRES");
+        if (string.IsNullOrWhiteSpace(serverConnectionString))
+        {
+            Assert.Inconclusive(
+                "Set POKEFOLIO_TEST_POSTGRES to run the PostgreSQL fail-closed upgrade test.");
+            return;
+        }
+
+        string databaseName = $"pokefolio_test_{Guid.NewGuid():N}";
+        string testConnectionString = await CreateDatabaseAsync(serverConnectionString, databaseName);
+
+        try
+        {
+            Guid userId = Guid.NewGuid();
+            Guid entityId = Guid.NewGuid();
+            DateTimeOffset now = DateTimeOffset.UtcNow;
+            await using (PokeFolioDbContext upgrade = CreateContext(testConnectionString, null))
+            {
+                IMigrator migrator = upgrade.Database.GetService<IMigrator>();
+                await migrator.MigrateAsync("20260908041658_BindIdempotencyPayload");
+                upgrade.Users.Add(CreateUser(userId, "unknown-action@example.test", now));
+                await upgrade.SaveChangesAsync();
+                await upgrade.Database.ExecuteSqlInterpolatedAsync($"""
+                    INSERT INTO sync.changes
+                        (user_id, entity_type, entity_id, action, version, payload_json, occurred_at)
+                    VALUES
+                        ({userId}, {"holding"}, {entityId}, {"legacy-custom"}, {1L}, NULL, {now})
+                    """);
+
+                await Assert.ThrowsExactlyAsync<PostgresException>(
+                    async () => await migrator.MigrateAsync());
+            }
+
+            await using var connection = new NpgsqlConnection(testConnectionString);
+            await connection.OpenAsync();
+            await using (NpgsqlCommand action = connection.CreateCommand())
+            {
+                action.CommandText =
+                    "SELECT action FROM sync.changes WHERE entity_id = @entity_id";
+                action.Parameters.AddWithValue("entity_id", entityId);
+                Assert.AreEqual("legacy-custom", (string)(await action.ExecuteScalarAsync())!);
+            }
+            await using (NpgsqlCommand history = connection.CreateCommand())
+            {
+                history.CommandText = """
+                    SELECT count(*)
+                    FROM "__EFMigrationsHistory"
+                    WHERE "MigrationId" LIKE '%CanonicalizeChangeActions';
+                    """;
+                Assert.AreEqual(0L, (long)(await history.ExecuteScalarAsync())!);
+            }
+        }
+        finally
+        {
+            await DropDatabaseAsync(serverConnectionString, databaseName);
+        }
+    }
+
+    [TestMethod]
+    [TestCategory("PostgreSQL")]
+    public async Task TombstoneUpgradePreservesHoldingsAndCanonicalizesKnownLegacyActions()
+    {
+        string? serverConnectionString = Environment.GetEnvironmentVariable("POKEFOLIO_TEST_POSTGRES");
+        if (string.IsNullOrWhiteSpace(serverConnectionString))
+        {
+            Assert.Inconclusive(
+                "Set POKEFOLIO_TEST_POSTGRES to run the PostgreSQL tombstone upgrade test.");
+            return;
+        }
+
+        string databaseName = $"pokefolio_test_{Guid.NewGuid():N}";
+        string testConnectionString = await CreateDatabaseAsync(serverConnectionString, databaseName);
+
+        try
+        {
+            Guid userId = Guid.NewGuid();
+            Guid cardId = Guid.NewGuid();
+            Guid holdingId = Guid.NewGuid();
+            DateTimeOffset now = DateTimeOffset.UtcNow;
+            await using (PokeFolioDbContext upgrade = CreateContext(testConnectionString, null))
+            {
+                IMigrator migrator = upgrade.Database.GetService<IMigrator>();
+                await migrator.MigrateAsync("20260908041658_BindIdempotencyPayload");
+                upgrade.Users.Add(CreateUser(userId, "legacy-actions@example.test", now));
+                upgrade.Cards.Add(new CatalogCard
+                {
+                    Id = cardId,
+                    Tcg = "pokemon",
+                    Provider = "integration-test",
+                    ProviderCardId = "legacy-action-card",
+                    Name = "Legacy Action Card",
+                    SetCode = "TEST",
+                    Number = "actions",
+                    CreatedAt = now,
+                    UpdatedAt = now
+                });
+                await upgrade.SaveChangesAsync();
+                await upgrade.Database.ExecuteSqlInterpolatedAsync($"""
+                    INSERT INTO collection.holdings
+                        (id, user_id, card_id, variant_id, language, variant, condition,
+                         quantity, notes, version, created_at, updated_at)
+                    VALUES
+                        ({holdingId}, {userId}, {cardId}, NULL, {"de"}, {"normal"}, {"near-mint"},
+                         {1}, NULL, {1L}, {now}, {now})
+                    """);
+                foreach (string action in LegacyActions)
+                {
+                    await upgrade.Database.ExecuteSqlInterpolatedAsync($"""
+                        INSERT INTO sync.changes
+                            (user_id, entity_type, entity_id, action, version, payload_json, occurred_at)
+                        VALUES
+                            ({userId}, {"holding"}, {holdingId}, {action}, {1L}, NULL, {now})
+                        """);
+                }
+
+                await migrator.MigrateAsync();
+            }
+
+            await using var connection = new NpgsqlConnection(testConnectionString);
+            await connection.OpenAsync();
+            await using (NpgsqlCommand tombstoneColumn = connection.CreateCommand())
+            {
+                tombstoneColumn.CommandText =
+                    "SELECT deleted_at FROM collection.holdings WHERE id = @holding_id";
+                tombstoneColumn.Parameters.AddWithValue("holding_id", holdingId);
+                Assert.AreEqual(DBNull.Value, await tombstoneColumn.ExecuteScalarAsync());
+            }
+            var actions = new List<string>();
+            await using (NpgsqlCommand canonicalActions = connection.CreateCommand())
+            {
+                canonicalActions.CommandText =
+                    "SELECT action FROM sync.changes ORDER BY sequence";
+                await using NpgsqlDataReader reader = await canonicalActions.ExecuteReaderAsync();
+                while (await reader.ReadAsync()) actions.Add(reader.GetString(0));
+            }
+            CollectionAssert.AreEqual(CanonicalizedLegacyActions, actions.ToArray());
+
+            await using (NpgsqlCommand validation = connection.CreateCommand())
+            {
+                validation.CommandText = """
+                    SELECT convalidated
+                    FROM pg_constraint
+                    WHERE conname = 'ck_changes_action';
+                    """;
+                Assert.AreEqual(true, (bool)(await validation.ExecuteScalarAsync())!);
+            }
+            await using (NpgsqlCommand rejectedAction = connection.CreateCommand())
+            {
+                rejectedAction.CommandText = """
+                    INSERT INTO sync.changes
+                        (user_id, entity_type, entity_id, action, version, payload_json, occurred_at)
+                    VALUES
+                        (@user_id, 'holding', @entity_id, 'invalid-new-action', 1, NULL, @occurred_at)
+                    """;
+                rejectedAction.Parameters.AddWithValue("user_id", userId);
+                rejectedAction.Parameters.AddWithValue("entity_id", Guid.NewGuid());
+                rejectedAction.Parameters.AddWithValue("occurred_at", now);
+                await Assert.ThrowsExactlyAsync<PostgresException>(
+                    async () => await rejectedAction.ExecuteNonQueryAsync());
             }
         }
         finally
@@ -816,6 +992,146 @@ public sealed class PostgreSqlIsolationTests
                 Assert.AreEqual(HttpStatusCode.Conflict, legacyKeyReuse.StatusCode);
             }
 
+            Guid updateOperationId = Guid.NewGuid();
+            using (HttpResponseMessage updated = await PatchWithPreconditionsAsync(
+                       windows,
+                       $"/api/v1/collection/{holdingId}",
+                       updateOperationId,
+                       "\"v4\"",
+                       """{"condition":"excellent","notes":"Updated on Windows"}"""))
+            {
+                Assert.AreEqual(HttpStatusCode.OK, updated.StatusCode);
+                Assert.AreEqual("\"v5\"", updated.Headers.ETag?.Tag);
+                CollectionHoldingResponse? body = await updated.Content
+                    .ReadFromJsonAsync<CollectionHoldingResponse>();
+                Assert.IsNotNull(body);
+                Assert.AreEqual("excellent", body.Condition);
+                Assert.AreEqual("Updated on Windows", body.Notes);
+                Assert.AreEqual(4, body.Quantity);
+            }
+            using (HttpResponseMessage replayedUpdate = await PatchWithPreconditionsAsync(
+                       android,
+                       $"/api/v1/collection/{holdingId}",
+                       updateOperationId,
+                       "\"v4\"",
+                       """{"condition":"excellent","notes":"Updated on Windows"}"""))
+            {
+                Assert.AreEqual(HttpStatusCode.OK, replayedUpdate.StatusCode);
+                Assert.AreEqual("\"v5\"", replayedUpdate.Headers.ETag?.Tag);
+            }
+            using (HttpResponseMessage changedUpdateReplay = await PatchWithPreconditionsAsync(
+                       android,
+                       $"/api/v1/collection/{holdingId}",
+                       updateOperationId,
+                       "\"v4\"",
+                       """{"condition":"excellent","notes":"Changed retry"}"""))
+            {
+                Assert.AreEqual(HttpStatusCode.Conflict, changedUpdateReplay.StatusCode);
+            }
+
+            using (HttpResponseMessage staleUpdate = await PatchWithPreconditionsAsync(
+                       android,
+                       $"/api/v1/collection/{holdingId}",
+                       Guid.NewGuid(),
+                       "\"v4\"",
+                       """{"notes":"stale offline edit"}"""))
+            {
+                Assert.AreEqual(HttpStatusCode.PreconditionFailed, staleUpdate.StatusCode);
+            }
+
+            Guid clearNotesOperationId = Guid.NewGuid();
+            using (HttpResponseMessage cleared = await PatchWithPreconditionsAsync(
+                       android,
+                       $"/api/v1/collection/{holdingId}",
+                       clearNotesOperationId,
+                       "\"v5\"",
+                       """{"notes":null}"""))
+            {
+                Assert.AreEqual(HttpStatusCode.OK, cleared.StatusCode);
+                Assert.AreEqual("\"v6\"", cleared.Headers.ETag?.Tag);
+                CollectionHoldingResponse? body = await cleared.Content
+                    .ReadFromJsonAsync<CollectionHoldingResponse>();
+                Assert.IsNotNull(body);
+                Assert.IsNull(body.Notes);
+            }
+
+            using (HttpResponseMessage invalidIfMatch = await PatchWithPreconditionsAsync(
+                       android,
+                       $"/api/v1/collection/{holdingId}",
+                       Guid.NewGuid(),
+                       "W/\"v6\"",
+                       """{"notes":"must not apply"}"""))
+            {
+                Assert.AreEqual(HttpStatusCode.BadRequest, invalidIfMatch.StatusCode);
+            }
+
+            using (HttpResponseMessage crossUserUpdate = await PatchWithPreconditionsAsync(
+                       otherUser,
+                       $"/api/v1/collection/{holdingId}",
+                       Guid.NewGuid(),
+                       "\"v6\"",
+                       """{"notes":"foreign edit"}"""))
+            {
+                Assert.AreEqual(HttpStatusCode.NotFound, crossUserUpdate.StatusCode);
+            }
+
+            using (HttpResponseMessage staleDelete = await DeleteWithPreconditionsAsync(
+                       windows,
+                       $"/api/v1/collection/{holdingId}",
+                       Guid.NewGuid(),
+                       "\"v5\""))
+            {
+                Assert.AreEqual(HttpStatusCode.PreconditionFailed, staleDelete.StatusCode);
+            }
+
+            Guid deleteOperationId = Guid.NewGuid();
+            using (HttpResponseMessage deleted = await DeleteWithPreconditionsAsync(
+                       windows,
+                       $"/api/v1/collection/{holdingId}",
+                       deleteOperationId,
+                       "\"v6\""))
+            {
+                Assert.AreEqual(HttpStatusCode.NoContent, deleted.StatusCode);
+            }
+            using (HttpResponseMessage replayedDelete = await DeleteWithPreconditionsAsync(
+                       android,
+                       $"/api/v1/collection/{holdingId}",
+                       deleteOperationId,
+                       "\"v6\""))
+            {
+                Assert.AreEqual(HttpStatusCode.NoContent, replayedDelete.StatusCode);
+            }
+            using (HttpResponseMessage deletedRead = await android.GetAsync(
+                       $"/api/v1/collection/{holdingId}"))
+            {
+                Assert.AreEqual(HttpStatusCode.NotFound, deletedRead.StatusCode);
+            }
+
+            using (HttpResponseMessage reusedDeletedId = await PostWithIdempotencyAsync(
+                       android,
+                       "/api/v1/collection",
+                       Guid.NewGuid(),
+                       createCommand))
+            {
+                Assert.AreEqual(HttpStatusCode.Conflict, reusedDeletedId.StatusCode);
+            }
+
+            Guid replacementHoldingId = Guid.NewGuid();
+            CreateHoldingCommand replacementCommand = createCommand with
+            {
+                Id = replacementHoldingId,
+                Notes = "Re-added after deletion"
+            };
+            using (HttpResponseMessage replacement = await PostWithIdempotencyAsync(
+                       android,
+                       "/api/v1/collection",
+                       Guid.NewGuid(),
+                       replacementCommand))
+            {
+                Assert.AreEqual(HttpStatusCode.Created, replacement.StatusCode);
+                Assert.AreEqual("\"v1\"", replacement.Headers.ETag?.Tag);
+            }
+
             Guid foreignOperationId = Guid.NewGuid();
             using (HttpResponseMessage crossUser = await PostWithIdempotencyAsync(
                        otherUser,
@@ -834,14 +1150,30 @@ public sealed class PostgreSqlIsolationTests
             }
 
             await using PokeFolioDbContext verify = CreateContext(testConnectionString, userAId);
-            Assert.AreEqual(4, await verify.CollectionHoldings
-                .Where(holding => holding.Id == holdingId)
-                .Select(holding => holding.Quantity)
-                .SingleAsync());
-            Assert.AreEqual(5, await verify.ProcessedSyncOperations.CountAsync());
-            Assert.AreEqual(4, await verify.ProcessedSyncOperations
+            CollectionHolding[] visibleHoldings = await verify.CollectionHoldings
+                .AsNoTracking()
+                .ToArrayAsync();
+            Assert.HasCount(1, visibleHoldings);
+            Assert.AreEqual(replacementHoldingId, visibleHoldings[0].Id);
+
+            CollectionHolding tombstone = await verify.CollectionHoldings
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .SingleAsync(holding => holding.UserId == userAId && holding.Id == holdingId);
+            Assert.AreEqual(7L, tombstone.Version);
+            Assert.IsNotNull(tombstone.DeletedAt);
+
+            Assert.AreEqual(9, await verify.ProcessedSyncOperations.CountAsync());
+            Assert.AreEqual(8, await verify.ProcessedSyncOperations
                 .CountAsync(operation => operation.Status == "succeeded"));
-            Assert.AreEqual(4, await verify.UserChanges.CountAsync());
+            Assert.AreEqual(8, await verify.UserChanges.CountAsync());
+            Assert.AreEqual(0, await verify.UserChanges.CountAsync(change =>
+                change.Action != "upsert" && change.Action != "delete"));
+            UserChange deletion = await verify.UserChanges
+                .Where(change => change.EntityId == holdingId && change.Action == "delete")
+                .SingleAsync();
+            Assert.AreEqual(7L, deletion.Version);
+            Assert.IsNull(deletion.PayloadJson);
         }
         finally
         {
@@ -889,6 +1221,37 @@ public sealed class PostgreSqlIsolationTests
             Content = JsonContent.Create(command)
         };
         request.Headers.Add("Idempotency-Key", operationId.ToString("D"));
+        return await client.SendAsync(request);
+    }
+
+    private static async Task<HttpResponseMessage> PatchWithPreconditionsAsync(
+        HttpClient client,
+        string requestUri,
+        Guid operationId,
+        string ifMatch,
+        string mergePatch)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Patch, requestUri)
+        {
+            Content = new StringContent(
+                mergePatch,
+                Encoding.UTF8,
+                "application/merge-patch+json")
+        };
+        request.Headers.Add("Idempotency-Key", operationId.ToString("D"));
+        request.Headers.TryAddWithoutValidation("If-Match", ifMatch);
+        return await client.SendAsync(request);
+    }
+
+    private static async Task<HttpResponseMessage> DeleteWithPreconditionsAsync(
+        HttpClient client,
+        string requestUri,
+        Guid operationId,
+        string ifMatch)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Delete, requestUri);
+        request.Headers.Add("Idempotency-Key", operationId.ToString("D"));
+        request.Headers.TryAddWithoutValidation("If-Match", ifMatch);
         return await client.SendAsync(request);
     }
 

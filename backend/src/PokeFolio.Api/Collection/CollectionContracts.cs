@@ -14,6 +14,16 @@ public sealed record QuantityDeltaCommand(
     Guid OperationId,
     int Delta);
 
+public sealed record UpdateHoldingPatch(
+    bool HasLanguage,
+    string? Language,
+    bool HasVariant,
+    string? Variant,
+    bool HasCondition,
+    string? Condition,
+    bool HasNotes,
+    string? Notes);
+
 public sealed record CollectionHoldingResponse(
     Guid Id,
     Guid CardId,

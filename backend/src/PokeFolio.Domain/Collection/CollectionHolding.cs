@@ -50,6 +50,7 @@ public sealed class CollectionHolding
     public long Version { get; private set; }
     public DateTimeOffset CreatedAt { get; private set; }
     public DateTimeOffset UpdatedAt { get; private set; }
+    public DateTimeOffset? DeletedAt { get; private set; }
 
     public static CollectionHolding Create(
         Guid id,
@@ -109,6 +110,21 @@ public sealed class CollectionHolding
         Condition = RequireText(condition, 40, nameof(condition));
         Notes = NormalizeOptionalText(notes, 10_000, nameof(notes));
         Touch(now);
+    }
+
+    public void MarkDeleted(long expectedVersion, DateTimeOffset now)
+    {
+        if (expectedVersion != Version)
+        {
+            throw new CollectionConflictException("The holding was changed by another operation.");
+        }
+        if (DeletedAt.HasValue)
+        {
+            throw new CollectionConflictException("The holding was already deleted.");
+        }
+
+        Touch(now);
+        DeletedAt = now;
     }
 
     private void Touch(DateTimeOffset now)

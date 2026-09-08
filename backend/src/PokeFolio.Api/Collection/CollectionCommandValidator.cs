@@ -1,3 +1,4 @@
+using System.Text.Json;
 using PokeFolio.Domain.Collection;
 
 namespace PokeFolio.Api.Collection;
@@ -56,6 +57,96 @@ public static class CollectionCommandValidator
         return errors;
     }
 
+    public static bool TryParseUpdate(
+        JsonElement value,
+        out UpdateHoldingPatch patch,
+        out IReadOnlyDictionary<string, string[]> errors)
+    {
+        var mutableErrors = new Dictionary<string, string[]>(StringComparer.Ordinal);
+        string? language = null;
+        string? variant = null;
+        string? condition = null;
+        string? notes = null;
+        bool hasLanguage = false;
+        bool hasVariant = false;
+        bool hasCondition = false;
+        bool hasNotes = false;
+
+        if (value.ValueKind != JsonValueKind.Object)
+        {
+            mutableErrors["body"] = ["Merge patch must be a JSON object."];
+        }
+        else
+        {
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            foreach (JsonProperty property in value.EnumerateObject())
+            {
+                if (!seen.Add(property.Name))
+                {
+                    mutableErrors[property.Name] = ["Property must not occur more than once."];
+                    continue;
+                }
+
+                switch (property.Name)
+                {
+                    case "language":
+                        hasLanguage = true;
+                        language = ReadString(property, mutableErrors);
+                        if (language is not null) ValidateLanguage(language, mutableErrors);
+                        break;
+                    case "variant":
+                        hasVariant = true;
+                        variant = ReadString(property, mutableErrors);
+                        if (variant is not null) ValidateText(variant, 80, "variant", mutableErrors);
+                        break;
+                    case "condition":
+                        hasCondition = true;
+                        condition = ReadString(property, mutableErrors);
+                        if (condition is not null)
+                        {
+                            ValidateText(condition, 40, "condition", mutableErrors);
+                        }
+                        break;
+                    case "notes":
+                        hasNotes = true;
+                        if (property.Value.ValueKind == JsonValueKind.Null)
+                        {
+                            notes = null;
+                        }
+                        else
+                        {
+                            notes = ReadString(property, mutableErrors);
+                            if (notes?.Length > 10_000)
+                            {
+                                mutableErrors["notes"] = ["Notes cannot exceed 10000 characters."];
+                            }
+                        }
+                        break;
+                    default:
+                        mutableErrors[property.Name] = ["Property is not supported by this merge patch."];
+                        break;
+                }
+            }
+
+            if (!hasLanguage && !hasVariant && !hasCondition && !hasNotes)
+            {
+                mutableErrors["body"] = ["Merge patch must contain at least one supported property."];
+            }
+        }
+
+        patch = new UpdateHoldingPatch(
+            hasLanguage,
+            language,
+            hasVariant,
+            variant,
+            hasCondition,
+            condition,
+            hasNotes,
+            notes);
+        errors = mutableErrors;
+        return mutableErrors.Count == 0;
+    }
+
     public static string NormalizeLanguage(string language) =>
         Languages[language.Trim()];
 
@@ -81,5 +172,17 @@ public static class CollectionCommandValidator
         {
             errors[field] = [$"Value must contain 1 to {maximumLength} characters."];
         }
+    }
+
+    private static string? ReadString(
+        JsonProperty property,
+        Dictionary<string, string[]> errors)
+    {
+        if (property.Value.ValueKind != JsonValueKind.String)
+        {
+            errors[property.Name] = ["Value must be a JSON string."];
+            return null;
+        }
+        return property.Value.GetString();
     }
 }

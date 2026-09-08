@@ -349,7 +349,13 @@
               }
             }
           },
+          "400": {
+            "$ref": "#/components/responses/Problem"
+          },
           "404": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "409": {
             "$ref": "#/components/responses/Problem"
           },
           "412": {
@@ -371,7 +377,13 @@
           "204": {
             "description": "Holding tombstoned"
           },
+          "400": {
+            "$ref": "#/components/responses/Problem"
+          },
           "404": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "409": {
             "$ref": "#/components/responses/Problem"
           },
           "412": {
@@ -553,10 +565,11 @@
         "name": "If-Match",
         "in": "header",
         "required": true,
+        "description": "One strong holding ETag returned by the API, for example \"v3\". Wildcards, weak validators and lists are rejected.",
         "schema": {
           "type": "string",
-          "minLength": 3,
-          "maxLength": 100
+          "pattern": "^\\\"v[1-9][0-9]*\\\"$",
+          "maxLength": 22
         }
       }
     },

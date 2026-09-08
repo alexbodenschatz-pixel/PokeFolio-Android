@@ -68,6 +68,7 @@ public sealed class PersistenceModelTests
 
         IEntityType holding = designTimeModel.FindEntityType(typeof(CollectionHolding))!;
         Assert.IsTrue(holding.FindProperty(nameof(CollectionHolding.Version))!.IsConcurrencyToken);
+        Assert.IsTrue(holding.FindProperty(nameof(CollectionHolding.DeletedAt))!.IsNullable);
 
         IIndex holdingIdentityIndex = holding.GetIndexes().Single(index =>
             index.IsUnique &&
@@ -77,6 +78,15 @@ public sealed class PersistenceModelTests
             false,
             holdingIdentityIndex.GetAreNullsDistinct(),
             "A null VariantId must not allow duplicate holdings for the same card identity.");
+        Assert.AreEqual(
+            "deleted_at IS NULL",
+            holdingIdentityIndex.GetFilter(),
+            "Deleted tombstones must reserve their identifiers without blocking a replacement holding.");
+
+        IEntityType change = designTimeModel.FindEntityType(typeof(UserChange))!;
+        ICheckConstraint actionConstraint = change.GetCheckConstraints().Single(constraint =>
+            constraint.Name == "ck_changes_action");
+        Assert.AreEqual("action IN ('upsert', 'delete')", actionConstraint.Sql);
     }
 
     [TestMethod]

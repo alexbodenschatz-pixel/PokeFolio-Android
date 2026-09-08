@@ -60,6 +60,19 @@ public sealed class CollectionHoldingTests
     }
 
     [TestMethod]
+    public void DeleteCreatesAMonotonicPersistentTombstone()
+    {
+        var holding = Create(quantity: 1);
+
+        holding.MarkDeleted(1, Started.AddMinutes(1));
+
+        Assert.AreEqual(2L, holding.Version);
+        Assert.AreEqual(Started.AddMinutes(1), holding.DeletedAt);
+        Assert.ThrowsExactly<CollectionConflictException>(() =>
+            holding.MarkDeleted(2, Started.AddMinutes(2)));
+    }
+
+    [TestMethod]
     public void OwnershipAndIdentityAreEstablishedAtCreation()
     {
         Guid userId = Guid.NewGuid();

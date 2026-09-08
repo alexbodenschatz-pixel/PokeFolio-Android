@@ -1,6 +1,6 @@
 # PokeFolio backend
 
-The backend is a .NET 10 modular-monolith foundation backed by PostgreSQL 15 or newer (PostgreSQL 17 is the CI baseline). It defines framework Identity storage, user-owned collection/device/sync data, ownership query filters, idempotent operation records and durable change records. Versioned auth, device-management, collection reads, holding creation and atomic quantity-delta endpoints are exposed under `/api/v1`; absolute updates, deletes and batched sync remain gated until their optimistic-concurrency behavior is implemented and tested together.
+The backend is a .NET 10 modular-monolith foundation backed by PostgreSQL 15 or newer (PostgreSQL 17 is the CI baseline). It defines framework Identity storage, user-owned collection/device/sync data, ownership query filters, idempotent operation records and durable change records. Versioned auth, device-management, collection reads and idempotent holding mutations are exposed under `/api/v1`; batched sync remains gated until its pull/push behavior is implemented and tested together.
 
 ## Local commands
 
@@ -18,6 +18,10 @@ dotnet run --project backend/src/PokeFolio.Api/PokeFolio.Api.csproj
 For EF migration tooling, set `POKEFOLIO_DB_CONNECTION` to a development database. Migrations are reviewed artifacts and must not be auto-applied by application startup.
 
 The `BoundHoldingQuantity` migration preserves legacy rows above the current one-million-copy limit. It installs the range constraint as `NOT VALID`, which still rejects new invalid writes, and validates it automatically when no legacy exception exists. If an upgraded database keeps the constraint unvalidated, inventory owners must review and explicitly normalize or split those exceptional rows after a backup; the migration never truncates quantities silently.
+
+`PreserveHoldingTombstones` is intentionally forward-only: removing `deleted_at` could resurrect deleted inventory or merge replacement identities. Back up the database before deployment and roll forward with a corrective migration instead of attempting an automatic downgrade.
+
+`CanonicalizeChangeActions` maps the known legacy `created`/`updated`/`deleted` values to `upsert`/`delete`. It fails closed without altering unknown values if an installation contains an unrecognized action; inspect and explicitly map that data before retrying so a later sync feed cannot emit events outside the API contract.
 
 `Auth:SigningKey` is mandatory and intentionally empty in `appsettings.json`. Supply it through environment or deployment secret configuration. Access tokens are short-lived JWTs with validated signature, issuer, audience and expiry. Refresh tokens are random opaque values; only SHA-256 hashes are stored. Every access token is also checked against its active server-side device session, so logout and replay revocation take effect immediately.
 
@@ -46,5 +50,8 @@ dotnet test backend/PokeFolio.Backend.slnx -c Release
 - collection reads use bounded keyset pagination, expose optimistic-concurrency ETags and return no cross-user object signal beyond `404`;
 - collection creation and quantity deltas require stable idempotency UUIDs, emit durable user changes and serialize same-operation retries with PostgreSQL transaction advisory locks;
 - quantity deltas are committed as bounded SQL increments, so concurrent devices accumulate instead of overwriting each other;
+- absolute holding edits require a strong `If-Match` ETag and fail stale writes with `412`;
+- deletes retain versioned, user-owned soft tombstones so old offline commands cannot target a newly reused identifier;
+- durable collection changes use the contract-level `upsert` and `delete` actions;
 - anonymous auth operations have per-client rate limits and machine-readable 429 responses;
 - missing database configuration fails startup instead of silently selecting an unsafe store.

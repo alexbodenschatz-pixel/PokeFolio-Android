@@ -141,6 +141,7 @@ public sealed class PokeFolioDbContext(
                 .IsConcurrencyToken();
             entity.Property(holding => holding.CreatedAt).HasColumnName("created_at");
             entity.Property(holding => holding.UpdatedAt).HasColumnName("updated_at");
+            entity.Property(holding => holding.DeletedAt).HasColumnName("deleted_at");
             entity.ToTable(table => table.HasCheckConstraint(
                 "ck_holdings_quantity_range",
                 $"quantity >= 0 AND quantity <= {CollectionHolding.MaximumQuantity}"));
@@ -155,6 +156,7 @@ public sealed class PokeFolioDbContext(
                 holding.Condition
             })
                 .IsUnique()
+                .HasFilter("deleted_at IS NULL")
                 .AreNullsDistinct(false);
             entity.HasOne<CatalogCard>()
                 .WithMany()
@@ -165,7 +167,9 @@ public sealed class PokeFolioDbContext(
                 .HasForeignKey(holding => holding.UserId)
                 .OnDelete(DeleteBehavior.Cascade);
             entity.HasQueryFilter(holding =>
-                CurrentUserId.HasValue && (Guid?)holding.UserId == CurrentUserId);
+                CurrentUserId.HasValue &&
+                (Guid?)holding.UserId == CurrentUserId &&
+                !holding.DeletedAt.HasValue);
         });
     }
 
@@ -205,6 +209,9 @@ public sealed class PokeFolioDbContext(
         builder.Entity<UserChange>(entity =>
         {
             entity.ToTable("changes", "sync");
+            entity.ToTable(table => table.HasCheckConstraint(
+                "ck_changes_action",
+                "action IN ('upsert', 'delete')"));
             entity.HasKey(change => change.Sequence);
             entity.Property(change => change.Sequence).HasColumnName("sequence").UseIdentityByDefaultColumn();
             entity.Property(change => change.UserId).HasColumnName("user_id");

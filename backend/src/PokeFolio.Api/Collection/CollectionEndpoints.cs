@@ -1,3 +1,5 @@
+using System.Globalization;
+using System.Text.Json;
 using PokeFolio.Api.Security;
 
 namespace PokeFolio.Api.Collection;
@@ -12,6 +14,8 @@ public static class CollectionEndpoints
         collection.MapGet("", ListAsync);
         collection.MapPost("", CreateAsync);
         collection.MapGet("/{holdingId:guid}", GetAsync);
+        collection.MapPatch("/{holdingId:guid}", UpdateAsync);
+        collection.MapDelete("/{holdingId:guid}", DeleteAsync);
         collection.MapPost("/{holdingId:guid}/quantity-delta", ApplyQuantityDeltaAsync);
         return endpoints;
     }
@@ -132,6 +136,78 @@ public static class CollectionEndpoints
         return Results.Ok(result.Holding);
     }
 
+    private static async Task<IResult> UpdateAsync(
+        Guid holdingId,
+        JsonElement command,
+        HttpContext context,
+        CollectionMutationService collection,
+        CancellationToken cancellationToken)
+    {
+        if (!TryGetMutationIdentity(
+                context,
+                out Guid userId,
+                out Guid deviceSessionId,
+                out Guid operationId,
+                out IResult? error))
+        {
+            return error!;
+        }
+        if (!HoldingEtag.TryParseIfMatch(context.Request, out long expectedVersion))
+        {
+            return Problem(
+                StatusCodes.Status400BadRequest,
+                "invalid_if_match",
+                "If-Match must contain one strong holding ETag such as \"v3\".");
+        }
+
+        CollectionMutationResult result = await collection.UpdateAsync(
+            userId,
+            deviceSessionId,
+            holdingId,
+            operationId,
+            expectedVersion,
+            command,
+            cancellationToken);
+        if (result.Holding is null) return Problem(result.Failure!);
+
+        context.Response.Headers.ETag = HoldingEtag.Format(result.Holding.Version);
+        return Results.Ok(result.Holding);
+    }
+
+    private static async Task<IResult> DeleteAsync(
+        Guid holdingId,
+        HttpContext context,
+        CollectionMutationService collection,
+        CancellationToken cancellationToken)
+    {
+        if (!TryGetMutationIdentity(
+                context,
+                out Guid userId,
+                out Guid deviceSessionId,
+                out Guid operationId,
+                out IResult? error))
+        {
+            return error!;
+        }
+        if (!HoldingEtag.TryParseIfMatch(context.Request, out long expectedVersion))
+        {
+            return Problem(
+                StatusCodes.Status400BadRequest,
+                "invalid_if_match",
+                "If-Match must contain one strong holding ETag such as \"v3\".");
+        }
+
+        CollectionMutationResult result = await collection.DeleteAsync(
+            userId,
+            deviceSessionId,
+            holdingId,
+            operationId,
+            expectedVersion,
+            cancellationToken);
+        if (result.Holding is null) return Problem(result.Failure!);
+        return Results.NoContent();
+    }
+
     private static bool TryGetMutationIdentity(
         HttpContext context,
         out Guid userId,
@@ -188,7 +264,41 @@ public static class CollectionEndpoints
         });
 }
 
-internal static class HoldingEtag
+public static class HoldingEtag
 {
     public static string Format(long version) => $"\"v{version}\"";
+
+    public static bool TryParseIfMatch(HttpRequest request, out long version)
+    {
+        version = 0;
+        if (!request.Headers.TryGetValue("If-Match", out var values) || values.Count != 1)
+        {
+            return false;
+        }
+
+        string? value = values[0];
+        if (value is null ||
+            value.Length < 4 ||
+            value.Length > 22 ||
+            value[0] != '"' ||
+            value[^1] != '"' ||
+            value[1] != 'v')
+        {
+            return false;
+        }
+
+        if (!long.TryParse(
+                value.AsSpan(2, value.Length - 3),
+                NumberStyles.None,
+                CultureInfo.InvariantCulture,
+                out version) ||
+            version <= 0 ||
+            !string.Equals(value, Format(version), StringComparison.Ordinal))
+        {
+            version = 0;
+            return false;
+        }
+
+        return true;
+    }
 }
