@@ -2,6 +2,8 @@ namespace PokeFolio.Domain.Collection;
 
 public sealed class CollectionHolding
 {
+    public const int MaximumQuantity = 1_000_000;
+
     private CollectionHolding()
     {
     }
@@ -25,9 +27,11 @@ public sealed class CollectionHolding
         Language = RequireText(language, 16, nameof(language));
         Variant = RequireText(variant, 80, nameof(variant));
         Condition = RequireText(condition, 40, nameof(condition));
-        Quantity = quantity > 0
+        Quantity = quantity is > 0 and <= MaximumQuantity
             ? quantity
-            : throw new ArgumentOutOfRangeException(nameof(quantity), "Initial quantity must be positive.");
+            : throw new ArgumentOutOfRangeException(
+                nameof(quantity),
+                $"Initial quantity must be between 1 and {MaximumQuantity}.");
         Notes = NormalizeOptionalText(notes, 10_000, nameof(notes));
         Version = 1;
         CreatedAt = now;
@@ -78,7 +82,11 @@ public sealed class CollectionHolding
             throw new CollectionConflictException(error.Message);
         }
 
-        if (updated < 0) throw new CollectionConflictException("Quantity cannot become negative.");
+        if (updated is < 0 or > MaximumQuantity)
+        {
+            throw new CollectionConflictException(
+                $"Quantity must remain between 0 and {MaximumQuantity}.");
+        }
         Quantity = updated;
         Touch(now);
     }

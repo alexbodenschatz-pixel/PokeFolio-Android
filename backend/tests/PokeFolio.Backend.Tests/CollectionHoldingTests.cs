@@ -36,6 +36,18 @@ public sealed class CollectionHoldingTests
     }
 
     [TestMethod]
+    public void QuantityCannotExceedThePersistedContractLimit()
+    {
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() =>
+            Create(CollectionHolding.MaximumQuantity + 1));
+
+        var holding = Create(CollectionHolding.MaximumQuantity);
+        Assert.ThrowsExactly<CollectionConflictException>(() =>
+            holding.ApplyQuantityDelta(1, Started.AddSeconds(1)));
+        Assert.AreEqual(CollectionHolding.MaximumQuantity, holding.Quantity);
+    }
+
+    [TestMethod]
     public void AbsoluteEditRequiresTheCurrentVersion()
     {
         var holding = Create(quantity: 2);

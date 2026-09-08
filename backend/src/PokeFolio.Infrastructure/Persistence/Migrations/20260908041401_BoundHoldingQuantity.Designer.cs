@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using PokeFolio.Infrastructure.Persistence;
@@ -11,9 +12,11 @@ using PokeFolio.Infrastructure.Persistence;
 namespace PokeFolio.Infrastructure.Persistence.Migrations
 {
     [DbContext(typeof(PokeFolioDbContext))]
-    partial class PokeFolioDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260908041401_BoundHoldingQuantity")]
+    partial class BoundHoldingQuantity
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -474,19 +477,9 @@ namespace PokeFolio.Infrastructure.Persistence.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("operation_id");
 
-                    b.Property<string>("OperationKind")
-                        .HasMaxLength(80)
-                        .HasColumnType("character varying(80)")
-                        .HasColumnName("operation_kind");
-
                     b.Property<DateTimeOffset>("ProcessedAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("processed_at");
-
-                    b.Property<string>("RequestHash")
-                        .HasMaxLength(64)
-                        .HasColumnType("character varying(64)")
-                        .HasColumnName("request_hash");
 
                     b.Property<string>("ResponseJson")
                         .HasColumnType("jsonb")

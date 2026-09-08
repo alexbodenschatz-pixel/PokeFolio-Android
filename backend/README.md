@@ -1,6 +1,6 @@
 # PokeFolio backend
 
-The backend is a .NET 10 modular-monolith foundation backed by PostgreSQL 15 or newer (PostgreSQL 17 is the CI baseline). It defines framework Identity storage, user-owned collection/device/sync data, ownership query filters, idempotent operation records and durable change records. Versioned auth, device-management and collection-read endpoints are exposed under `/api/v1`; collection writes and sync HTTP endpoints remain gated until their concurrency behavior is implemented and tested together.
+The backend is a .NET 10 modular-monolith foundation backed by PostgreSQL 15 or newer (PostgreSQL 17 is the CI baseline). It defines framework Identity storage, user-owned collection/device/sync data, ownership query filters, idempotent operation records and durable change records. Versioned auth, device-management, collection reads, holding creation and atomic quantity-delta endpoints are exposed under `/api/v1`; absolute updates, deletes and batched sync remain gated until their optimistic-concurrency behavior is implemented and tested together.
 
 ## Local commands
 
@@ -42,5 +42,7 @@ dotnet test backend/PokeFolio.Backend.slnx -c Release
 - device listing and revocation are scoped to the authenticated account, and cross-user device IDs remain undisclosed;
 - password changes require the current password and atomically revoke every other device session;
 - collection reads use bounded keyset pagination, expose optimistic-concurrency ETags and return no cross-user object signal beyond `404`;
+- collection creation and quantity deltas require stable idempotency UUIDs, emit durable user changes and serialize same-operation retries with PostgreSQL transaction advisory locks;
+- quantity deltas are committed as bounded SQL increments, so concurrent devices accumulate instead of overwriting each other;
 - anonymous auth operations have per-client rate limits and machine-readable 429 responses;
 - missing database configuration fails startup instead of silently selecting an unsafe store.

@@ -142,8 +142,8 @@ public sealed class PokeFolioDbContext(
             entity.Property(holding => holding.CreatedAt).HasColumnName("created_at");
             entity.Property(holding => holding.UpdatedAt).HasColumnName("updated_at");
             entity.ToTable(table => table.HasCheckConstraint(
-                "ck_holdings_quantity_nonnegative",
-                "quantity >= 0"));
+                "ck_holdings_quantity_range",
+                $"quantity >= 0 AND quantity <= {CollectionHolding.MaximumQuantity}"));
             entity.HasIndex(holding => holding.UserId);
             entity.HasIndex(holding => new
             {
@@ -179,6 +179,12 @@ public sealed class PokeFolioDbContext(
             entity.Property(operation => operation.UserId).HasColumnName("user_id");
             entity.Property(operation => operation.DeviceSessionId).HasColumnName("device_session_id");
             entity.Property(operation => operation.OperationId).HasColumnName("operation_id");
+            entity.Property(operation => operation.OperationKind)
+                .HasColumnName("operation_kind")
+                .HasMaxLength(80);
+            entity.Property(operation => operation.RequestHash)
+                .HasColumnName("request_hash")
+                .HasMaxLength(64);
             entity.Property(operation => operation.Status).HasColumnName("status").HasMaxLength(24);
             entity.Property(operation => operation.ResponseJson).HasColumnName("response_json").HasColumnType("jsonb");
             entity.Property(operation => operation.ProcessedAt).HasColumnName("processed_at");

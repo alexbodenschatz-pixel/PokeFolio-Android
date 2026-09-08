@@ -8,6 +8,8 @@ public sealed class ProcessedSyncOperation
     public Guid UserId { get; set; }
     public Guid DeviceSessionId { get; set; }
     public Guid OperationId { get; set; }
+    public string? OperationKind { get; set; }
+    public string? RequestHash { get; set; }
     public string Status { get; set; } = string.Empty;
     public string? ResponseJson { get; set; }
     public DateTimeOffset ProcessedAt { get; set; }

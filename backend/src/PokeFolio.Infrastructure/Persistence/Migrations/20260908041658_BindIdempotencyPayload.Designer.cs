@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using PokeFolio.Infrastructure.Persistence;
@@ -11,9 +12,11 @@ using PokeFolio.Infrastructure.Persistence;
 namespace PokeFolio.Infrastructure.Persistence.Migrations
 {
     [DbContext(typeof(PokeFolioDbContext))]
-    partial class PokeFolioDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260908041658_BindIdempotencyPayload")]
+    partial class BindIdempotencyPayload
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder

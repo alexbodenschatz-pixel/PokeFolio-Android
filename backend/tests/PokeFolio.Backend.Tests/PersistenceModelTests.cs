@@ -52,6 +52,10 @@ public sealed class PersistenceModelTests
             index.IsUnique &&
             index.Properties.Select(property => property.Name).SequenceEqual(["UserId", "OperationId"]));
         Assert.IsTrue(uniqueOperationIndex);
+        Assert.AreEqual(80, operation.FindProperty(nameof(ProcessedSyncOperation.OperationKind))!
+            .GetMaxLength());
+        Assert.AreEqual(64, operation.FindProperty(nameof(ProcessedSyncOperation.RequestHash))!
+            .GetMaxLength());
 
         IForeignKey deviceOwnershipForeignKey = operation.GetForeignKeys().Single(foreignKey =>
             foreignKey.PrincipalEntityType.ClrType == typeof(DeviceSession));

@@ -116,6 +116,15 @@ public sealed class PostgreSqlIsolationTests
                     async () => await duplicateContext.SaveChangesAsync());
             }
 
+            await using (PokeFolioDbContext quantityConstraintContext =
+                CreateContext(testConnectionString, userAId))
+            {
+                int invalidQuantity = CollectionHolding.MaximumQuantity + 1;
+                await Assert.ThrowsExactlyAsync<PostgresException>(async () =>
+                    await quantityConstraintContext.Database.ExecuteSqlInterpolatedAsync(
+                        $"UPDATE collection.holdings SET quantity = {invalidQuantity} WHERE id = {userAHoldingId}"));
+            }
+
             await using (PokeFolioDbContext crossUserOperationContext =
                 CreateContext(testConnectionString, userBId))
             {
@@ -525,6 +534,215 @@ public sealed class PostgreSqlIsolationTests
         }
     }
 
+    [TestMethod]
+    [TestCategory("PostgreSQL")]
+    public async Task CollectionWritesAreAtomicIdempotentAndUserScoped()
+    {
+        string? serverConnectionString = Environment.GetEnvironmentVariable("POKEFOLIO_TEST_POSTGRES");
+        if (string.IsNullOrWhiteSpace(serverConnectionString))
+        {
+            Assert.Inconclusive(
+                "Set POKEFOLIO_TEST_POSTGRES to run the PostgreSQL collection write test.");
+            return;
+        }
+
+        string databaseName = $"pokefolio_test_{Guid.NewGuid():N}";
+        string testConnectionString = await CreateDatabaseAsync(serverConnectionString, databaseName);
+
+        try
+        {
+            await using (PokeFolioDbContext migrationContext = CreateContext(testConnectionString, null))
+            {
+                await migrationContext.Database.MigrateAsync();
+            }
+
+            using var factory = new PokeFolioApiFactory(testConnectionString);
+            using HttpClient android = factory.CreateClient();
+            using HttpClient windows = factory.CreateClient();
+            using HttpClient otherUser = factory.CreateClient();
+            AuthSessionResponse androidSession = await RegisterAsync(
+                android,
+                "writes-a@example.test",
+                "Pixel Writer");
+
+            using HttpResponseMessage windowsLoginResponse = await windows.PostAsJsonAsync(
+                "/api/v1/auth/login",
+                new LoginCommand(
+                    "writes-a@example.test",
+                    "A secure PokeFolio password 1!",
+                    "Windows Writer",
+                    "windows"));
+            Assert.AreEqual(HttpStatusCode.OK, windowsLoginResponse.StatusCode);
+            AuthSessionResponse? windowsSession = await windowsLoginResponse.Content
+                .ReadFromJsonAsync<AuthSessionResponse>();
+            Assert.IsNotNull(windowsSession);
+            AuthSessionResponse otherSession = await RegisterAsync(
+                otherUser,
+                "writes-b@example.test",
+                "Other Pixel");
+
+            android.DefaultRequestHeaders.Authorization =
+                new AuthenticationHeaderValue("Bearer", androidSession.AccessToken);
+            windows.DefaultRequestHeaders.Authorization =
+                new AuthenticationHeaderValue("Bearer", windowsSession.AccessToken);
+            otherUser.DefaultRequestHeaders.Authorization =
+                new AuthenticationHeaderValue("Bearer", otherSession.AccessToken);
+
+            Guid cardId = Guid.NewGuid();
+            Guid holdingId = Guid.NewGuid();
+            Guid userAId;
+            DateTimeOffset now = DateTimeOffset.UtcNow;
+            await using (PokeFolioDbContext seed = CreateContext(testConnectionString, null))
+            {
+                userAId = await seed.Users
+                    .Where(user => user.Email == "writes-a@example.test")
+                    .Select(user => user.Id)
+                    .SingleAsync();
+                seed.Cards.Add(new CatalogCard
+                {
+                    Id = cardId,
+                    Tcg = "pokemon",
+                    Provider = "integration-test",
+                    ProviderCardId = "write-card",
+                    Name = "Write Test Card",
+                    SetCode = "TEST",
+                    Number = "1",
+                    CreatedAt = now,
+                    UpdatedAt = now
+                });
+                await seed.SaveChangesAsync();
+            }
+
+            Guid createOperationId = Guid.NewGuid();
+            var createCommand = new CreateHoldingCommand(
+                holdingId,
+                cardId,
+                null,
+                "de",
+                "normal",
+                "near-mint",
+                1,
+                "Created offline");
+            using (HttpResponseMessage created = await PostWithIdempotencyAsync(
+                       android,
+                       "/api/v1/collection",
+                       createOperationId,
+                       createCommand))
+            {
+                Assert.AreEqual(HttpStatusCode.Created, created.StatusCode);
+                Assert.AreEqual("\"v1\"", created.Headers.ETag?.Tag);
+            }
+            using (HttpResponseMessage replayedCreate = await PostWithIdempotencyAsync(
+                       android,
+                       "/api/v1/collection",
+                       createOperationId,
+                       createCommand))
+            {
+                Assert.AreEqual(HttpStatusCode.Created, replayedCreate.StatusCode);
+            }
+
+            Guid androidDeltaId = Guid.NewGuid();
+            Guid windowsDeltaId = Guid.NewGuid();
+            Task<HttpResponseMessage> androidDelta = PostWithIdempotencyAsync(
+                android,
+                $"/api/v1/collection/{holdingId}/quantity-delta",
+                androidDeltaId,
+                new QuantityDeltaCommand(androidDeltaId, 1));
+            Task<HttpResponseMessage> windowsDelta = PostWithIdempotencyAsync(
+                windows,
+                $"/api/v1/collection/{holdingId}/quantity-delta",
+                windowsDeltaId,
+                new QuantityDeltaCommand(windowsDeltaId, 1));
+            HttpResponseMessage[] deltaResponses = await Task.WhenAll(androidDelta, windowsDelta);
+            foreach (HttpResponseMessage response in deltaResponses)
+            {
+                using (response)
+                {
+                    Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+                }
+            }
+
+            Guid sharedOperationId = Guid.NewGuid();
+            Task<HttpResponseMessage> firstShared = PostWithIdempotencyAsync(
+                android,
+                $"/api/v1/collection/{holdingId}/quantity-delta",
+                sharedOperationId,
+                new QuantityDeltaCommand(sharedOperationId, 1));
+            Task<HttpResponseMessage> secondShared = PostWithIdempotencyAsync(
+                windows,
+                $"/api/v1/collection/{holdingId}/quantity-delta",
+                sharedOperationId,
+                new QuantityDeltaCommand(sharedOperationId, 1));
+            HttpResponseMessage[] sharedResponses = await Task.WhenAll(firstShared, secondShared);
+            foreach (HttpResponseMessage response in sharedResponses)
+            {
+                using (response)
+                {
+                    Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+                }
+            }
+
+            using (HttpResponseMessage finalResponse = await android.GetAsync(
+                       $"/api/v1/collection/{holdingId}"))
+            {
+                Assert.AreEqual(HttpStatusCode.OK, finalResponse.StatusCode);
+                CollectionHoldingResponse? final = await finalResponse.Content
+                    .ReadFromJsonAsync<CollectionHoldingResponse>();
+                Assert.IsNotNull(final);
+                Assert.AreEqual(4, final.Quantity);
+                Assert.AreEqual(4L, final.Version);
+                Assert.AreEqual("\"v4\"", finalResponse.Headers.ETag?.Tag);
+            }
+
+            using (HttpResponseMessage replayedDelta = await PostWithIdempotencyAsync(
+                       android,
+                       $"/api/v1/collection/{holdingId}/quantity-delta",
+                       androidDeltaId,
+                       new QuantityDeltaCommand(androidDeltaId, 1)))
+            {
+                Assert.AreEqual(HttpStatusCode.OK, replayedDelta.StatusCode);
+            }
+
+            using (HttpResponseMessage changedReplay = await PostWithIdempotencyAsync(
+                       android,
+                       $"/api/v1/collection/{holdingId}/quantity-delta",
+                       androidDeltaId,
+                       new QuantityDeltaCommand(androidDeltaId, -1)))
+            {
+                Assert.AreEqual(HttpStatusCode.Conflict, changedReplay.StatusCode);
+            }
+
+            Guid foreignOperationId = Guid.NewGuid();
+            using (HttpResponseMessage crossUser = await PostWithIdempotencyAsync(
+                       otherUser,
+                       $"/api/v1/collection/{holdingId}/quantity-delta",
+                       foreignOperationId,
+                       new QuantityDeltaCommand(foreignOperationId, 1)))
+            {
+                Assert.AreEqual(HttpStatusCode.NotFound, crossUser.StatusCode);
+            }
+
+            using (HttpResponseMessage missingIdempotency = await android.PostAsJsonAsync(
+                       $"/api/v1/collection/{holdingId}/quantity-delta",
+                       new QuantityDeltaCommand(Guid.NewGuid(), 1)))
+            {
+                Assert.AreEqual(HttpStatusCode.BadRequest, missingIdempotency.StatusCode);
+            }
+
+            await using PokeFolioDbContext verify = CreateContext(testConnectionString, userAId);
+            Assert.AreEqual(4, await verify.CollectionHoldings
+                .Where(holding => holding.Id == holdingId)
+                .Select(holding => holding.Quantity)
+                .SingleAsync());
+            Assert.AreEqual(4, await verify.ProcessedSyncOperations.CountAsync());
+            Assert.AreEqual(4, await verify.UserChanges.CountAsync());
+        }
+        finally
+        {
+            await DropDatabaseAsync(serverConnectionString, databaseName);
+        }
+    }
+
     private static async Task<AuthSessionResponse> RegisterAsync(
         HttpClient client,
         string email,
@@ -552,6 +770,20 @@ public sealed class PostgreSqlIsolationTests
         AuthSessionResponse? session = await response.Content.ReadFromJsonAsync<AuthSessionResponse>();
         Assert.IsNotNull(session);
         return session;
+    }
+
+    private static async Task<HttpResponseMessage> PostWithIdempotencyAsync<TCommand>(
+        HttpClient client,
+        string requestUri,
+        Guid operationId,
+        TCommand command)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post, requestUri)
+        {
+            Content = JsonContent.Create(command)
+        };
+        request.Headers.Add("Idempotency-Key", operationId.ToString("D"));
+        return await client.SendAsync(request);
     }
 
     private static async Task AssertDeviceIsolationAsync(

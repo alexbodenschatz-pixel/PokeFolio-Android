@@ -543,6 +543,7 @@
         "name": "Idempotency-Key",
         "in": "header",
         "required": true,
+        "description": "Stable mutation UUID. For quantity-delta commands it must equal the body operationId.",
         "schema": {
           "type": "string",
           "format": "uuid"

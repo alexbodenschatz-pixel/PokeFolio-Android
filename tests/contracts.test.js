@@ -93,6 +93,10 @@ test('collection writes define retry and optimistic-concurrency semantics', () =
 
   const deltaNames = allParameters('/collection/{holdingId}/quantity-delta', delta).map(parameterName);
   assert.ok(deltaNames.includes('Idempotency-Key'));
+  assert.match(
+    contract.components.parameters.IdempotencyKey.description,
+    /must equal the body operationId/i
+  );
   assert.deepEqual(contract.components.schemas.QuantityDeltaCommand.required, ['operationId', 'delta']);
   assert.equal(contract.components.schemas.QuantityDeltaCommand.properties.delta.type, 'integer');
   assert.equal(contract.components.schemas.QuantityDeltaCommand.properties.delta.minimum, -10000);

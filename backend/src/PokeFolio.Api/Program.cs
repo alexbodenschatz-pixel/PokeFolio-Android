@@ -35,6 +35,7 @@ builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<AuthTokenService>();
 builder.Services.AddSingleton<LoginTimingProtector>();
 builder.Services.AddScoped<AuthSessionService>();
+builder.Services.AddScoped<CollectionMutationService>();
 builder.Services.AddScoped<CollectionReadService>();
 builder.Services.AddScoped<DeviceManagementService>();
 builder.Services.AddScoped<ActiveDeviceSessionValidator>();
