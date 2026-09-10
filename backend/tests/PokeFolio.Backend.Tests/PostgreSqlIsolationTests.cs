@@ -37,7 +37,7 @@ public sealed class PostgreSqlIsolationTests
     private static readonly string[] InitialBatchStatuses =
         ["applied", "duplicate", "conflict", "applied", "applied", "conflict", "rejected", "applied"];
     private static readonly string[] RetryBatchStatuses =
-        ["duplicate", "duplicate", "conflict", "duplicate", "duplicate", "conflict", "rejected", "duplicate"];
+        ["duplicate", "duplicate", "conflict", "duplicate", "duplicate", "rejected", "rejected", "duplicate"];
 
     [TestMethod]
     [TestCategory("PostgreSQL")]
@@ -1296,6 +1296,7 @@ public sealed class PostgreSqlIsolationTests
                 CollectionAssert.AreEqual(
                     RetryBatchStatuses,
                     result.Results.Select(item => item.Status).ToArray());
+                Assert.AreEqual("holding_not_found", result.Results[5].Problem?.Code);
             }
 
             using (HttpResponseMessage foreignBatch = await otherUser.PostAsJsonAsync(
