@@ -1,12 +1,12 @@
 # PokéFolio Desktop: Vision- und EOS-Grundlage
 
-`PokeFolio.Desktop.sln` enthält den Windows-Host für die vorhandene PokéFolio-Oberfläche. Android bleibt der native Mobile-Host mit CameraX und ML Kit. Windows verwendet .NET 8, WinForms, Microsoft WebView2, lokale Windows-OCR und OpenCvSharp.
+`PokeFolio.Desktop.sln` enthält den Windows-Host für die vorhandene PokéFolio-Oberfläche. Android bleibt der native Mobile-Host mit CameraX und ML Kit. Windows verwendet .NET 10 LTS, WinForms, Microsoft WebView2, lokale Windows-OCR und OpenCvSharp.
 
 ## Voraussetzungen und Visual Studio
 
 - Windows 10 Version 2004 (Build 19041) oder neuer
 - Visual Studio 2022 mit dem Workload **.NET-Desktopentwicklung**
-- .NET 8 SDK
+- .NET 10 SDK
 - Microsoft Edge WebView2 Runtime
 - für OCR die gewünschten Windows-Sprachpakete unter **Einstellungen → Zeit und Sprache → Sprache und Region**
 
@@ -22,7 +22,7 @@ dotnet run --project windows/PokeFolio.Desktop/PokeFolio.Desktop.csproj
 
 ## Gemeinsamer PokéFolio-Core
 
-Das Desktop-Projekt verlinkt `app/src/main/assets` beim Build nach `WebAssets`. Es gibt keine zweite Kopie von `app.js`, `recognition-core.js`, `collection-core.js`, `grading-core.js`, `api-core.js`, `variant-core.js`, `learning-core.js`, `pokemon-asia-core.js`, `pokemon-names.js` oder `bulk-fast-core.js`.
+Das Desktop-Projekt verlinkt `app/src/main/assets` beim Build nach `WebAssets`. Es gibt keine zweite Kopie von `app.js`, `recognition-core.js`, `collection-core.js`, `grading-core.js`, `api-core.js`, `sync-core.js`, `variant-core.js`, `learning-core.js`, `pokemon-asia-core.js`, `pokemon-names.js` oder `bulk-fast-core.js`.
 
 Android lädt weiterhin `file:///android_asset/index.html`. Windows stellt dieselben Dateien nur lokal über `https://app.pokefolio.local` bereit. Collection-, Learning- und Grading-Schemata bleiben dadurch kompatibel. Windows-spezifische UI-Ergänzungen liegen ausschließlich in `windows/PokeFolio.Desktop/WebHost` und werden von Android nicht geladen.
 
@@ -103,6 +103,12 @@ Eine physische EOS 2000D war in der Entwicklungs-/CI-Umgebung nicht verfügbar. 
 - **API nicht erreichbar:** Allowlist/Netzwerk prüfen; lokale Sammlung und Bildverarbeitung bleiben verfügbar.
 
 Desktop-Logs liegen in `%LOCALAPPDATA%\PokeFolio\Logs`, rotieren bei ungefähr 1 MB und enthalten keine Bilddaten, API-Antworten oder personenbezogenen Scan-Inhalte.
+
+## Geschützte Kontositzung
+
+`ProtectedRefreshTokenStore` speichert für eine persistente Windows-Anmeldung ausschließlich den rotierenden Refresh-Token und die zugehörige Geräte-ID. Der Datensatz wird mit Windows DPAPI im Bereich `CurrentUser` verschlüsselt und atomar unter `%LOCALAPPDATA%\PokeFolio\Security` ersetzt. Kurzlebige Access-Tokens sollen nur im Prozessspeicher bleiben; weder Access- noch Refresh-Tokens dürfen an WebView-JavaScript oder `localStorage` übergeben werden.
+
+Dieser Baustein stellt noch keine sichtbare Login-Funktion dar. Der authentifizierte, auf eine konfigurierte Backend-Origin begrenzte Transport und die Account-Oberfläche werden im nächsten Windows-Sync-Meilenstein angebunden.
 
 ## Sicherheit und Veröffentlichung
 
