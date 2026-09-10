@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text.Json;
+using PokeFolio.Desktop.Backend;
 using PokeFolio.Desktop.Capture;
 using PokeFolio.Desktop.Diagnostics;
 using PokeFolio.Desktop.Recognition;
@@ -24,6 +25,7 @@ public sealed class PokeNativeBridge : IDisposable
     private readonly IWindowsCardRecognitionService recognition;
     private readonly IVisualComparisonService visualComparison;
     private readonly CanonEosCapture canon;
+    private readonly AccountBridgeController accountBridge;
     private readonly SemaphoreSlim recognitionGate = new(2, 2);
     private readonly SemaphoreSlim visualGate = new(2, 2);
     private readonly SemaphoreSlim eosCaptureGate = new(1, 1);
@@ -47,7 +49,8 @@ public sealed class PokeNativeBridge : IDisposable
         ImageDataUrlCodec codec,
         IWindowsCardRecognitionService recognition,
         IVisualComparisonService visualComparison,
-        CanonEosCapture canon)
+        CanonEosCapture canon,
+        IPokeFolioAccountService? account = null)
     {
         this.callbacks = callbacks;
         this.http = http;
@@ -60,6 +63,10 @@ public sealed class PokeNativeBridge : IDisposable
         this.recognition = recognition;
         this.visualComparison = visualComparison;
         this.canon = canon;
+        accountBridge = new AccountBridgeController(
+            callbacks,
+            account ?? new PokeFolioAccountService(
+                new PokeFolioBackendConfiguration(BackendOrigin: null, Error: null)));
     }
 
     public string consumeCaptureMetadata() => "";
@@ -80,6 +87,27 @@ public sealed class PokeNativeBridge : IDisposable
         QueueRecognition(dataUrl, requestId, language, "auto", RecognitionRequestMode.Full);
 
     public void httpGet(string url, string requestId) => _ = RunHttpGetAsync(url, requestId);
+
+    public string getAccountStatus() => accountBridge.GetStatusJson();
+
+    public void registerAccount(
+        string email,
+        string password,
+        string deviceName,
+        string requestId) =>
+        accountBridge.Register(email, password, deviceName, requestId);
+
+    public void loginAccount(
+        string email,
+        string password,
+        string deviceName,
+        string requestId) =>
+        accountBridge.Login(email, password, deviceName, requestId);
+
+    public void restoreAccountSession(string requestId) =>
+        accountBridge.Restore(requestId);
+
+    public void logoutAccount(string requestId) => accountBridge.Logout(requestId);
 
     public void prepareCardImage(string dataUrl, string requestId) =>
         _ = PrepareCardImageAsync(dataUrl, requestId);
@@ -611,6 +639,7 @@ public sealed class PokeNativeBridge : IDisposable
         lifetime.Cancel();
         liveView?.Cancel();
         liveView?.Dispose();
+        accountBridge.Dispose();
         // Gates can still be held by fire-and-forget bridge callbacks while cancellation unwinds.
         // Disposing them here would turn an orderly shutdown into ObjectDisposedException in finally.
         lifetime.Dispose();

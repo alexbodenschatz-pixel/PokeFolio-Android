@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
+using PokeFolio.Desktop.Backend;
 using PokeFolio.Desktop.Bridge;
 using PokeFolio.Desktop.Capture;
 using PokeFolio.Desktop.Recognition;
@@ -57,7 +58,70 @@ public sealed class PokeNativeBridgeTests
         Assert.AreEqual(.91, json.RootElement.GetProperty("similarity").GetDouble(), .001);
     }
 
-    private static BridgeContext CreateContext()
+    [TestMethod]
+    public async Task AccountLoginCallbackContainsStatusButNeverCredentialsOrTokens()
+    {
+        Guid deviceId = Guid.NewGuid();
+        var account = new FakeAccountService(deviceId);
+        var context = CreateContext(account);
+        await using var disposable = context;
+
+        context.Bridge.loginAccount(
+            "owner@example.test",
+            "never-return-this-password",
+            "Desktop test",
+            "account-1");
+
+        var callback = await context.Callbacks.NextAsync();
+        Assert.AreEqual("onDesktopAccountResult", callback.Name);
+        Assert.IsFalse(callback.Json.Contains("never-return-this-password", StringComparison.Ordinal));
+        Assert.IsFalse(callback.Json.Contains("access-token", StringComparison.Ordinal));
+        Assert.IsFalse(callback.Json.Contains("refresh-token", StringComparison.Ordinal));
+        using var json = JsonDocument.Parse(callback.Json);
+        Assert.IsTrue(json.RootElement.GetProperty("ok").GetBoolean());
+        Assert.IsTrue(json.RootElement.GetProperty("status")
+            .GetProperty("authenticated").GetBoolean());
+        Assert.AreEqual(
+            deviceId,
+            json.RootElement.GetProperty("status")
+                .GetProperty("session")
+                .GetProperty("device")
+                .GetProperty("id")
+                .GetGuid());
+        Assert.AreEqual("owner@example.test", account.LoginEmail);
+    }
+
+    [TestMethod]
+    public async Task AccountStatusIsTokenFreeWhenBackendIsNotConfigured()
+    {
+        var context = CreateContext();
+        await using var disposable = context;
+
+        string status = context.Bridge.getAccountStatus();
+
+        using var json = JsonDocument.Parse(status);
+        Assert.IsFalse(json.RootElement.GetProperty("configured").GetBoolean());
+        Assert.IsFalse(json.RootElement.GetProperty("authenticated").GetBoolean());
+        Assert.IsFalse(status.Contains("Token", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [TestMethod]
+    public async Task StartingEosLiveViewKeepsAccountBridgeAvailable()
+    {
+        var context = CreateContext();
+        await using var disposable = context;
+
+        context.Bridge.startEosLiveView("live-account-regression");
+        Callback callback = await context.Callbacks.NextAsync();
+
+        Assert.AreEqual("onDesktopEosLiveStatus", callback.Name);
+        string accountStatus = context.Bridge.getAccountStatus();
+        using var json = JsonDocument.Parse(accountStatus);
+        Assert.IsFalse(json.RootElement.GetProperty("configured").GetBoolean());
+        context.Bridge.stopEosLiveView("live-account-stop");
+    }
+
+    private static BridgeContext CreateContext(IPokeFolioAccountService? account = null)
     {
         var callbacks = new RecordingDispatcher();
         var http = new HttpBridgeService();
@@ -69,7 +133,7 @@ public sealed class PokeNativeBridgeTests
         var recognition = new FakeRecognitionService(FakeRecognitionService.ExactPokemon());
         var bridge = new PokeNativeBridge(callbacks, http, new LocalDataService(root),
             new DesktopStatusService(), fileCapture, new ICardCaptureDevice[] { fileCapture, canon },
-            vision, codec, recognition, new FakeVisualComparisonService(), canon);
+            vision, codec, recognition, new FakeVisualComparisonService(), canon, account);
         return new BridgeContext(callbacks, bridge, http, canon, root);
     }
 
@@ -95,6 +159,59 @@ public sealed class PokeNativeBridgeTests
     }
 
     private sealed record Callback(string Name, string Json);
+
+    private sealed class FakeAccountService(Guid deviceId) : IPokeFolioAccountService
+    {
+        private readonly PokeFolioSession session = new(
+            new PokeFolioDevice(
+                deviceId,
+                "Desktop test",
+                "windows",
+                DateTimeOffset.Parse("2026-09-10T00:00:00Z"),
+                DateTimeOffset.Parse("2026-09-10T00:00:00Z")),
+            DateTimeOffset.Parse("2030-01-01T00:00:00Z"));
+
+        public string? LoginEmail { get; private set; }
+
+        public PokeFolioAccountStatus GetStatus() => new(
+            Configured: true,
+            Authenticated: LoginEmail is not null,
+            BackendOrigin: "https://api.pokefolio.example/",
+            Session: LoginEmail is null ? null : session,
+            ConfigurationError: null);
+
+        public Task<PokeFolioAuthenticationResult> RegisterAsync(
+            string email,
+            string password,
+            string deviceName,
+            CancellationToken cancellationToken = default) =>
+            LoginAsync(email, password, deviceName, cancellationToken);
+
+        public Task<PokeFolioAuthenticationResult> LoginAsync(
+            string email,
+            string password,
+            string deviceName,
+            CancellationToken cancellationToken = default)
+        {
+            LoginEmail = email;
+            return Task.FromResult(PokeFolioAuthenticationResult.Success(session));
+        }
+
+        public Task<PokeFolioAuthenticationResult> RestoreSessionAsync(
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(PokeFolioAuthenticationResult.Success(session));
+
+        public Task<PokeFolioLogoutResult> LogoutAsync(
+            CancellationToken cancellationToken = default)
+        {
+            LoginEmail = null;
+            return Task.FromResult(new PokeFolioLogoutResult(true));
+        }
+
+        public void Dispose()
+        {
+        }
+    }
 
     private sealed class BridgeContext(
         RecordingDispatcher callbacks,

@@ -1,5 +1,6 @@
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.WinForms;
+using PokeFolio.Desktop.Backend;
 using PokeFolio.Desktop.Bridge;
 using PokeFolio.Desktop.Capture;
 using PokeFolio.Desktop.Recognition;
@@ -116,7 +117,8 @@ public sealed class MainForm : Form
             codec,
             recognition,
             visualComparison,
-            canonCapture);
+            canonCapture,
+            PokeFolioAccountService.FromEnvironment());
 
         webView.CoreWebView2.AddHostObjectToScript("PokeNative", nativeBridge);
         var bootstrap = await File.ReadAllTextAsync(Path.Combine(assets.DesktopRoot, "desktop-bootstrap.js"));

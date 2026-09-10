@@ -110,7 +110,9 @@ Desktop-Logs liegen in `%LOCALAPPDATA%\PokeFolio\Logs`, rotieren bei ungefähr 1
 
 `PokeFolioApiClient` kapselt Registrierung, Login, Sitzungswiederherstellung, Refresh-Rotation, Logout sowie rohe Sync-Push-/Pull-Aufrufe. Produktive Ziele müssen eine pfadfreie HTTPS-Origin verwenden; unverschlüsseltes HTTP ist ausschließlich für Loopback-Entwicklung erlaubt. Redirects und Cookies sind deaktiviert, Antworten sind größenbegrenzt und ein abgewiesener Zugriff wird höchstens einmal nach einem serialisierten Refresh wiederholt. Dadurch lösen parallele `401`-Antworten nicht mehrere Refresh-Aufrufe mit demselben Einmal-Token aus.
 
-Diese nativen Bausteine stellen noch keine sichtbare Login-Funktion und keinen automatisch laufenden Sync dar. Die konfigurierte Backend-Origin, Account-Oberfläche und kontrollierte Anbindung an `sync-core.js` folgen als eigener Host-Integrationsmeilenstein; Tokenmaterial bleibt auch dort außerhalb der WebView.
+Die Windows-Origin wird vor dem Start über `POKEFOLIO_BACKEND_ORIGIN` gesetzt, zum Beispiel in PowerShell für die lokale Entwicklung mit `$env:POKEFOLIO_BACKEND_ORIGIN='http://localhost:5080/'`. Sie ist kein Secret. Ohne gültige Variable bleiben Scanner und lokale Sammlung verfügbar; Cloud-Kontoaktionen melden explizit `backend_not_configured`.
+
+Der Desktop-Bootstrap stellt der vertrauenswürdigen lokalen Oberfläche eine begrenzte `PokeAccount`-Fassade für Status, Registrierung, Login, Wiederherstellung und Logout bereit. Sie gibt nur Origin, Gerät, Ablaufzeit und strukturierte Fehler zurück. Tokenmaterial bleibt im nativen Prozess beziehungsweise im DPAPI-Speicher. Eine sichtbare Account-Oberfläche und die kontrollierte Anbindung von `sync-core.js` an die nativen Push-/Pull-Aufrufe sind noch offen und folgen getrennt.
 
 ## Sicherheit und Veröffentlichung
 

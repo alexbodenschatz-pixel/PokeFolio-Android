@@ -40,4 +40,24 @@ public sealed class SharedAssetsTests
         StringAssert.Contains(bootstrap, "Canon EDSDK");
         Assert.IsFalse(androidIndex.Contains("desktop-bootstrap.js", StringComparison.Ordinal));
     }
+
+    [TestMethod]
+    public void DesktopBootstrapExposesTokenFreeBoundedAccountFacade()
+    {
+        var root = TestPaths.RepositoryRoot();
+        string bootstrap = File.ReadAllText(Path.Combine(
+            root,
+            "windows",
+            "PokeFolio.Desktop",
+            "WebHost",
+            "desktop-bootstrap.js"));
+
+        StringAssert.Contains(bootstrap, "Object.defineProperty(window, 'PokeAccount'");
+        StringAssert.Contains(bootstrap, "pendingAccountRequests.size >= 8");
+        StringAssert.Contains(bootstrap, "nativeHost.restoreAccountSession");
+        StringAssert.Contains(bootstrap, "pokefolio:account-state");
+        Assert.IsFalse(bootstrap.Contains("accessToken", StringComparison.Ordinal));
+        Assert.IsFalse(bootstrap.Contains("refreshToken", StringComparison.Ordinal));
+        Assert.IsFalse(bootstrap.Contains("localStorage", StringComparison.Ordinal));
+    }
 }

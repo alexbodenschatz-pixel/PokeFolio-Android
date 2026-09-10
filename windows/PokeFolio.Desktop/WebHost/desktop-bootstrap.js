@@ -11,6 +11,53 @@
   });
   window.PokePlatform = Object.freeze({kind: 'windows', host: 'webview2', desktop: true});
 
+  let accountRequestSequence = 1;
+  const pendingAccountRequests = new Map();
+  const parseAccountPayload = json => JSON.parse(String(json || '{}'));
+  const accountRequest = invoke => new Promise((resolve, reject) => {
+    if (pendingAccountRequests.size >= 8) {
+      reject(new Error('Zu viele Kontoaktionen laufen gleichzeitig.'));
+      return;
+    }
+    const requestId = `account-${Date.now()}-${accountRequestSequence++}`;
+    const timeout = window.setTimeout(() => {
+      pendingAccountRequests.delete(requestId);
+      reject(new Error('Das PokeFolio-Backend antwortet nicht.'));
+    }, 30000);
+    pendingAccountRequests.set(requestId, response => {
+      window.clearTimeout(timeout);
+      resolve(response);
+    });
+    try {
+      invoke(requestId);
+    } catch (error) {
+      window.clearTimeout(timeout);
+      pendingAccountRequests.delete(requestId);
+      reject(error);
+    }
+  });
+  window.onDesktopAccountResult = json => {
+    const response = parseAccountPayload(json);
+    const complete = pendingAccountRequests.get(response.requestId);
+    if (complete) {
+      pendingAccountRequests.delete(response.requestId);
+      complete(response);
+    }
+    window.dispatchEvent(new CustomEvent('pokefolio:account-state', {detail: response}));
+  };
+  const accountFacade = Object.freeze({
+    status: () => parseAccountPayload(nativeHost.getAccountStatus()),
+    register: (email, password, deviceName) => accountRequest(requestId =>
+      nativeHost.registerAccount(email, password, deviceName, requestId)),
+    login: (email, password, deviceName) => accountRequest(requestId =>
+      nativeHost.loginAccount(email, password, deviceName, requestId)),
+    restore: () => accountRequest(requestId => nativeHost.restoreAccountSession(requestId)),
+    logout: () => accountRequest(requestId => nativeHost.logoutAccount(requestId))
+  });
+  Object.defineProperty(window, 'PokeAccount', {
+    configurable: false, enumerable: true, writable: false, value: accountFacade
+  });
+
   window.addEventListener('DOMContentLoaded', () => {
     const style = document.createElement('link');
     style.rel = 'stylesheet';
@@ -20,6 +67,18 @@
     const main = document.querySelector('main');
     const headerActions = document.querySelector('.header-actions');
     if (!main || !headerActions) return;
+
+    const initialAccountStatus = accountFacade.status();
+    window.dispatchEvent(new CustomEvent('pokefolio:account-state', {
+      detail: {operation: 'status', ok: true, status: initialAccountStatus}
+    }));
+    if (initialAccountStatus.configured && !initialAccountStatus.authenticated) {
+      accountFacade.restore().catch(error => {
+        window.dispatchEvent(new CustomEvent('pokefolio:account-state', {
+          detail: {operation: 'restore', ok: false, errorType: 'bridge', error: error.message}
+        }));
+      });
+    }
 
     const launch = document.createElement('button');
     launch.type = 'button';
