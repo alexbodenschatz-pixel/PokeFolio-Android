@@ -3,7 +3,7 @@ using PokeFolio.Desktop.Security;
 
 namespace PokeFolio.Desktop.Backend;
 
-public sealed class PokeFolioAccountService : IPokeFolioAccountService
+public sealed class PokeFolioAccountService : IPokeFolioCloudService
 {
     private readonly PokeFolioBackendConfiguration configuration;
     private readonly PokeFolioApiClient? client;
@@ -92,8 +92,32 @@ public sealed class PokeFolioAccountService : IPokeFolioAccountService
             : client.LogoutAsync(cancellationToken);
     }
 
+    public Task<PokeFolioApiResponse> PushSyncOperationsAsync(
+        string operationBatchJson,
+        CancellationToken cancellationToken = default)
+    {
+        ThrowIfDisposed();
+        return client is null
+            ? Task.FromResult(UnavailableApiResponse())
+            : client.PushSyncOperationsAsync(operationBatchJson, cancellationToken);
+    }
+
+    public Task<PokeFolioApiResponse> PullSyncChangesAsync(
+        string? cursor = null,
+        int limit = 100,
+        CancellationToken cancellationToken = default)
+    {
+        ThrowIfDisposed();
+        return client is null
+            ? Task.FromResult(UnavailableApiResponse())
+            : client.PullSyncChangesAsync(cursor, limit, cancellationToken);
+    }
+
     private PokeFolioAuthenticationResult UnavailableAuthentication() =>
         PokeFolioAuthenticationResult.Failed(UnavailableProblem());
+
+    private PokeFolioApiResponse UnavailableApiResponse() =>
+        new((int)HttpStatusCode.ServiceUnavailable, "", UnavailableProblem());
 
     private PokeFolioApiProblem UnavailableProblem() => new(
         (int)HttpStatusCode.ServiceUnavailable,

@@ -62,7 +62,7 @@ public sealed class PokeNativeBridgeTests
     public async Task AccountLoginCallbackContainsStatusButNeverCredentialsOrTokens()
     {
         Guid deviceId = Guid.NewGuid();
-        var account = new FakeAccountService(deviceId);
+        var account = new FakeCloudService(deviceId);
         var context = CreateContext(account);
         await using var disposable = context;
 
@@ -121,7 +121,88 @@ public sealed class PokeNativeBridgeTests
         context.Bridge.stopEosLiveView("live-account-stop");
     }
 
-    private static BridgeContext CreateContext(IPokeFolioAccountService? account = null)
+    [TestMethod]
+    public async Task SyncPushCallbackReturnsStructuredDataWithoutCredentials()
+    {
+        var cloud = new FakeCloudService(Guid.NewGuid());
+        var context = CreateContext(cloud);
+        await using var disposable = context;
+        const string batch =
+            "{\"operations\":[{\"operationId\":\"10000000-0000-0000-0000-000000000001\",\"kind\":\"holding.quantityDelta\",\"holdingId\":\"20000000-0000-0000-0000-000000000001\",\"delta\":1}]}";
+
+        context.Bridge.pushSyncOperations(batch, "sync-push-1");
+
+        Callback callback = await context.Callbacks.NextAsync();
+        Assert.AreEqual("onDesktopSyncResult", callback.Name);
+        Assert.AreEqual(batch, cloud.LastPushJson);
+        Assert.IsFalse(callback.Json.Contains("access-token", StringComparison.Ordinal));
+        Assert.IsFalse(callback.Json.Contains("refresh-token", StringComparison.Ordinal));
+        using var json = JsonDocument.Parse(callback.Json);
+        Assert.IsTrue(json.RootElement.GetProperty("ok").GetBoolean());
+        Assert.AreEqual("push", json.RootElement.GetProperty("operation").GetString());
+        Assert.AreEqual(200, json.RootElement.GetProperty("status").GetInt32());
+        Assert.AreEqual("applied", json.RootElement.GetProperty("data")
+            .GetProperty("results")[0]
+            .GetProperty("status")
+            .GetString());
+    }
+
+    [TestMethod]
+    public async Task SyncPullForwardsCursorAndLimitToSharedCloudSession()
+    {
+        var cloud = new FakeCloudService(Guid.NewGuid());
+        var context = CreateContext(cloud);
+        await using var disposable = context;
+
+        context.Bridge.pullSyncChanges("opaque-cursor", 250, "sync-pull-1");
+
+        Callback callback = await context.Callbacks.NextAsync();
+        Assert.AreEqual("onDesktopSyncResult", callback.Name);
+        Assert.AreEqual("opaque-cursor", cloud.LastCursor);
+        Assert.AreEqual(250, cloud.LastLimit);
+        using var json = JsonDocument.Parse(callback.Json);
+        Assert.IsTrue(json.RootElement.GetProperty("ok").GetBoolean());
+        Assert.AreEqual("pull", json.RootElement.GetProperty("operation").GetString());
+        Assert.AreEqual("next-cursor", json.RootElement.GetProperty("data")
+            .GetProperty("nextCursor")
+            .GetString());
+    }
+
+    [TestMethod]
+    public async Task InvalidSuccessfulSyncResponseFailsClosed()
+    {
+        var cloud = new FakeCloudService(Guid.NewGuid())
+        {
+            PushResponse = new PokeFolioApiResponse(200, "not-json")
+        };
+        var context = CreateContext(cloud);
+        await using var disposable = context;
+
+        context.Bridge.pushSyncOperations("{\"operations\":[]}", "sync-invalid-1");
+
+        Callback callback = await context.Callbacks.NextAsync();
+        using var json = JsonDocument.Parse(callback.Json);
+        Assert.IsFalse(json.RootElement.GetProperty("ok").GetBoolean());
+        Assert.AreEqual(0, json.RootElement.GetProperty("status").GetInt32());
+        Assert.AreEqual("invalid-response", json.RootElement.GetProperty("errorType").GetString());
+        Assert.AreEqual(JsonValueKind.Null, json.RootElement.GetProperty("data").ValueKind);
+    }
+
+    [TestMethod]
+    public async Task BridgeOwnsAndDisposesSharedCloudSessionExactlyOnce()
+    {
+        var cloud = new FakeCloudService(Guid.NewGuid());
+        var context = CreateContext(cloud);
+
+        context.Bridge.Dispose();
+        context.Bridge.Dispose();
+
+        Assert.AreEqual(1, cloud.DisposeCount);
+        await context.DisposeAsync();
+        Assert.AreEqual(1, cloud.DisposeCount);
+    }
+
+    private static BridgeContext CreateContext(IPokeFolioCloudService? cloud = null)
     {
         var callbacks = new RecordingDispatcher();
         var http = new HttpBridgeService();
@@ -133,7 +214,7 @@ public sealed class PokeNativeBridgeTests
         var recognition = new FakeRecognitionService(FakeRecognitionService.ExactPokemon());
         var bridge = new PokeNativeBridge(callbacks, http, new LocalDataService(root),
             new DesktopStatusService(), fileCapture, new ICardCaptureDevice[] { fileCapture, canon },
-            vision, codec, recognition, new FakeVisualComparisonService(), canon, account);
+            vision, codec, recognition, new FakeVisualComparisonService(), canon, cloud);
         return new BridgeContext(callbacks, bridge, http, canon, root);
     }
 
@@ -160,7 +241,7 @@ public sealed class PokeNativeBridgeTests
 
     private sealed record Callback(string Name, string Json);
 
-    private sealed class FakeAccountService(Guid deviceId) : IPokeFolioAccountService
+    private sealed class FakeCloudService(Guid deviceId) : IPokeFolioCloudService
     {
         private readonly PokeFolioSession session = new(
             new PokeFolioDevice(
@@ -172,6 +253,16 @@ public sealed class PokeNativeBridgeTests
             DateTimeOffset.Parse("2030-01-01T00:00:00Z"));
 
         public string? LoginEmail { get; private set; }
+        public string? LastPushJson { get; private set; }
+        public string? LastCursor { get; private set; }
+        public int LastLimit { get; private set; }
+        public int DisposeCount { get; private set; }
+        public PokeFolioApiResponse PushResponse { get; set; } = new(
+            200,
+            "{\"results\":[{\"operationId\":\"10000000-0000-0000-0000-000000000001\",\"status\":\"applied\",\"entity\":null,\"problem\":null}]}");
+        public PokeFolioApiResponse PullResponse { get; set; } = new(
+            200,
+            "{\"changes\":[],\"nextCursor\":\"next-cursor\",\"hasMore\":false}");
 
         public PokeFolioAccountStatus GetStatus() => new(
             Configured: true,
@@ -208,8 +299,27 @@ public sealed class PokeNativeBridgeTests
             return Task.FromResult(new PokeFolioLogoutResult(true));
         }
 
+        public Task<PokeFolioApiResponse> PushSyncOperationsAsync(
+            string operationBatchJson,
+            CancellationToken cancellationToken = default)
+        {
+            LastPushJson = operationBatchJson;
+            return Task.FromResult(PushResponse);
+        }
+
+        public Task<PokeFolioApiResponse> PullSyncChangesAsync(
+            string? cursor = null,
+            int limit = 100,
+            CancellationToken cancellationToken = default)
+        {
+            LastCursor = cursor;
+            LastLimit = limit;
+            return Task.FromResult(PullResponse);
+        }
+
         public void Dispose()
         {
+            DisposeCount += 1;
         }
     }
 

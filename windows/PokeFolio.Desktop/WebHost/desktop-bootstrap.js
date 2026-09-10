@@ -58,6 +58,69 @@
     configurable: false, enumerable: true, writable: false, value: accountFacade
   });
 
+  let syncRequestSequence = 1;
+  const pendingSyncRequests = new Map();
+  const syncRequest = invoke => new Promise((resolve, reject) => {
+    if (pendingSyncRequests.size >= 8) {
+      reject(new Error('Zu viele Synchronisationsanfragen laufen gleichzeitig.'));
+      return;
+    }
+    const requestId = `sync-${Date.now()}-${syncRequestSequence++}`;
+    const timeout = window.setTimeout(() => {
+      pendingSyncRequests.delete(requestId);
+      reject(new Error('Das PokeFolio-Backend antwortet nicht.'));
+    }, 30000);
+    pendingSyncRequests.set(requestId, response => {
+      window.clearTimeout(timeout);
+      resolve(response);
+    });
+    try {
+      invoke(requestId);
+    } catch (error) {
+      window.clearTimeout(timeout);
+      pendingSyncRequests.delete(requestId);
+      reject(error);
+    }
+  });
+  const serializeSyncBatch = batch => {
+    if (!batch || typeof batch !== 'object' || Array.isArray(batch)) {
+      throw new TypeError('Der Sync-Batch muss ein Objekt sein.');
+    }
+    const json = JSON.stringify(batch);
+    if (typeof json !== 'string' || json.length < 2 || json.length > 1048576) {
+      throw new TypeError('Der Sync-Batch hat eine ungültige Größe.');
+    }
+    return json;
+  };
+  const validateSyncPull = (cursor, limit) => {
+    if (cursor !== null && cursor !== undefined
+      && (typeof cursor !== 'string' || cursor.length > 2048)) {
+      throw new TypeError('Der Sync-Cursor ist ungültig.');
+    }
+    if (!Number.isInteger(limit) || limit < 1 || limit > 500) {
+      throw new RangeError('Die Sync-Seitengröße muss zwischen 1 und 500 liegen.');
+    }
+    return cursor || '';
+  };
+  window.onDesktopSyncResult = json => {
+    const response = JSON.parse(String(json || '{}'));
+    const complete = pendingSyncRequests.get(response.requestId);
+    if (complete) {
+      pendingSyncRequests.delete(response.requestId);
+      complete(response);
+    }
+    window.dispatchEvent(new CustomEvent('pokefolio:sync-result', {detail: response}));
+  };
+  const syncTransportFacade = Object.freeze({
+    push: batch => syncRequest(requestId =>
+      nativeHost.pushSyncOperations(serializeSyncBatch(batch), requestId)),
+    pull: (cursor = null, limit = 100) => syncRequest(requestId =>
+      nativeHost.pullSyncChanges(validateSyncPull(cursor, limit), limit, requestId))
+  });
+  Object.defineProperty(window, 'PokeSyncTransport', {
+    configurable: false, enumerable: true, writable: false, value: syncTransportFacade
+  });
+
   window.addEventListener('DOMContentLoaded', () => {
     const style = document.createElement('link');
     style.rel = 'stylesheet';

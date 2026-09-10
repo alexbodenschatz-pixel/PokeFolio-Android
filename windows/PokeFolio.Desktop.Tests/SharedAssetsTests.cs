@@ -60,4 +60,26 @@ public sealed class SharedAssetsTests
         Assert.IsFalse(bootstrap.Contains("refreshToken", StringComparison.Ordinal));
         Assert.IsFalse(bootstrap.Contains("localStorage", StringComparison.Ordinal));
     }
+
+    [TestMethod]
+    public void DesktopBootstrapExposesTokenFreeBoundedSyncTransport()
+    {
+        var root = TestPaths.RepositoryRoot();
+        string bootstrap = File.ReadAllText(Path.Combine(
+            root,
+            "windows",
+            "PokeFolio.Desktop",
+            "WebHost",
+            "desktop-bootstrap.js"));
+
+        StringAssert.Contains(bootstrap, "Object.defineProperty(window, 'PokeSyncTransport'");
+        StringAssert.Contains(bootstrap, "pendingSyncRequests.size >= 8");
+        StringAssert.Contains(bootstrap, "nativeHost.pushSyncOperations");
+        StringAssert.Contains(bootstrap, "nativeHost.pullSyncChanges");
+        StringAssert.Contains(bootstrap, "pokefolio:sync-result");
+        StringAssert.Contains(bootstrap, "limit < 1 || limit > 500");
+        Assert.IsFalse(bootstrap.Contains("accessToken", StringComparison.Ordinal));
+        Assert.IsFalse(bootstrap.Contains("refreshToken", StringComparison.Ordinal));
+        Assert.IsFalse(bootstrap.Contains("localStorage", StringComparison.Ordinal));
+    }
 }

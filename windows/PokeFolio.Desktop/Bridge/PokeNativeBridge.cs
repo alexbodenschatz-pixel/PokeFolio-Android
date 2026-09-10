@@ -25,7 +25,9 @@ public sealed class PokeNativeBridge : IDisposable
     private readonly IWindowsCardRecognitionService recognition;
     private readonly IVisualComparisonService visualComparison;
     private readonly CanonEosCapture canon;
+    private readonly IPokeFolioCloudService cloud;
     private readonly AccountBridgeController accountBridge;
+    private readonly SyncBridgeController syncBridge;
     private readonly SemaphoreSlim recognitionGate = new(2, 2);
     private readonly SemaphoreSlim visualGate = new(2, 2);
     private readonly SemaphoreSlim eosCaptureGate = new(1, 1);
@@ -50,7 +52,7 @@ public sealed class PokeNativeBridge : IDisposable
         IWindowsCardRecognitionService recognition,
         IVisualComparisonService visualComparison,
         CanonEosCapture canon,
-        IPokeFolioAccountService? account = null)
+        IPokeFolioCloudService? cloud = null)
     {
         this.callbacks = callbacks;
         this.http = http;
@@ -63,10 +65,12 @@ public sealed class PokeNativeBridge : IDisposable
         this.recognition = recognition;
         this.visualComparison = visualComparison;
         this.canon = canon;
+        this.cloud = cloud ?? new PokeFolioAccountService(
+            new PokeFolioBackendConfiguration(BackendOrigin: null, Error: null));
         accountBridge = new AccountBridgeController(
             callbacks,
-            account ?? new PokeFolioAccountService(
-                new PokeFolioBackendConfiguration(BackendOrigin: null, Error: null)));
+            this.cloud);
+        syncBridge = new SyncBridgeController(callbacks, this.cloud);
     }
 
     public string consumeCaptureMetadata() => "";
@@ -108,6 +112,12 @@ public sealed class PokeNativeBridge : IDisposable
         accountBridge.Restore(requestId);
 
     public void logoutAccount(string requestId) => accountBridge.Logout(requestId);
+
+    public void pushSyncOperations(string operationBatchJson, string requestId) =>
+        syncBridge.Push(operationBatchJson, requestId);
+
+    public void pullSyncChanges(string cursor, int limit, string requestId) =>
+        syncBridge.Pull(cursor, limit, requestId);
 
     public void prepareCardImage(string dataUrl, string requestId) =>
         _ = PrepareCardImageAsync(dataUrl, requestId);
@@ -640,6 +650,8 @@ public sealed class PokeNativeBridge : IDisposable
         liveView?.Cancel();
         liveView?.Dispose();
         accountBridge.Dispose();
+        syncBridge.Dispose();
+        cloud.Dispose();
         // Gates can still be held by fire-and-forget bridge callbacks while cancellation unwinds.
         // Disposing them here would turn an orderly shutdown into ObjectDisposedException in finally.
         lifetime.Dispose();

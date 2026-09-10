@@ -209,7 +209,6 @@ internal sealed class AccountBridgeController : IDisposable
     {
         if (Interlocked.Exchange(ref disposed, 1) != 0) return;
         lifetime.Cancel();
-        account.Dispose();
         lifetime.Dispose();
     }
 }
