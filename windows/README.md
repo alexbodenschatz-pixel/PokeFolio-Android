@@ -108,7 +108,9 @@ Desktop-Logs liegen in `%LOCALAPPDATA%\PokeFolio\Logs`, rotieren bei ungefähr 1
 
 `ProtectedRefreshTokenStore` speichert für eine persistente Windows-Anmeldung ausschließlich den rotierenden Refresh-Token und die zugehörige Geräte-ID. Der Datensatz wird mit Windows DPAPI im Bereich `CurrentUser` verschlüsselt und atomar unter `%LOCALAPPDATA%\PokeFolio\Security` ersetzt. Kurzlebige Access-Tokens sollen nur im Prozessspeicher bleiben; weder Access- noch Refresh-Tokens dürfen an WebView-JavaScript oder `localStorage` übergeben werden.
 
-Dieser Baustein stellt noch keine sichtbare Login-Funktion dar. Der authentifizierte, auf eine konfigurierte Backend-Origin begrenzte Transport und die Account-Oberfläche werden im nächsten Windows-Sync-Meilenstein angebunden.
+`PokeFolioApiClient` kapselt Registrierung, Login, Sitzungswiederherstellung, Refresh-Rotation, Logout sowie rohe Sync-Push-/Pull-Aufrufe. Produktive Ziele müssen eine pfadfreie HTTPS-Origin verwenden; unverschlüsseltes HTTP ist ausschließlich für Loopback-Entwicklung erlaubt. Redirects und Cookies sind deaktiviert, Antworten sind größenbegrenzt und ein abgewiesener Zugriff wird höchstens einmal nach einem serialisierten Refresh wiederholt. Dadurch lösen parallele `401`-Antworten nicht mehrere Refresh-Aufrufe mit demselben Einmal-Token aus.
+
+Diese nativen Bausteine stellen noch keine sichtbare Login-Funktion und keinen automatisch laufenden Sync dar. Die konfigurierte Backend-Origin, Account-Oberfläche und kontrollierte Anbindung an `sync-core.js` folgen als eigener Host-Integrationsmeilenstein; Tokenmaterial bleibt auch dort außerhalb der WebView.
 
 ## Sicherheit und Veröffentlichung
 
