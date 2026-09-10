@@ -9,8 +9,8 @@ This roadmap converts the product brief into testable increments. Status values 
 | 1. Repository analysis | Complete | Current-state audit and verified build/test baseline |
 | 2. Architecture stabilization | In progress | ADRs, host security, contract boundaries, supported runtime plan |
 | 3. Regression baseline | In progress | Test taxonomy, CI parity, real-image manifest and E2E harness foundations |
-| 4-6. Backend, accounts, isolation | Not started | PostgreSQL integration and cross-user denial tests |
-| 7-10. Sync, clients, shared core | Not started | Offline retry and Android/Windows same-account E2E |
+| 4-6. Backend, accounts, isolation | In progress | PostgreSQL integration and cross-user denial tests pass; recovery and deployment remain |
+| 7-10. Sync, clients, shared core | In progress | Server push/pull and the shared offline queue are tested; native credentials and platform transport are next |
 | 11-21. Product and scanner slices | Not started | Slice-specific tests/builds/benchmarks |
 | 22-25. Audit through release | Not started | Security review, restore test, RC builds and release report |
 

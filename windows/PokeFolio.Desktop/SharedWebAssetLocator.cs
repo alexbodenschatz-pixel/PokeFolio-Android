@@ -11,6 +11,7 @@ public sealed class SharedWebAssetLocator
         "collection-core.js",
         "grading-core.js",
         "api-core.js",
+        "sync-core.js",
         "variant-core.js",
         "learning-core.js",
         "pokemon-asia-core.js",
