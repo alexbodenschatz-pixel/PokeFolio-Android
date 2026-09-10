@@ -34,6 +34,10 @@ public sealed class PostgreSqlIsolationTests
         ["upsert", "upsert", "delete"];
     private static readonly string[] LegacyActions =
         ["created", "updated", "deleted"];
+    private static readonly string[] InitialBatchStatuses =
+        ["applied", "duplicate", "conflict", "applied", "applied", "conflict", "rejected", "applied"];
+    private static readonly string[] RetryBatchStatuses =
+        ["duplicate", "duplicate", "conflict", "duplicate", "duplicate", "conflict", "rejected", "duplicate"];
 
     [TestMethod]
     [TestCategory("PostgreSQL")]
@@ -1214,12 +1218,133 @@ public sealed class PostgreSqlIsolationTests
                 Assert.HasCount(0, page.Changes);
             }
 
+            Guid batchHoldingId = Guid.NewGuid();
+            Guid batchCreateOperationId = Guid.NewGuid();
+            Guid batchDeltaOperationId = Guid.NewGuid();
+            Guid batchUpdateOperationId = Guid.NewGuid();
+            Guid batchStaleDeleteOperationId = Guid.NewGuid();
+            Guid batchInvalidOperationId = Guid.NewGuid();
+            Guid batchDeleteOperationId = Guid.NewGuid();
+            var createOperation = new SyncHoldingCreateOperationCommand(
+                batchCreateOperationId,
+                new CreateHoldingCommand(
+                    batchHoldingId,
+                    cardId,
+                    null,
+                    "de",
+                    "normal",
+                    "played",
+                    1,
+                    "Queued offline"));
+            var syncBatch = new SyncOperationBatchCommand(
+                new SyncOperationCommand?[]
+                {
+                    createOperation,
+                    createOperation,
+                    new SyncQuantityDeltaOperationCommand(
+                        batchCreateOperationId,
+                        replacementHoldingId,
+                        1),
+                    new SyncQuantityDeltaOperationCommand(
+                        batchDeltaOperationId,
+                        replacementHoldingId,
+                        2),
+                    new SyncHoldingUpdateOperationCommand(
+                        batchUpdateOperationId,
+                        batchHoldingId,
+                        1,
+                        JsonSerializer.SerializeToElement(new { notes = "Synced note" })),
+                    new SyncHoldingDeleteOperationCommand(
+                        batchStaleDeleteOperationId,
+                        batchHoldingId,
+                        1),
+                    new SyncQuantityDeltaOperationCommand(
+                        batchInvalidOperationId,
+                        replacementHoldingId,
+                        0),
+                    new SyncHoldingDeleteOperationCommand(
+                        batchDeleteOperationId,
+                        batchHoldingId,
+                        2)
+                });
+
+            using (HttpResponseMessage pushed = await android.PostAsJsonAsync(
+                       "/api/v1/sync/operations",
+                       syncBatch))
+            {
+                Assert.AreEqual(HttpStatusCode.OK, pushed.StatusCode);
+                SyncOperationResultBatchResponse? result = await pushed.Content
+                    .ReadFromJsonAsync<SyncOperationResultBatchResponse>();
+                Assert.IsNotNull(result);
+                CollectionAssert.AreEqual(
+                    InitialBatchStatuses,
+                    result.Results.Select(item => item.Status).ToArray());
+                Assert.AreEqual("idempotency_key_reused", result.Results[2].Problem?.Code);
+                Assert.AreEqual("version_mismatch", result.Results[5].Problem?.Code);
+                Assert.AreEqual("validation_failed", result.Results[6].Problem?.Code);
+                Assert.IsFalse(string.IsNullOrWhiteSpace(
+                    result.Results[6].Problem?.CorrelationId));
+            }
+            using (HttpResponseMessage retried = await windows.PostAsJsonAsync(
+                       "/api/v1/sync/operations",
+                       syncBatch))
+            {
+                Assert.AreEqual(HttpStatusCode.OK, retried.StatusCode);
+                SyncOperationResultBatchResponse? result = await retried.Content
+                    .ReadFromJsonAsync<SyncOperationResultBatchResponse>();
+                Assert.IsNotNull(result);
+                CollectionAssert.AreEqual(
+                    RetryBatchStatuses,
+                    result.Results.Select(item => item.Status).ToArray());
+            }
+
+            using (HttpResponseMessage foreignBatch = await otherUser.PostAsJsonAsync(
+                       "/api/v1/sync/operations",
+                       new SyncOperationBatchCommand(
+                           new SyncOperationCommand?[]
+                           {
+                               new SyncQuantityDeltaOperationCommand(
+                                   Guid.NewGuid(),
+                                   replacementHoldingId,
+                                   1)
+                           })))
+            {
+                Assert.AreEqual(HttpStatusCode.OK, foreignBatch.StatusCode);
+                SyncOperationResultBatchResponse? result = await foreignBatch.Content
+                    .ReadFromJsonAsync<SyncOperationResultBatchResponse>();
+                Assert.IsNotNull(result);
+                Assert.AreEqual("rejected", result.Results[0].Status);
+                Assert.AreEqual("holding_not_found", result.Results[0].Problem?.Code);
+            }
+
+            using (HttpResponseMessage malformedBatch = await android.PostAsync(
+                       "/api/v1/sync/operations",
+                       new StringContent(
+                           """{"operations":[{"operationId":"10000000-0000-0000-0000-000000000001","kind":"holding.rename"}]}""",
+                           Encoding.UTF8,
+                           "application/json")))
+            {
+                Assert.AreEqual(HttpStatusCode.BadRequest, malformedBatch.StatusCode);
+            }
+
+            using (HttpResponseMessage batchChanges = await android.GetAsync(
+                       $"/api/v1/sync/changes?cursor={Uri.EscapeDataString(syncCursor!)}"))
+            {
+                Assert.AreEqual(HttpStatusCode.OK, batchChanges.StatusCode);
+                SyncChangePageResponse? page = await batchChanges.Content
+                    .ReadFromJsonAsync<SyncChangePageResponse>();
+                Assert.IsNotNull(page);
+                Assert.HasCount(4, page.Changes);
+                Assert.IsFalse(page.HasMore);
+            }
+
             await using PokeFolioDbContext verify = CreateContext(testConnectionString, userAId);
             CollectionHolding[] visibleHoldings = await verify.CollectionHoldings
                 .AsNoTracking()
                 .ToArrayAsync();
             Assert.HasCount(1, visibleHoldings);
             Assert.AreEqual(replacementHoldingId, visibleHoldings[0].Id);
+            Assert.AreEqual(3, visibleHoldings[0].Quantity);
 
             CollectionHolding tombstone = await verify.CollectionHoldings
                 .IgnoreQueryFilters()
@@ -1228,10 +1353,10 @@ public sealed class PostgreSqlIsolationTests
             Assert.AreEqual(7L, tombstone.Version);
             Assert.IsNotNull(tombstone.DeletedAt);
 
-            Assert.AreEqual(9, await verify.ProcessedSyncOperations.CountAsync());
-            Assert.AreEqual(8, await verify.ProcessedSyncOperations
+            Assert.AreEqual(13, await verify.ProcessedSyncOperations.CountAsync());
+            Assert.AreEqual(12, await verify.ProcessedSyncOperations
                 .CountAsync(operation => operation.Status == "succeeded"));
-            Assert.AreEqual(8, await verify.UserChanges.CountAsync());
+            Assert.AreEqual(12, await verify.UserChanges.CountAsync());
             Assert.AreEqual(0, await verify.UserChanges.CountAsync(change =>
                 change.Action != "upsert" && change.Action != "delete"));
             UserChange deletion = await verify.UserChanges

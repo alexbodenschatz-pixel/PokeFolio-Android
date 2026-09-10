@@ -113,6 +113,7 @@ test('sync separates commutative deltas from versioned absolute edits and durabl
   const sync = contract.components.schemas.SyncOperation;
   const mappings = sync.discriminator.mapping;
   assert.deepEqual(Object.keys(mappings).sort(), [
+    'holding.create',
     'holding.delete',
     'holding.quantityDelta',
     'holding.update'
@@ -121,6 +122,12 @@ test('sync separates commutative deltas from versioned absolute edits and durabl
   const delta = contract.components.schemas.SyncQuantityDeltaOperation;
   assert.ok(delta.required.includes('delta'));
   assert.ok(!delta.required.includes('baseVersion'));
+
+  const push = contract.paths['/sync/operations'].post;
+  assert.ok(!allParameters('/sync/operations', push)
+    .some(parameter => parameterName(parameter) === 'Idempotency-Key'));
+  assert.match(push.description, /operationId is its own retry identity/i);
+  assert.ok(contract.components.schemas.SyncHoldingCreateOperation.required.includes('holding'));
 
   const update = contract.components.schemas.SyncHoldingUpdateOperation;
   const remove = contract.components.schemas.SyncHoldingDeleteOperation;

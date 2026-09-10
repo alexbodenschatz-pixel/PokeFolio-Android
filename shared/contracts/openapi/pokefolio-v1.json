@@ -443,11 +443,7 @@
     "/sync/operations": {
       "post": {
         "operationId": "pushSyncOperations",
-        "parameters": [
-          {
-            "$ref": "#/components/parameters/IdempotencyKey"
-          }
-        ],
+        "description": "Each operationId is its own retry identity; operations are committed independently and results preserve input order.",
         "requestBody": {
           "required": true,
           "content": {
@@ -891,6 +887,9 @@
       "SyncOperation": {
         "oneOf": [
           {
+            "$ref": "#/components/schemas/SyncHoldingCreateOperation"
+          },
+          {
             "$ref": "#/components/schemas/SyncQuantityDeltaOperation"
           },
           {
@@ -903,9 +902,27 @@
         "discriminator": {
           "propertyName": "kind",
           "mapping": {
+            "holding.create": "#/components/schemas/SyncHoldingCreateOperation",
             "holding.quantityDelta": "#/components/schemas/SyncQuantityDeltaOperation",
             "holding.update": "#/components/schemas/SyncHoldingUpdateOperation",
             "holding.delete": "#/components/schemas/SyncHoldingDeleteOperation"
+          }
+        }
+      },
+      "SyncHoldingCreateOperation": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["operationId", "kind", "holding"],
+        "properties": {
+          "operationId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "kind": {
+            "const": "holding.create"
+          },
+          "holding": {
+            "$ref": "#/components/schemas/CreateHoldingCommand"
           }
         }
       },

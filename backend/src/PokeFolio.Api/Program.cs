@@ -40,6 +40,7 @@ builder.Services.AddScoped<CollectionMutationService>();
 builder.Services.AddScoped<CollectionReadService>();
 builder.Services.AddScoped<DeviceManagementService>();
 builder.Services.AddScoped<SyncChangeReadService>();
+builder.Services.AddScoped<SyncOperationService>();
 builder.Services.AddScoped<ActiveDeviceSessionValidator>();
 
 builder.Services.AddDbContext<PokeFolioDbContext>((services, options) =>

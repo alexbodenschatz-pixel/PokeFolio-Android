@@ -1,3 +1,4 @@
+using System.Text.Json;
 using PokeFolio.Api.Security;
 
 namespace PokeFolio.Api.Sync;
@@ -8,8 +9,38 @@ public static class SyncEndpoints
     {
         RouteGroupBuilder sync = endpoints.MapGroup("/api/v1/sync")
             .WithTags("Sync");
+        sync.MapPost("/operations", PushOperationsAsync);
         sync.MapGet("/changes", PullChangesAsync);
         return endpoints;
+    }
+
+    private static async Task<IResult> PushOperationsAsync(
+        JsonElement command,
+        HttpContext context,
+        SyncOperationService operations,
+        CancellationToken cancellationToken)
+    {
+        Guid? userId = PrincipalIdentity.GetUserId(context.User);
+        Guid? deviceSessionId = PrincipalIdentity.GetDeviceSessionId(context.User);
+        if (!userId.HasValue || !deviceSessionId.HasValue) return Results.Unauthorized();
+        if (!SyncCommandParser.TryParse(
+                command,
+                out IReadOnlyList<SyncOperationCommand> parsed,
+                out IReadOnlyDictionary<string, string[]> errors))
+        {
+            return Problem(
+                StatusCodes.Status400BadRequest,
+                "validation_failed",
+                "Sync operation batch is invalid.",
+                errors);
+        }
+
+        return Results.Ok(await operations.ExecuteAsync(
+            userId.Value,
+            deviceSessionId.Value,
+            parsed,
+            context.TraceIdentifier,
+            cancellationToken));
     }
 
     private static async Task<IResult> PullChangesAsync(
@@ -45,11 +76,20 @@ public static class SyncEndpoints
             cancellationToken));
     }
 
-    private static IResult Problem(int status, string code, string title) => Results.Problem(
-        statusCode: status,
-        title: title,
-        extensions: new Dictionary<string, object?>(StringComparer.Ordinal)
+    private static IResult Problem(
+        int status,
+        string code,
+        string title,
+        IReadOnlyDictionary<string, string[]>? errors = null)
+    {
+        var extensions = new Dictionary<string, object?>(StringComparer.Ordinal)
         {
             ["code"] = code
-        });
+        };
+        if (errors is not null) extensions["errors"] = errors;
+        return Results.Problem(
+            statusCode: status,
+            title: title,
+            extensions: extensions);
+    }
 }
