@@ -290,6 +290,7 @@ public sealed class AuthSessionService(
     {
         AccessTokenResult accessToken = tokenService.CreateAccessToken(userId, device.Id, device.Platform);
         return new AuthSessionResponse(
+            userId,
             accessToken.Token,
             refreshToken.Plaintext,
             accessToken.ExpiresAt,

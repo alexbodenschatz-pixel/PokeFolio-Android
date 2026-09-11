@@ -19,6 +19,7 @@ public sealed record ChangePasswordCommand(
     string? NewPassword);
 
 public sealed record AuthSessionResponse(
+    Guid UserId,
     string AccessToken,
     string RefreshToken,
     DateTimeOffset AccessTokenExpiresAt,

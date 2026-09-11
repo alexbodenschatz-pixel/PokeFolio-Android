@@ -14,6 +14,7 @@ public sealed record PokeFolioDevice(
     DateTimeOffset LastSeenAt);
 
 public sealed record PokeFolioSession(
+    Guid UserId,
     PokeFolioDevice Device,
     DateTimeOffset AccessTokenExpiresAt);
 

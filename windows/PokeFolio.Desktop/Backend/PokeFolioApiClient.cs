@@ -440,6 +440,7 @@ public sealed class PokeFolioApiClient : IDisposable
         }
 
         Volatile.Write(ref session, new SessionState(
+            envelope.UserId,
             envelope.AccessToken,
             envelope.AccessTokenExpiresAt,
             new PokeFolioDevice(
@@ -457,7 +458,10 @@ public sealed class PokeFolioApiClient : IDisposable
     }
 
     private static PokeFolioSession? ToPublicSession(SessionState? state) =>
-        state is null ? null : new PokeFolioSession(state.Device, state.AccessTokenExpiresAt);
+        state is null ? null : new PokeFolioSession(
+            state.UserId,
+            state.Device,
+            state.AccessTokenExpiresAt);
 
     private static PokeFolioApiProblem SessionMissingProblem() => new(
         (int)HttpStatusCode.Unauthorized,
@@ -477,6 +481,7 @@ public sealed class PokeFolioApiClient : IDisposable
     }
 
     private sealed record SessionState(
+        Guid UserId,
         string AccessToken,
         DateTimeOffset AccessTokenExpiresAt,
         PokeFolioDevice Device);

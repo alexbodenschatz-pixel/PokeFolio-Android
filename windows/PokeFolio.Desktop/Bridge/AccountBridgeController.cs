@@ -163,6 +163,7 @@ internal sealed class AccountBridgeController : IDisposable
         configurationError = status.ConfigurationError,
         session = status.Session is null ? null : new
         {
+            userId = status.Session.UserId,
             accessTokenExpiresAt = status.Session.AccessTokenExpiresAt,
             device = new
             {

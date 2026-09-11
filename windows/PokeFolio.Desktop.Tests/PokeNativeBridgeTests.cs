@@ -88,6 +88,12 @@ public sealed class PokeNativeBridgeTests
                 .GetProperty("device")
                 .GetProperty("id")
                 .GetGuid());
+        Assert.AreEqual(
+            FakeCloudService.UserId,
+            json.RootElement.GetProperty("status")
+                .GetProperty("session")
+                .GetProperty("userId")
+                .GetGuid());
         Assert.AreEqual("owner@example.test", account.LoginEmail);
     }
 
@@ -243,7 +249,10 @@ public sealed class PokeNativeBridgeTests
 
     private sealed class FakeCloudService(Guid deviceId) : IPokeFolioCloudService
     {
+        public static readonly Guid UserId =
+            Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
         private readonly PokeFolioSession session = new(
+            UserId,
             new PokeFolioDevice(
                 deviceId,
                 "Desktop test",

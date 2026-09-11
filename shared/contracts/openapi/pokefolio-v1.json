@@ -675,8 +675,13 @@
       "AuthSession": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["accessToken", "refreshToken", "accessTokenExpiresAt", "device"],
+        "required": ["userId", "accessToken", "refreshToken", "accessTokenExpiresAt", "device"],
         "properties": {
+          "userId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Stable identifier of the authenticated account for local cache partitioning; never accepted back as an ownership selector"
+          },
           "accessToken": {
             "type": "string"
           },

@@ -85,6 +85,7 @@ internal static class PokeFolioApiPayloads
             throw new InvalidDataException("Authentication response is invalid.", error);
         }
         if (envelope is null ||
+            envelope.UserId == Guid.Empty ||
             string.IsNullOrEmpty(envelope.AccessToken) ||
             envelope.AccessToken.Length is < 32 or > 16_384 ||
             string.IsNullOrEmpty(envelope.RefreshToken) ||
@@ -211,6 +212,7 @@ internal static class PokeFolioApiPayloads
 }
 
 internal sealed record PokeFolioAuthSessionEnvelope(
+    Guid UserId,
     string AccessToken,
     string RefreshToken,
     DateTimeOffset AccessTokenExpiresAt,

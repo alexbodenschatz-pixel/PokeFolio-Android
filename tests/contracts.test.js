@@ -147,3 +147,15 @@ test('tokens and provider secrets are not represented as browser persistence fie
   assert.ok(!holdingProperties.some(name => /token|password|secret/i.test(name)));
   assert.ok(!Object.keys(contract.paths).some(route => /provider/i.test(route)));
 });
+
+test('auth response exposes stable account identity only as server output', () => {
+  const authSession = contract.components.schemas.AuthSession;
+  assert.ok(authSession.required.includes('userId'));
+  assert.equal(authSession.properties.userId.format, 'uuid');
+
+  const requestSchemas = Object.entries(contract.components.schemas)
+    .filter(([name]) => /Command$|Operation$|OperationBatch$/.test(name));
+  for (const [name, schema] of requestSchemas) {
+    assert.ok(!collectPropertyNames(schema).includes('userId'), name);
+  }
+});

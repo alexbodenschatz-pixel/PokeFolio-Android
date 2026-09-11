@@ -6,6 +6,7 @@ Contract rules:
 
 - server paths are relative to `/api/v1`;
 - private ownership is derived from the bearer principal, never from a request `user_id`;
+- `AuthSession.userId` is server output for stable on-device cache partitioning and is never accepted as an ownership selector;
 - retriable commands use `Idempotency-Key` and a client-generated operation ID where replay identity is part of the payload;
 - quantity changes are signed atomic deltas;
 - non-commutative edits use `If-Match` or `baseVersion` and return a conflict instead of silently overwriting;

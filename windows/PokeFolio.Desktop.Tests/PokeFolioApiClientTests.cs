@@ -11,6 +11,8 @@ namespace PokeFolio.Desktop.Tests;
 [TestClass]
 public sealed class PokeFolioApiClientTests
 {
+    private static readonly Guid UserId =
+        Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
     private static readonly string FirstAccessToken = "access-" + new string('a', 64);
     private static readonly string RotatedAccessToken = "access-" + new string('b', 64);
     private static readonly string FirstRefreshToken = "refresh-" + new string('c', 64);
@@ -61,6 +63,7 @@ public sealed class PokeFolioApiClientTests
             "Desktop test");
 
         Assert.IsTrue(result.Succeeded);
+        Assert.AreEqual(UserId, result.Session?.UserId);
         Assert.AreEqual(deviceId, result.Session?.Device.Id);
         Assert.AreEqual(deviceId, client.CurrentSession?.Device.Id);
         Assert.AreEqual(new RefreshTokenCredential(deviceId, FirstRefreshToken), store.Credential);
@@ -303,12 +306,32 @@ public sealed class PokeFolioApiClientTests
         Guid deviceId = Guid.NewGuid();
         string validBody = SessionBody(deviceId, FirstAccessToken, FirstRefreshToken);
         string duplicateBody = validBody.Replace(
-            "{\"accessToken\":",
-            "{\"accessToken\":\"duplicate\",\"accessToken\":",
+            "\"accessToken\":",
+            "\"accessToken\":\"duplicate\",\"accessToken\":",
             StringComparison.Ordinal);
         var store = new MemoryRefreshTokenStore();
         var handler = new RecordingHandler((_, _, _) => Task.FromResult(
             JsonResponse(HttpStatusCode.OK, duplicateBody)));
+        using var client = CreateClient(store, handler);
+
+        await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+            await client.LoginAsync("owner@example.test", "valid-password", "Desktop test"));
+        Assert.IsNull(store.Credential);
+        Assert.IsNull(client.CurrentSession);
+    }
+
+    [TestMethod]
+    public async Task MissingStableUserIdentityFailsClosed()
+    {
+        Guid deviceId = Guid.NewGuid();
+        string invalidBody = SessionBody(deviceId, FirstAccessToken, FirstRefreshToken)
+            .Replace(
+                UserId.ToString("D"),
+                Guid.Empty.ToString("D"),
+                StringComparison.Ordinal);
+        var store = new MemoryRefreshTokenStore();
+        var handler = new RecordingHandler((_, _, _) => Task.FromResult(
+            JsonResponse(HttpStatusCode.OK, invalidBody)));
         using var client = CreateClient(store, handler);
 
         await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
@@ -399,6 +422,7 @@ public sealed class PokeFolioApiClientTests
         string accessToken,
         string refreshToken) => JsonSerializer.Serialize(new
         {
+            userId = UserId,
             accessToken,
             refreshToken,
             accessTokenExpiresAt = "2030-01-01T00:00:00+00:00",
