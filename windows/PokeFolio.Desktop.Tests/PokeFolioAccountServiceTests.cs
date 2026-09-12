@@ -41,6 +41,8 @@ public sealed class PokeFolioAccountServiceTests
         PokeFolioApiResponse push = await service.PushSyncOperationsAsync(
             "{\"operations\":[]}");
         PokeFolioApiResponse pull = await service.PullSyncChangesAsync();
+        PokeFolioApiResponse resolve = await service.ResolveCatalogCardAsync("{}");
+        PokeFolioApiResponse card = await service.GetCatalogCardAsync(Guid.NewGuid());
 
         Assert.IsFalse(status.Configured);
         Assert.IsFalse(status.Authenticated);
@@ -51,6 +53,10 @@ public sealed class PokeFolioAccountServiceTests
         Assert.AreEqual(503, push.Status);
         Assert.AreEqual("backend_not_configured", pull.Problem?.Code);
         Assert.AreEqual(503, pull.Status);
+        Assert.AreEqual("backend_not_configured", resolve.Problem?.Code);
+        Assert.AreEqual(503, resolve.Status);
+        Assert.AreEqual("backend_not_configured", card.Problem?.Code);
+        Assert.AreEqual(503, card.Status);
     }
 
     [TestMethod]

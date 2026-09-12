@@ -42,6 +42,20 @@ public interface IPokeFolioSyncService
         CancellationToken cancellationToken = default);
 }
 
-public interface IPokeFolioCloudService : IPokeFolioAccountService, IPokeFolioSyncService
+public interface IPokeFolioCatalogService
+{
+    Task<PokeFolioApiResponse> ResolveCatalogCardAsync(
+        string cardReferenceJson,
+        CancellationToken cancellationToken = default);
+
+    Task<PokeFolioApiResponse> GetCatalogCardAsync(
+        Guid cardId,
+        CancellationToken cancellationToken = default);
+}
+
+public interface IPokeFolioCloudService :
+    IPokeFolioAccountService,
+    IPokeFolioSyncService,
+    IPokeFolioCatalogService
 {
 }

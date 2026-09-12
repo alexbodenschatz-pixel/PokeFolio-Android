@@ -24,6 +24,8 @@ function createRuntime(nativeOverrides = {}) {
     loginAccount: () => {},
     restoreAccountSession: () => {},
     logoutAccount: () => {},
+    resolveCatalogCard: () => {},
+    getCatalogCard: () => {},
     pushSyncOperations: () => {},
     pullSyncChanges: () => {},
     ...nativeOverrides
@@ -56,6 +58,110 @@ function createRuntime(nativeOverrides = {}) {
   }, {filename: bootstrapPath});
   return {window, nativeHost, events};
 }
+
+test('Windows Katalog-Fassade normalisiert Kartenreferenz und ordnet Callback zu', async () => {
+  let nativeCall;
+  const runtime = createRuntime({
+    resolveCatalogCard(json, requestId) {
+      nativeCall = {json, requestId};
+    }
+  });
+
+  const pending = runtime.window.PokeCatalog.resolve({
+    provider: ' TCGDEX ',
+    providerCardId: ' SV8-141 ',
+    tcg: ' POKEMON ',
+    name: ' Pikachu ex ',
+    setCode: ' SV8 ',
+    number: ' 219/191 '
+  });
+  assert.deepEqual(JSON.parse(nativeCall.json), {
+    provider: 'tcgdex',
+    providerCardId: 'sv8-141',
+    tcg: 'pokemon',
+    name: 'Pikachu ex',
+    setCode: 'SV8',
+    number: '219/191'
+  });
+  assert.match(nativeCall.requestId, /^catalog-/);
+
+  runtime.window.onDesktopCatalogResult(JSON.stringify({
+    requestId: nativeCall.requestId,
+    operation: 'resolve',
+    ok: true,
+    status: 201,
+    data: {
+      card: {id: 'cccccccc-cccc-cccc-cccc-cccccccccccc'},
+      created: true,
+      metadataMatched: true
+    },
+    problem: null
+  }));
+
+  const response = await pending;
+  assert.equal(response.data.card.id, 'cccccccc-cccc-cccc-cccc-cccccccccccc');
+  assert.equal(runtime.events.at(-1).type, 'pokefolio:catalog-result');
+  assert.equal(Object.isFrozen(runtime.window.PokeCatalog), true);
+});
+
+test('Windows Katalog-Fassade validiert UUID und Provider vor dem nativen Aufruf', async () => {
+  let nativeCalls = 0;
+  const runtime = createRuntime({
+    resolveCatalogCard() {
+      nativeCalls += 1;
+    },
+    getCatalogCard() {
+      nativeCalls += 1;
+    }
+  });
+
+  await assert.rejects(runtime.window.PokeCatalog.resolve(null), /Objekt/);
+  await assert.rejects(runtime.window.PokeCatalog.resolve({
+    provider: 'tcgdex',
+    providerCardId: '../bad?query',
+    tcg: 'pokemon',
+    name: 'Pikachu',
+    setCode: 'SV8',
+    number: '141/191'
+  }), /ungültige Zeichen/);
+  await assert.rejects(runtime.window.PokeCatalog.resolve({
+    provider: 'ygoprodeck',
+    providerCardId: '1234',
+    tcg: 'pokemon',
+    name: 'Card',
+    setCode: 'LOB',
+    number: '001'
+  }), /passen nicht zusammen/);
+  await assert.rejects(runtime.window.PokeCatalog.get(
+    '00000000-0000-0000-0000-000000000000'), /UUID/);
+  await assert.rejects(runtime.window.PokeCatalog.get('not-a-uuid'), /UUID/);
+  await assert.rejects(runtime.window.PokeCatalog.get({id: 'not-a-string'}), /UUID/);
+  assert.equal(nativeCalls, 0);
+});
+
+test('Windows Katalog-Fassade lädt eine validierte globale Karten-ID', async () => {
+  let nativeCall;
+  const runtime = createRuntime({
+    getCatalogCard(cardId, requestId) {
+      nativeCall = {cardId, requestId};
+    }
+  });
+
+  const pending = runtime.window.PokeCatalog.get(
+    'CCCCCCCC-CCCC-CCCC-CCCC-CCCCCCCCCCCC');
+  assert.equal(nativeCall.cardId, 'cccccccc-cccc-cccc-cccc-cccccccccccc');
+
+  runtime.window.onDesktopCatalogResult(JSON.stringify({
+    requestId: nativeCall.requestId,
+    operation: 'get',
+    ok: true,
+    status: 200,
+    data: {id: nativeCall.cardId},
+    problem: null
+  }));
+  const response = await pending;
+  assert.equal(response.data.id, nativeCall.cardId);
+});
 
 test('Windows Sync-Transport serialisiert Batch und ordnet strukturierten Callback zu', async () => {
   let nativeCall;

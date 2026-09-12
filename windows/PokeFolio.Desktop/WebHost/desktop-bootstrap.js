@@ -58,6 +58,102 @@
     configurable: false, enumerable: true, writable: false, value: accountFacade
   });
 
+  const catalogProviderTcgs = Object.freeze({
+    'pokemon-tcg-api': 'pokemon',
+    tcgdex: 'pokemon',
+    ygoprodeck: 'yugioh',
+    optcgapi: 'onepiece'
+  });
+  let catalogRequestSequence = 1;
+  const pendingCatalogRequests = new Map();
+  const catalogRequest = invoke => new Promise((resolve, reject) => {
+    if (pendingCatalogRequests.size >= 8) {
+      reject(new Error('Zu viele Kataloganfragen laufen gleichzeitig.'));
+      return;
+    }
+    const requestId = `catalog-${Date.now()}-${catalogRequestSequence++}`;
+    const timeout = window.setTimeout(() => {
+      pendingCatalogRequests.delete(requestId);
+      reject(new Error('Das PokeFolio-Backend antwortet nicht.'));
+    }, 30000);
+    pendingCatalogRequests.set(requestId, response => {
+      window.clearTimeout(timeout);
+      resolve(response);
+    });
+    try {
+      invoke(requestId);
+    } catch (error) {
+      window.clearTimeout(timeout);
+      pendingCatalogRequests.delete(requestId);
+      reject(error);
+    }
+  });
+  const catalogText = (value, maximumLength, label) => {
+    if (typeof value !== 'string') throw new TypeError(`${label} muss Text sein.`);
+    const normalized = value.trim();
+    if (!normalized || normalized.length > maximumLength || /[\u0000-\u001f\u007f]/.test(normalized)) {
+      throw new TypeError(`${label} ist ungültig.`);
+    }
+    return normalized;
+  };
+  const serializeCatalogReference = reference => {
+    if (!reference || typeof reference !== 'object' || Array.isArray(reference)) {
+      throw new TypeError('Die Kartenreferenz muss ein Objekt sein.');
+    }
+    const provider = catalogText(reference.provider, 48, 'Provider').toLowerCase();
+    const providerCardId = catalogText(reference.providerCardId, 160, 'Provider-Karten-ID')
+      .toLowerCase();
+    const tcg = catalogText(reference.tcg, 32, 'TCG').toLowerCase();
+    if (!Object.prototype.hasOwnProperty.call(catalogProviderTcgs, provider)) {
+      throw new TypeError('Der Kartenprovider wird nicht unterstützt.');
+    }
+    if (catalogProviderTcgs[provider] !== tcg) {
+      throw new TypeError('Kartenprovider und TCG passen nicht zusammen.');
+    }
+    if (!/^[a-z0-9_.:/-]+$/.test(providerCardId)) {
+      throw new TypeError('Die Provider-Karten-ID enthält ungültige Zeichen.');
+    }
+    const json = JSON.stringify({
+      provider,
+      providerCardId,
+      tcg,
+      name: catalogText(reference.name, 240, 'Kartenname'),
+      setCode: catalogText(reference.setCode, 64, 'Setcode'),
+      number: catalogText(reference.number, 64, 'Kartennummer')
+    });
+    if (json.length > 16384) throw new TypeError('Die Kartenreferenz ist zu groß.');
+    return json;
+  };
+  const validateCatalogCardId = cardId => {
+    if (typeof cardId !== 'string') {
+      throw new TypeError('Die Katalog-Karten-ID muss eine UUID sein.');
+    }
+    const normalized = cardId.toLowerCase();
+    if (normalized === '00000000-0000-0000-0000-000000000000'
+      || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(normalized)) {
+      throw new TypeError('Die Katalog-Karten-ID muss eine UUID sein.');
+    }
+    return normalized;
+  };
+  window.onDesktopCatalogResult = json => {
+    const response = JSON.parse(String(json || '{}'));
+    const complete = pendingCatalogRequests.get(response.requestId);
+    if (complete) {
+      pendingCatalogRequests.delete(response.requestId);
+      complete(response);
+    }
+    window.dispatchEvent(new CustomEvent('pokefolio:catalog-result', {detail: response}));
+  };
+  const catalogFacade = Object.freeze({
+    resolve: reference => catalogRequest(requestId =>
+      nativeHost.resolveCatalogCard(serializeCatalogReference(reference), requestId)),
+    get: cardId => catalogRequest(requestId =>
+      nativeHost.getCatalogCard(validateCatalogCardId(cardId), requestId))
+  });
+  Object.defineProperty(window, 'PokeCatalog', {
+    configurable: false, enumerable: true, writable: false, value: catalogFacade
+  });
+
   let syncRequestSequence = 1;
   const pendingSyncRequests = new Map();
   const syncRequest = invoke => new Promise((resolve, reject) => {

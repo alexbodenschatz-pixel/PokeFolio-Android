@@ -7,6 +7,7 @@ namespace PokeFolio.Desktop.Backend;
 public sealed class PokeFolioApiClient : IDisposable
 {
     private const int MaximumAuthResponseBytes = 128 * 1024;
+    private const int MaximumCatalogResponseBytes = 128 * 1024;
     private const int MaximumSyncResponseBytes = 8 * 1024 * 1024;
 
     private readonly IRefreshTokenStore refreshTokenStore;
@@ -126,6 +127,42 @@ public sealed class PokeFolioApiClient : IDisposable
             path += "&cursor=" + Uri.EscapeDataString(cursor);
         }
         return await SendAuthenticatedAsync(HttpMethod.Get, path, body: null, cancellationToken);
+    }
+
+    public async Task<PokeFolioApiResponse> ResolveCatalogCardAsync(
+        string cardReferenceJson,
+        CancellationToken cancellationToken = default)
+    {
+        byte[] body = PokeFolioApiPayloads.NormalizeCatalogCardReference(cardReferenceJson);
+        try
+        {
+            return await SendAuthenticatedAsync(
+                HttpMethod.Post,
+                "/api/v1/cards/resolve",
+                body,
+                cancellationToken,
+                MaximumCatalogResponseBytes);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(body);
+        }
+    }
+
+    public Task<PokeFolioApiResponse> GetCatalogCardAsync(
+        Guid cardId,
+        CancellationToken cancellationToken = default)
+    {
+        if (cardId == Guid.Empty)
+        {
+            throw new ArgumentException("Catalog card id must not be empty.", nameof(cardId));
+        }
+        return SendAuthenticatedAsync(
+            HttpMethod.Get,
+            $"/api/v1/cards/{cardId:D}",
+            body: null,
+            cancellationToken,
+            MaximumCatalogResponseBytes);
     }
 
     public async Task<PokeFolioLogoutResult> LogoutAsync(
@@ -297,7 +334,8 @@ public sealed class PokeFolioApiClient : IDisposable
         HttpMethod method,
         string path,
         byte[]? body,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int maximumResponseBytes = MaximumSyncResponseBytes)
     {
         ThrowIfDisposed();
         SessionResolution resolution = await EnsureSessionAsync(cancellationToken);
@@ -315,7 +353,7 @@ public sealed class PokeFolioApiClient : IDisposable
             path,
             body,
             current.AccessToken,
-            MaximumSyncResponseBytes,
+            maximumResponseBytes,
             cancellationToken);
         if (response.Status == (int)HttpStatusCode.Unauthorized)
         {
@@ -337,7 +375,7 @@ public sealed class PokeFolioApiClient : IDisposable
                 path,
                 body,
                 current.AccessToken,
-                MaximumSyncResponseBytes,
+                maximumResponseBytes,
                 cancellationToken);
         }
 

@@ -27,6 +27,7 @@ public sealed class PokeNativeBridge : IDisposable
     private readonly CanonEosCapture canon;
     private readonly IPokeFolioCloudService cloud;
     private readonly AccountBridgeController accountBridge;
+    private readonly CatalogBridgeController catalogBridge;
     private readonly SyncBridgeController syncBridge;
     private readonly SemaphoreSlim recognitionGate = new(2, 2);
     private readonly SemaphoreSlim visualGate = new(2, 2);
@@ -70,6 +71,7 @@ public sealed class PokeNativeBridge : IDisposable
         accountBridge = new AccountBridgeController(
             callbacks,
             this.cloud);
+        catalogBridge = new CatalogBridgeController(callbacks, this.cloud);
         syncBridge = new SyncBridgeController(callbacks, this.cloud);
     }
 
@@ -112,6 +114,12 @@ public sealed class PokeNativeBridge : IDisposable
         accountBridge.Restore(requestId);
 
     public void logoutAccount(string requestId) => accountBridge.Logout(requestId);
+
+    public void resolveCatalogCard(string cardReferenceJson, string requestId) =>
+        catalogBridge.Resolve(cardReferenceJson, requestId);
+
+    public void getCatalogCard(string cardId, string requestId) =>
+        catalogBridge.Get(cardId, requestId);
 
     public void pushSyncOperations(string operationBatchJson, string requestId) =>
         syncBridge.Push(operationBatchJson, requestId);
@@ -650,6 +658,7 @@ public sealed class PokeNativeBridge : IDisposable
         liveView?.Cancel();
         liveView?.Dispose();
         accountBridge.Dispose();
+        catalogBridge.Dispose();
         syncBridge.Dispose();
         cloud.Dispose();
         // Gates can still be held by fire-and-forget bridge callbacks while cancellation unwinds.

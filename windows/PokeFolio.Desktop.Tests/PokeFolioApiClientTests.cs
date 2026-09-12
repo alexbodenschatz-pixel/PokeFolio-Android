@@ -17,6 +17,8 @@ public sealed class PokeFolioApiClientTests
     private static readonly string RotatedAccessToken = "access-" + new string('b', 64);
     private static readonly string FirstRefreshToken = "refresh-" + new string('c', 64);
     private static readonly string RotatedRefreshToken = "refresh-" + new string('d', 64);
+    private static readonly Guid CatalogCardId =
+        Guid.Parse("cccccccc-cccc-cccc-cccc-cccccccccccc");
 
     [TestMethod]
     public void AllowsHttpsAndLoopbackDevelopmentOriginsOnly()
@@ -145,6 +147,67 @@ public sealed class PokeFolioApiClientTests
             return JsonResponse(
                 HttpStatusCode.OK,
                 "{\"changes\":[],\"nextCursor\":\"abc\",\"hasMore\":false}");
+        }
+    }
+
+    [TestMethod]
+    public async Task CatalogCallsNormalizeReferenceAndUseAuthenticatedContractPaths()
+    {
+        Guid deviceId = Guid.NewGuid();
+        var store = new MemoryRefreshTokenStore();
+        var handler = new RecordingHandler((request, call, _) => Task.FromResult(call switch
+        {
+            0 => JsonResponse(
+                HttpStatusCode.OK,
+                SessionBody(deviceId, FirstAccessToken, FirstRefreshToken)),
+            1 => AssertResolve(request),
+            2 => AssertGet(request),
+            _ => throw new AssertFailedException("Unexpected catalog backend request.")
+        }));
+        using var client = CreateClient(store, handler);
+        await client.LoginAsync("owner@example.test", "valid-password", "Desktop test");
+
+        PokeFolioApiResponse resolved = await client.ResolveCatalogCardAsync(
+            """
+            {
+              "provider": " TCGDEX ",
+              "providerCardId": " SV8-141 ",
+              "tcg": " POKEMON ",
+              "name": " Pikachu ex ",
+              "setCode": " SV8 ",
+              "number": " 219/191 "
+            }
+            """);
+        PokeFolioApiResponse card = await client.GetCatalogCardAsync(CatalogCardId);
+
+        Assert.IsTrue(resolved.Succeeded);
+        Assert.AreEqual((int)HttpStatusCode.Created, resolved.Status);
+        Assert.IsTrue(card.Succeeded);
+        Assert.AreEqual(CatalogCardBody(CatalogCardId), card.Body);
+
+        HttpResponseMessage AssertResolve(RecordedRequest request)
+        {
+            Assert.AreEqual(HttpMethod.Post, request.Method);
+            Assert.AreEqual("/api/v1/cards/resolve", request.Uri.AbsolutePath);
+            Assert.AreEqual(FirstAccessToken, request.AuthorizationParameter);
+            using JsonDocument body = JsonDocument.Parse(request.Body);
+            Assert.AreEqual("tcgdex", body.RootElement.GetProperty("provider").GetString());
+            Assert.AreEqual("sv8-141", body.RootElement.GetProperty("providerCardId").GetString());
+            Assert.AreEqual("pokemon", body.RootElement.GetProperty("tcg").GetString());
+            Assert.AreEqual("Pikachu ex", body.RootElement.GetProperty("name").GetString());
+            Assert.AreEqual("SV8", body.RootElement.GetProperty("setCode").GetString());
+            Assert.AreEqual("219/191", body.RootElement.GetProperty("number").GetString());
+            return JsonResponse(
+                HttpStatusCode.Created,
+                $"{{\"card\":{CatalogCardBody(CatalogCardId)},\"created\":true,\"metadataMatched\":true}}");
+        }
+
+        static HttpResponseMessage AssertGet(RecordedRequest request)
+        {
+            Assert.AreEqual(HttpMethod.Get, request.Method);
+            Assert.AreEqual($"/api/v1/cards/{CatalogCardId:D}", request.Uri.AbsolutePath);
+            Assert.AreEqual(FirstAccessToken, request.AuthorizationParameter);
+            return JsonResponse(HttpStatusCode.OK, CatalogCardBody(CatalogCardId));
         }
     }
 
@@ -360,6 +423,33 @@ public sealed class PokeFolioApiClientTests
     }
 
     [TestMethod]
+    public async Task InvalidCatalogReferencesAreRejectedBeforeNetworkAccess()
+    {
+        var store = new MemoryRefreshTokenStore();
+        var handler = new RecordingHandler((_, _, _) =>
+            throw new AssertFailedException("Invalid catalog payload reached the network."));
+        using var client = CreateClient(store, handler);
+
+        await Assert.ThrowsExactlyAsync<ArgumentException>(async () =>
+            await client.ResolveCatalogCardAsync("[]"));
+        await Assert.ThrowsExactlyAsync<ArgumentException>(async () =>
+            await client.ResolveCatalogCardAsync(
+                "{\"provider\":\"tcgdex\",\"providerCardId\":\"sv8-141\",\"tcg\":\"yugioh\",\"name\":\"Pikachu\",\"setCode\":\"SV8\",\"number\":\"141/191\"}"));
+        await Assert.ThrowsExactlyAsync<ArgumentException>(async () =>
+            await client.ResolveCatalogCardAsync(
+                "{\"provider\":\"tcgdex\",\"providerCardId\":\"../bad?query\",\"tcg\":\"pokemon\",\"name\":\"Pikachu\",\"setCode\":\"SV8\",\"number\":\"141/191\"}"));
+        await Assert.ThrowsExactlyAsync<ArgumentException>(async () =>
+            await client.ResolveCatalogCardAsync(
+                "{\"provider\":\"tcgdex\",\"providerCardId\":\"sv8-141\",\"tcg\":\"pokemon\",\"name\":\"Pikachu\",\"setCode\":\"SV8\",\"number\":\"141/191\",\"userId\":\"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\"}"));
+        await Assert.ThrowsExactlyAsync<ArgumentException>(async () =>
+            await client.ResolveCatalogCardAsync(
+                "{\"provider\":\"tcgdex\",\"provider\":\"tcgdex\",\"providerCardId\":\"sv8-141\",\"tcg\":\"pokemon\",\"name\":\"Pikachu\",\"setCode\":\"SV8\",\"number\":\"141/191\"}"));
+        Assert.ThrowsExactly<ArgumentException>(() =>
+            client.GetCatalogCardAsync(Guid.Empty));
+        Assert.HasCount(0, handler.Requests);
+    }
+
+    [TestMethod]
     public async Task OversizedAuthResponseIsRejectedBeforeParsingOrPersistence()
     {
         var store = new MemoryRefreshTokenStore();
@@ -436,6 +526,19 @@ public sealed class PokeFolioApiClientTests
                 current = true
             }
         });
+
+    private static string CatalogCardBody(Guid cardId) => JsonSerializer.Serialize(new
+    {
+        id = cardId,
+        provider = "tcgdex",
+        providerCardId = "sv8-141",
+        tcg = "pokemon",
+        name = "Pikachu ex",
+        setCode = "SV8",
+        number = "219/191",
+        createdAt = "2026-09-12T00:00:00+00:00",
+        updatedAt = "2026-09-12T00:00:00+00:00"
+    });
 
     private static HttpResponseMessage JsonResponse(HttpStatusCode status, string json) => new(status)
     {

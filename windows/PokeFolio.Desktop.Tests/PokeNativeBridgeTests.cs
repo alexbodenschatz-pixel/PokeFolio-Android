@@ -195,6 +195,92 @@ public sealed class PokeNativeBridgeTests
     }
 
     [TestMethod]
+    public async Task CatalogBridgeReturnsValidatedTokenFreeResolutionAndLookup()
+    {
+        var cloud = new FakeCloudService(Guid.NewGuid());
+        var context = CreateContext(cloud);
+        await using var disposable = context;
+        const string reference =
+            "{\"provider\":\"tcgdex\",\"providerCardId\":\"sv8-141\",\"tcg\":\"pokemon\",\"name\":\"Pikachu ex\",\"setCode\":\"SV8\",\"number\":\"219/191\"}";
+
+        context.Bridge.resolveCatalogCard(reference, "catalog-resolve-1");
+
+        Callback resolved = await context.Callbacks.NextAsync();
+        Assert.AreEqual("onDesktopCatalogResult", resolved.Name);
+        Assert.AreEqual(reference, cloud.LastCatalogReferenceJson);
+        Assert.IsFalse(resolved.Json.Contains("access-token", StringComparison.Ordinal));
+        Assert.IsFalse(resolved.Json.Contains("refresh-token", StringComparison.Ordinal));
+        using (JsonDocument json = JsonDocument.Parse(resolved.Json))
+        {
+            Assert.IsTrue(json.RootElement.GetProperty("ok").GetBoolean());
+            Assert.AreEqual("resolve", json.RootElement.GetProperty("operation").GetString());
+            Assert.AreEqual(FakeCloudService.CatalogCardId, json.RootElement
+                .GetProperty("data")
+                .GetProperty("card")
+                .GetProperty("id")
+                .GetGuid());
+        }
+
+        context.Bridge.getCatalogCard(
+            FakeCloudService.CatalogCardId.ToString("D"),
+            "catalog-get-1");
+
+        Callback loaded = await context.Callbacks.NextAsync();
+        Assert.AreEqual("onDesktopCatalogResult", loaded.Name);
+        Assert.AreEqual(FakeCloudService.CatalogCardId, cloud.LastCatalogCardId);
+        using JsonDocument loadedJson = JsonDocument.Parse(loaded.Json);
+        Assert.IsTrue(loadedJson.RootElement.GetProperty("ok").GetBoolean());
+        Assert.AreEqual("get", loadedJson.RootElement.GetProperty("operation").GetString());
+        Assert.AreEqual("Pikachu ex", loadedJson.RootElement
+            .GetProperty("data")
+            .GetProperty("name")
+            .GetString());
+    }
+
+    [TestMethod]
+    public async Task CatalogBridgeFailsClosedForInvalidIdOrSuccessfulResponseShape()
+    {
+        var cloud = new FakeCloudService(Guid.NewGuid())
+        {
+            ResolveResponse = new PokeFolioApiResponse(
+                201,
+                FakeCloudService.CatalogResolutionBody(created: false))
+        };
+        var context = CreateContext(cloud);
+        await using var disposable = context;
+
+        context.Bridge.getCatalogCard("not-a-uuid", "catalog-invalid-id");
+        Callback invalidId = await context.Callbacks.NextAsync();
+        using (JsonDocument json = JsonDocument.Parse(invalidId.Json))
+        {
+            Assert.IsFalse(json.RootElement.GetProperty("ok").GetBoolean());
+            Assert.AreEqual("validation", json.RootElement.GetProperty("errorType").GetString());
+        }
+        Assert.IsNull(cloud.LastCatalogCardId);
+
+        context.Bridge.resolveCatalogCard("{}", "catalog-invalid-response");
+        Callback invalidResponse = await context.Callbacks.NextAsync();
+        using JsonDocument responseJson = JsonDocument.Parse(invalidResponse.Json);
+        Assert.IsFalse(responseJson.RootElement.GetProperty("ok").GetBoolean());
+        Assert.AreEqual(
+            "invalid-response",
+            responseJson.RootElement.GetProperty("errorType").GetString());
+
+        string validResolution = FakeCloudService.CatalogResolutionBody(created: true);
+        cloud.ResolveResponse = new PokeFolioApiResponse(
+            201,
+            validResolution[..^1] + ",\"accessToken\":\"must-not-leak\"}");
+        context.Bridge.resolveCatalogCard("{}", "catalog-extra-field");
+        Callback extraField = await context.Callbacks.NextAsync();
+        Assert.IsFalse(extraField.Json.Contains("must-not-leak", StringComparison.Ordinal));
+        using JsonDocument extraFieldJson = JsonDocument.Parse(extraField.Json);
+        Assert.IsFalse(extraFieldJson.RootElement.GetProperty("ok").GetBoolean());
+        Assert.AreEqual(
+            "invalid-response",
+            extraFieldJson.RootElement.GetProperty("errorType").GetString());
+    }
+
+    [TestMethod]
     public async Task BridgeOwnsAndDisposesSharedCloudSessionExactlyOnce()
     {
         var cloud = new FakeCloudService(Guid.NewGuid());
@@ -251,6 +337,8 @@ public sealed class PokeNativeBridgeTests
     {
         public static readonly Guid UserId =
             Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+        public static readonly Guid CatalogCardId =
+            Guid.Parse("cccccccc-cccc-cccc-cccc-cccccccccccc");
         private readonly PokeFolioSession session = new(
             UserId,
             new PokeFolioDevice(
@@ -264,6 +352,8 @@ public sealed class PokeNativeBridgeTests
         public string? LoginEmail { get; private set; }
         public string? LastPushJson { get; private set; }
         public string? LastCursor { get; private set; }
+        public string? LastCatalogReferenceJson { get; private set; }
+        public Guid? LastCatalogCardId { get; private set; }
         public int LastLimit { get; private set; }
         public int DisposeCount { get; private set; }
         public PokeFolioApiResponse PushResponse { get; set; } = new(
@@ -272,6 +362,12 @@ public sealed class PokeNativeBridgeTests
         public PokeFolioApiResponse PullResponse { get; set; } = new(
             200,
             "{\"changes\":[],\"nextCursor\":\"next-cursor\",\"hasMore\":false}");
+        public PokeFolioApiResponse ResolveResponse { get; set; } = new(
+            201,
+            CatalogResolutionBody(created: true));
+        public PokeFolioApiResponse GetCardResponse { get; set; } = new(
+            200,
+            CatalogCardBody());
 
         public PokeFolioAccountStatus GetStatus() => new(
             Configured: true,
@@ -325,6 +421,30 @@ public sealed class PokeNativeBridgeTests
             LastLimit = limit;
             return Task.FromResult(PullResponse);
         }
+
+        public Task<PokeFolioApiResponse> ResolveCatalogCardAsync(
+            string cardReferenceJson,
+            CancellationToken cancellationToken = default)
+        {
+            LastCatalogReferenceJson = cardReferenceJson;
+            return Task.FromResult(ResolveResponse);
+        }
+
+        public Task<PokeFolioApiResponse> GetCatalogCardAsync(
+            Guid cardId,
+            CancellationToken cancellationToken = default)
+        {
+            LastCatalogCardId = cardId;
+            return Task.FromResult(GetCardResponse);
+        }
+
+        public static string CatalogResolutionBody(bool created) =>
+            $"{{\"card\":{CatalogCardBody()},\"created\":{created.ToString().ToLowerInvariant()},\"metadataMatched\":true}}";
+
+        private static string CatalogCardBody() =>
+            $$"""
+            {"id":"{{CatalogCardId:D}}","provider":"tcgdex","providerCardId":"sv8-141","tcg":"pokemon","name":"Pikachu ex","setCode":"SV8","number":"219/191","createdAt":"2026-09-12T00:00:00+00:00","updatedAt":"2026-09-12T00:00:00+00:00"}
+            """;
 
         public void Dispose()
         {

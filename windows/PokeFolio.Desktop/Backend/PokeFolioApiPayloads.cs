@@ -8,8 +8,27 @@ namespace PokeFolio.Desktop.Backend;
 
 internal static class PokeFolioApiPayloads
 {
+    private const int MaximumCatalogRequestBytes = 16 * 1024;
     private const int MaximumSyncRequestBytes = 1024 * 1024;
     private static readonly UTF8Encoding StrictUtf8 = new(false, true);
+    private static readonly Dictionary<string, string> CatalogProviderTcgs =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["pokemon-tcg-api"] = "pokemon",
+            ["tcgdex"] = "pokemon",
+            ["ygoprodeck"] = "yugioh",
+            ["optcgapi"] = "onepiece"
+        };
+    private static readonly HashSet<string> CatalogReferenceProperties =
+        new(StringComparer.Ordinal)
+        {
+            "provider",
+            "providerCardId",
+            "tcg",
+            "name",
+            "setCode",
+            "number"
+        };
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         PropertyNameCaseInsensitive = false,
@@ -33,6 +52,84 @@ internal static class PokeFolioApiPayloads
 
     public static byte[] SerializeRefresh(string refreshToken) =>
         JsonSerializer.SerializeToUtf8Bytes(new { refreshToken }, JsonOptions);
+
+    public static byte[] NormalizeCatalogCardReference(string json)
+    {
+        ArgumentNullException.ThrowIfNull(json);
+        byte[] input = StrictUtf8.GetBytes(json);
+        try
+        {
+            if (input.Length is < 2 or > MaximumCatalogRequestBytes)
+            {
+                throw new ArgumentException(
+                    "Catalog card reference has an invalid size.",
+                    nameof(json));
+            }
+
+            using JsonDocument document = JsonDocument.Parse(input);
+            JsonElement root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object ||
+                HasDuplicateProperty(root) ||
+                root.EnumerateObject().Count() != CatalogReferenceProperties.Count ||
+                root.EnumerateObject().Any(property =>
+                    !CatalogReferenceProperties.Contains(property.Name)))
+            {
+                throw new ArgumentException(
+                    "Catalog card reference must contain exactly the contract fields.",
+                    nameof(json));
+            }
+
+            string provider = RequiredString(root, "provider").Trim().ToLowerInvariant();
+            string providerCardId = RequiredString(root, "providerCardId")
+                .Trim()
+                .ToLowerInvariant();
+            string tcg = RequiredString(root, "tcg").Trim().ToLowerInvariant();
+            string name = NormalizeCatalogText(root, "name", 240);
+            string setCode = NormalizeCatalogText(root, "setCode", 64);
+            string number = NormalizeCatalogText(root, "number", 64);
+
+            if (!CatalogProviderTcgs.TryGetValue(provider, out string? providerTcg))
+            {
+                throw new ArgumentException("Catalog provider is not supported.", nameof(json));
+            }
+            if (!string.Equals(providerTcg, tcg, StringComparison.Ordinal))
+            {
+                throw new ArgumentException(
+                    "Catalog provider does not match the selected TCG.",
+                    nameof(json));
+            }
+            if (providerCardId.Length is < 1 or > 160 ||
+                providerCardId.Any(character =>
+                    !char.IsAsciiLetterOrDigit(character) &&
+                    character is not '-' and not '_' and not '.' and not ':' and not '/'))
+            {
+                throw new ArgumentException(
+                    "Provider card id contains invalid characters.",
+                    nameof(json));
+            }
+
+            return JsonSerializer.SerializeToUtf8Bytes(new
+            {
+                provider,
+                providerCardId,
+                tcg,
+                name,
+                setCode,
+                number
+            }, JsonOptions);
+        }
+        catch (JsonException error)
+        {
+            throw new ArgumentException(
+                "Catalog card reference must be valid JSON.",
+                nameof(json),
+                error);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(input);
+        }
+    }
 
     public static byte[] ValidateSyncOperationBatch(string json)
     {
@@ -172,6 +269,35 @@ internal static class PokeFolioApiPayloads
         value.ValueKind == JsonValueKind.String
             ? value.GetString()
             : null;
+
+    private static string RequiredString(JsonElement root, string propertyName)
+    {
+        if (!root.TryGetProperty(propertyName, out JsonElement value) ||
+            value.ValueKind != JsonValueKind.String)
+        {
+            throw new ArgumentException(
+                $"Catalog field {propertyName} must be a string.",
+                nameof(root));
+        }
+        return value.GetString()!;
+    }
+
+    private static string NormalizeCatalogText(
+        JsonElement root,
+        string propertyName,
+        int maximumLength)
+    {
+        string value = RequiredString(root, propertyName).Trim();
+        if (value.Length is < 1 ||
+            value.Length > maximumLength ||
+            value.Any(char.IsControl))
+        {
+            throw new ArgumentException(
+                $"Catalog field {propertyName} is invalid.",
+                nameof(root));
+        }
+        return value;
+    }
 
     private static IReadOnlyDictionary<string, string[]>? TryReadErrors(JsonElement root)
     {

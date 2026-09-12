@@ -113,6 +113,26 @@ public sealed class PokeFolioAccountService : IPokeFolioCloudService
             : client.PullSyncChangesAsync(cursor, limit, cancellationToken);
     }
 
+    public Task<PokeFolioApiResponse> ResolveCatalogCardAsync(
+        string cardReferenceJson,
+        CancellationToken cancellationToken = default)
+    {
+        ThrowIfDisposed();
+        return client is null
+            ? Task.FromResult(UnavailableApiResponse())
+            : client.ResolveCatalogCardAsync(cardReferenceJson, cancellationToken);
+    }
+
+    public Task<PokeFolioApiResponse> GetCatalogCardAsync(
+        Guid cardId,
+        CancellationToken cancellationToken = default)
+    {
+        ThrowIfDisposed();
+        return client is null
+            ? Task.FromResult(UnavailableApiResponse())
+            : client.GetCatalogCardAsync(cardId, cancellationToken);
+    }
+
     private PokeFolioAuthenticationResult UnavailableAuthentication() =>
         PokeFolioAuthenticationResult.Failed(UnavailableProblem());
 

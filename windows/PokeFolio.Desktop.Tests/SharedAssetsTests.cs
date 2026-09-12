@@ -82,4 +82,25 @@ public sealed class SharedAssetsTests
         Assert.IsFalse(bootstrap.Contains("refreshToken", StringComparison.Ordinal));
         Assert.IsFalse(bootstrap.Contains("localStorage", StringComparison.Ordinal));
     }
+
+    [TestMethod]
+    public void DesktopBootstrapExposesTokenFreeBoundedCatalogFacade()
+    {
+        var root = TestPaths.RepositoryRoot();
+        string bootstrap = File.ReadAllText(Path.Combine(
+            root,
+            "windows",
+            "PokeFolio.Desktop",
+            "WebHost",
+            "desktop-bootstrap.js"));
+
+        StringAssert.Contains(bootstrap, "Object.defineProperty(window, 'PokeCatalog'");
+        StringAssert.Contains(bootstrap, "pendingCatalogRequests.size >= 8");
+        StringAssert.Contains(bootstrap, "nativeHost.resolveCatalogCard");
+        StringAssert.Contains(bootstrap, "nativeHost.getCatalogCard");
+        StringAssert.Contains(bootstrap, "pokefolio:catalog-result");
+        Assert.IsFalse(bootstrap.Contains("accessToken", StringComparison.Ordinal));
+        Assert.IsFalse(bootstrap.Contains("refreshToken", StringComparison.Ordinal));
+        Assert.IsFalse(bootstrap.Contains("localStorage", StringComparison.Ordinal));
+    }
 }
