@@ -10,7 +10,7 @@ This roadmap converts the product brief into testable increments. Status values 
 | 2. Architecture stabilization | In progress | ADRs, host security, contract boundaries, supported runtime plan |
 | 3. Regression baseline | In progress | Test taxonomy, CI parity, real-image manifest and E2E harness foundations |
 | 4-6. Backend, accounts, isolation | In progress | PostgreSQL integration and cross-user denial tests pass; recovery and deployment remain |
-| 7-10. Sync, clients, shared core | In progress | Server push/pull, shared offline queue, protected Windows credentials, token-free account/sync bridges and stable local account partition identity are tested; persistent collection wiring, visible account UI and Android transport remain |
+| 7-10. Sync, clients, shared core | In progress | Server push/pull, shared offline queue, protected Windows credentials, token-free account/sync bridges, stable local account partition identity and global provider-card resolution are tested; persistent collection wiring, visible account UI and Android transport remain |
 | 11-21. Product and scanner slices | Not started | Slice-specific tests/builds/benchmarks |
 | 22-25. Audit through release | Not started | Security review, restore test, RC builds and release report |
 
@@ -53,10 +53,11 @@ The current branch is based on `feature/windows-vision-eos`; it must not merge t
 ### Sync/client increment
 
 1. Implement operation idempotency, user-scoped change cursor and tombstone retention.
-2. Add encrypted/native credential storage and offline queues on Android and Windows.
-3. Add background/manual sync and SignalR invalidation.
-4. Exercise offline interruption, duplicate delivery, out-of-order response, concurrent `+1` and stale edit conflicts.
-5. Move web assets to `shared/web` only after both host builds consume them in CI.
+2. Resolve allowlisted provider card identities to stable global catalog UUIDs before queuing collection creates.
+3. Add encrypted/native credential storage and offline queues on Android and Windows.
+4. Add background/manual sync and SignalR invalidation.
+5. Exercise offline interruption, duplicate delivery, out-of-order response, concurrent `+1` and stale edit conflicts.
+6. Move web assets to `shared/web` only after both host builds consume them in CI.
 
 ### Product increments
 

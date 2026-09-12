@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -34,6 +35,19 @@ public sealed class ApiConfigurationTests
         using JsonDocument problem = await JsonDocument.ParseAsync(
             await challenge.Content.ReadAsStreamAsync());
         Assert.IsTrue(problem.RootElement.TryGetProperty("correlationId", out _));
+
+        using HttpResponseMessage anonymousCatalogWrite = await client.PostAsJsonAsync(
+            "/api/v1/cards/resolve",
+            new
+            {
+                provider = "tcgdex",
+                providerCardId = "sv8-141",
+                tcg = "pokemon",
+                name = "Pikachu",
+                setCode = "SV8",
+                number = "141/191"
+            });
+        Assert.AreEqual(HttpStatusCode.Unauthorized, anonymousCatalogWrite.StatusCode);
     }
 
     private sealed class TestApiFactory : WebApplicationFactory<global::Program>

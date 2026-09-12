@@ -1,6 +1,6 @@
 # PokeFolio backend
 
-The backend is a .NET 10 modular-monolith foundation backed by PostgreSQL 15 or newer (PostgreSQL 17 is the CI baseline). It defines framework Identity storage, user-owned collection/device/sync data, ownership query filters, idempotent operation records and durable change records. Versioned auth, device-management, collection reads, idempotent holding mutations, durable sync pulls and per-operation sync batch pushes are exposed under `/api/v1`.
+The backend is a .NET 10 modular-monolith foundation backed by PostgreSQL 15 or newer (PostgreSQL 17 is the CI baseline). It defines framework Identity storage, a global card catalog, user-owned collection/device/sync data, ownership query filters, idempotent operation records and durable change records. Versioned auth, device management, authenticated catalog lookup/resolution, collection reads, idempotent holding mutations, durable sync pulls and per-operation sync batch pushes are exposed under `/api/v1`.
 
 ## Local commands
 
@@ -36,6 +36,8 @@ dotnet test backend/PokeFolio.Backend.slnx -c Release
 
 - private EF aggregates have non-null `UserId` and authenticated-user query filters;
 - the global catalog has no private ownership filter;
+- catalog references accept only allowlisted public provider/TCG pairs, normalize the provider identity, are rate-limited and converge concurrent inserts through the unique database key;
+- resolving an existing provider identity never overwrites its stored metadata; `metadataMatched` exposes disagreement to the caller;
 - processed sync operation IDs are unique per user;
 - a sync operation can reference only a device owned by the same user;
 - holding versions are optimistic-concurrency tokens;
@@ -57,3 +59,7 @@ dotnet test backend/PokeFolio.Backend.slnx -c Release
 - sync pushes commit operations independently in input order, use each `operationId` as the retry identity and report `applied`, `duplicate`, `conflict` or `rejected` per item;
 - anonymous auth operations have per-client rate limits and machine-readable 429 responses;
 - missing database configuration fails startup instead of silently selecting an unsafe store.
+
+## Catalog metadata trust boundary
+
+`POST /api/v1/cards/resolve` converts a supported public provider identity into the stable global UUID required by collection and sync commands. At this increment, provider IDs and metadata are authenticated, bounded and syntactically validated, but the name, set code and collector number are not yet fetched independently by a server-side provider adapter. The first accepted metadata therefore remains immutable and later disagreement is returned as `metadataMatched: false` rather than silently poisoning or replacing an existing row. Authoritative server-side provider verification is a required hardening step before treating newly submitted catalog metadata as trusted display data.

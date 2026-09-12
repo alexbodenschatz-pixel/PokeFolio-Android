@@ -142,6 +142,50 @@ test('sync separates commutative deltas from versioned absolute edits and durabl
   assert.ok(contract.components.schemas.ChangeEvent.required.includes('sequence'));
 });
 
+test('catalog resolution is authenticated, bounded and returns a stable global identity', () => {
+  const resolve = contract.paths['/cards/resolve'].post;
+  const get = contract.paths['/cards/{cardId}'].get;
+  assert.notDeepEqual(resolve.security, []);
+  assert.notDeepEqual(get.security, []);
+  assert.equal(
+    resolve.requestBody.content['application/json'].schema.$ref,
+    '#/components/schemas/ResolveCatalogCardCommand'
+  );
+  assert.deepEqual(contract.components.schemas.CatalogProvider.enum, [
+    'pokemon-tcg-api',
+    'tcgdex',
+    'ygoprodeck',
+    'optcgapi'
+  ]);
+
+  const command = contract.components.schemas.ResolveCatalogCardCommand;
+  assert.deepEqual(command.required, [
+    'provider',
+    'providerCardId',
+    'tcg',
+    'name',
+    'setCode',
+    'number'
+  ]);
+  assert.ok(!collectPropertyNames(command).includes('userId'));
+  assert.equal(command.properties.providerCardId.maxLength, 160);
+
+  const resolution = contract.components.schemas.CatalogCardResolution;
+  assert.deepEqual(resolution.required, ['card', 'created', 'metadataMatched']);
+  assert.equal(
+    resolve.responses['201'].content['application/json'].schema.$ref,
+    '#/components/schemas/CatalogCardResolution'
+  );
+  assert.equal(
+    get.responses['200'].content['application/json'].schema.$ref,
+    '#/components/schemas/CatalogCard'
+  );
+  assert.ok(resolve.responses['400']);
+  assert.ok(resolve.responses['401']);
+  assert.ok(resolve.responses['429']);
+  assert.ok(get.responses['404']);
+});
+
 test('tokens and provider secrets are not represented as browser persistence fields', () => {
   const holdingProperties = collectPropertyNames(contract.components.schemas.CollectionHolding);
   assert.ok(!holdingProperties.some(name => /token|password|secret/i.test(name)));

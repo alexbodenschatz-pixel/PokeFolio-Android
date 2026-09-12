@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using PokeFolio.Api.Auth;
+using PokeFolio.Api.Cards;
 using PokeFolio.Api.Collection;
 using PokeFolio.Api.Devices;
 using PokeFolio.Api.Security;
@@ -36,6 +37,7 @@ builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<AuthTokenService>();
 builder.Services.AddSingleton<LoginTimingProtector>();
 builder.Services.AddScoped<AuthSessionService>();
+builder.Services.AddScoped<CatalogCardService>();
 builder.Services.AddScoped<CollectionMutationService>();
 builder.Services.AddScoped<CollectionReadService>();
 builder.Services.AddScoped<DeviceManagementService>();
@@ -137,6 +139,7 @@ builder.Services.AddRateLimiter(options =>
     };
     options.AddPolicy("auth-sensitive", context => CreateAuthLimiter(context, permitLimit: 10));
     options.AddPolicy("auth-refresh", context => CreateAuthLimiter(context, permitLimit: 60));
+    options.AddPolicy("catalog-resolve", context => CreateAuthLimiter(context, permitLimit: 120));
 });
 
 var app = builder.Build();
@@ -146,6 +149,7 @@ app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapAuthEndpoints();
+app.MapCatalogCardEndpoints();
 app.MapCollectionEndpoints();
 app.MapDeviceEndpoints();
 app.MapSyncEndpoints();

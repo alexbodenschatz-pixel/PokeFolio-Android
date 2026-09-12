@@ -87,6 +87,8 @@ Migrations and background jobs set user context explicitly. Integration tests cr
 
 Shared catalog data includes cards, sets, variants, rarities, artists, normalized provider identifiers, market quotes and price history.
 
+Client recognition results carry public provider identifiers, while private holdings reference only stable backend catalog UUIDs. An authenticated resolver normalizes an allowlisted provider/TCG identity and converges concurrent submissions through a unique database key. Client-supplied descriptive metadata remains untrusted until a server-side provider adapter verifies it; conflicting submissions must be surfaced rather than silently overwriting shared catalog data.
+
 Private data includes collection holdings, physical specimens, purchases, binders, wishlists, scans, grading results, devices, settings, sync operations and change events.
 
 Collection quantities and physical specimens serve different needs:

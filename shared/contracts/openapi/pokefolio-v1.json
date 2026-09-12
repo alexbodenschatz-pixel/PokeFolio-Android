@@ -215,6 +215,81 @@
         }
       }
     },
+    "/cards/{cardId}": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/CardId"
+        }
+      ],
+      "get": {
+        "operationId": "getCatalogCard",
+        "responses": {
+          "200": {
+            "description": "Global catalog card",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CatalogCard"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "404": {
+            "$ref": "#/components/responses/Problem"
+          }
+        }
+      }
+    },
+    "/cards/resolve": {
+      "post": {
+        "operationId": "resolveCatalogCardReference",
+        "description": "Resolve a supported public provider identity to one stable global card id. The first accepted metadata is retained; metadataMatched reports whether a later request agrees without overwriting it.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResolveCatalogCardCommand"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Existing global catalog card resolved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CatalogCardResolution"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Global catalog card created and resolved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CatalogCardResolution"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "401": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "429": {
+            "$ref": "#/components/responses/Problem"
+          }
+        }
+      }
+    },
     "/collection": {
       "get": {
         "operationId": "listCollection",
@@ -521,6 +596,15 @@
           "format": "uuid"
         }
       },
+      "CardId": {
+        "name": "cardId",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
       "HoldingId": {
         "name": "holdingId",
         "in": "path",
@@ -725,6 +809,101 @@
             "format": "date-time"
           },
           "current": {
+            "type": "boolean"
+          }
+        }
+      },
+      "CatalogProvider": {
+        "type": "string",
+        "enum": ["pokemon-tcg-api", "tcgdex", "ygoprodeck", "optcgapi"]
+      },
+      "TradingCardGame": {
+        "type": "string",
+        "enum": ["pokemon", "yugioh", "onepiece"]
+      },
+      "ResolveCatalogCardCommand": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["provider", "providerCardId", "tcg", "name", "setCode", "number"],
+        "properties": {
+          "provider": {
+            "$ref": "#/components/schemas/CatalogProvider"
+          },
+          "providerCardId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 160,
+            "pattern": "^[A-Za-z0-9_.:/-]+$"
+          },
+          "tcg": {
+            "$ref": "#/components/schemas/TradingCardGame"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 240
+          },
+          "setCode": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "number": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          }
+        }
+      },
+      "CatalogCard": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "provider", "providerCardId", "tcg", "name", "setCode", "number", "createdAt", "updatedAt"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "provider": {
+            "$ref": "#/components/schemas/CatalogProvider"
+          },
+          "providerCardId": {
+            "type": "string"
+          },
+          "tcg": {
+            "$ref": "#/components/schemas/TradingCardGame"
+          },
+          "name": {
+            "type": "string"
+          },
+          "setCode": {
+            "type": "string"
+          },
+          "number": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "CatalogCardResolution": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["card", "created", "metadataMatched"],
+        "properties": {
+          "card": {
+            "$ref": "#/components/schemas/CatalogCard"
+          },
+          "created": {
+            "type": "boolean"
+          },
+          "metadataMatched": {
             "type": "boolean"
           }
         }

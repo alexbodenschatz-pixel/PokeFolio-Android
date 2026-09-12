@@ -13,6 +13,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using Npgsql;
 using PokeFolio.Api.Auth;
+using PokeFolio.Api.Cards;
 using PokeFolio.Api.Collection;
 using PokeFolio.Api.Sync;
 using PokeFolio.Domain.Abstractions;
@@ -1365,6 +1366,186 @@ public sealed class PostgreSqlIsolationTests
                 .SingleAsync();
             Assert.AreEqual(7L, deletion.Version);
             Assert.IsNull(deletion.PayloadJson);
+        }
+        finally
+        {
+            await DropDatabaseAsync(serverConnectionString, databaseName);
+        }
+    }
+
+    [TestMethod]
+    [TestCategory("PostgreSQL")]
+    public async Task CatalogResolutionIsAuthenticatedGlobalAndRaceSafe()
+    {
+        string? serverConnectionString = Environment.GetEnvironmentVariable("POKEFOLIO_TEST_POSTGRES");
+        if (string.IsNullOrWhiteSpace(serverConnectionString))
+        {
+            Assert.Inconclusive(
+                "Set POKEFOLIO_TEST_POSTGRES to run the PostgreSQL catalog resolution test.");
+            return;
+        }
+
+        string databaseName = $"pokefolio_test_{Guid.NewGuid():N}";
+        string testConnectionString = await CreateDatabaseAsync(serverConnectionString, databaseName);
+
+        try
+        {
+            await using (PokeFolioDbContext migrationContext = CreateContext(testConnectionString, null))
+            {
+                await migrationContext.Database.MigrateAsync();
+            }
+
+            using var factory = new PokeFolioApiFactory(testConnectionString);
+            using HttpClient userAClient = factory.CreateClient();
+            using HttpClient userBClient = factory.CreateClient();
+            using HttpClient anonymousClient = factory.CreateClient();
+            AuthSessionResponse userA = await RegisterAsync(
+                userAClient,
+                "catalog-a@example.test",
+                "Pixel Catalog");
+            AuthSessionResponse userB = await RegisterAsync(
+                userBClient,
+                "catalog-b@example.test",
+                "Windows Catalog");
+            Assert.AreNotEqual(Guid.Empty, userA.UserId);
+            Assert.AreNotEqual(userA.UserId, userB.UserId);
+
+            userAClient.DefaultRequestHeaders.Authorization =
+                new AuthenticationHeaderValue("Bearer", userA.AccessToken);
+            userBClient.DefaultRequestHeaders.Authorization =
+                new AuthenticationHeaderValue("Bearer", userB.AccessToken);
+
+            var firstCommand = new ResolveCatalogCardCommand(
+                "TCGDEX",
+                " SV8-141 ",
+                "POKEMON",
+                " Pikachu ex ",
+                " SV8 ",
+                " 219/191 ");
+            using HttpResponseMessage createdResponse = await userAClient.PostAsJsonAsync(
+                "/api/v1/cards/resolve",
+                firstCommand);
+            Assert.AreEqual(HttpStatusCode.Created, createdResponse.StatusCode);
+            CatalogCardResolutionResponse? created = await createdResponse.Content
+                .ReadFromJsonAsync<CatalogCardResolutionResponse>();
+            Assert.IsNotNull(created);
+            Assert.IsTrue(created.Created);
+            Assert.IsTrue(created.MetadataMatched);
+            Assert.AreEqual("tcgdex", created.Card.Provider);
+            Assert.AreEqual("sv8-141", created.Card.ProviderCardId);
+            Assert.AreEqual("Pikachu ex", created.Card.Name);
+
+            var mismatchedCommand = new ResolveCatalogCardCommand(
+                "tcgdex",
+                "sv8-141",
+                "pokemon",
+                "Changed by another account",
+                "OTHER",
+                "999/999");
+            using HttpResponseMessage existingResponse = await userBClient.PostAsJsonAsync(
+                "/api/v1/cards/resolve",
+                mismatchedCommand);
+            Assert.AreEqual(HttpStatusCode.OK, existingResponse.StatusCode);
+            CatalogCardResolutionResponse? existing = await existingResponse.Content
+                .ReadFromJsonAsync<CatalogCardResolutionResponse>();
+            Assert.IsNotNull(existing);
+            Assert.IsFalse(existing.Created);
+            Assert.IsFalse(existing.MetadataMatched);
+            Assert.AreEqual(created.Card.Id, existing.Card.Id);
+            Assert.AreEqual("Pikachu ex", existing.Card.Name);
+            Assert.AreEqual("SV8", existing.Card.SetCode);
+            Assert.AreEqual("219/191", existing.Card.Number);
+
+            using (HttpResponseMessage getResponse = await userBClient.GetAsync(
+                       $"/api/v1/cards/{created.Card.Id}"))
+            {
+                Assert.AreEqual(HttpStatusCode.OK, getResponse.StatusCode);
+                CatalogCardResponse? card = await getResponse.Content
+                    .ReadFromJsonAsync<CatalogCardResponse>();
+                Assert.IsNotNull(card);
+                Assert.AreEqual(created.Card.Id, card.Id);
+                Assert.AreEqual(created.Card.Provider, card.Provider);
+                Assert.AreEqual(created.Card.ProviderCardId, card.ProviderCardId);
+                Assert.AreEqual(created.Card.Tcg, card.Tcg);
+                Assert.AreEqual(created.Card.Name, card.Name);
+                Assert.AreEqual(created.Card.SetCode, card.SetCode);
+                Assert.AreEqual(created.Card.Number, card.Number);
+            }
+
+            using (HttpResponseMessage missing = await userAClient.GetAsync(
+                       $"/api/v1/cards/{Guid.NewGuid()}"))
+            {
+                Assert.AreEqual(HttpStatusCode.NotFound, missing.StatusCode);
+                using JsonDocument problem = await JsonDocument.ParseAsync(
+                    await missing.Content.ReadAsStreamAsync());
+                Assert.AreEqual(
+                    "card_not_found",
+                    problem.RootElement.GetProperty("code").GetString());
+                Assert.IsTrue(problem.RootElement.TryGetProperty("correlationId", out _));
+            }
+
+            using (HttpResponseMessage anonymousRead = await anonymousClient.GetAsync(
+                       $"/api/v1/cards/{created.Card.Id}"))
+            {
+                Assert.AreEqual(HttpStatusCode.Unauthorized, anonymousRead.StatusCode);
+            }
+
+            using (HttpResponseMessage anonymousWrite = await anonymousClient.PostAsJsonAsync(
+                       "/api/v1/cards/resolve",
+                       firstCommand))
+            {
+                Assert.AreEqual(HttpStatusCode.Unauthorized, anonymousWrite.StatusCode);
+            }
+
+            using (HttpResponseMessage invalidProvider = await userBClient.PostAsJsonAsync(
+                       "/api/v1/cards/resolve",
+                       firstCommand with { Provider = "untrusted-client" }))
+            {
+                Assert.AreEqual(HttpStatusCode.BadRequest, invalidProvider.StatusCode);
+            }
+
+            var raceCommand = new ResolveCatalogCardCommand(
+                "pokemon-tcg-api",
+                "sv9-025",
+                "pokemon",
+                "Race Test Card",
+                "SV9",
+                "025/159");
+            Task<HttpResponseMessage> raceARequest = userAClient.PostAsJsonAsync(
+                "/api/v1/cards/resolve",
+                raceCommand);
+            Task<HttpResponseMessage> raceBRequest = userBClient.PostAsJsonAsync(
+                "/api/v1/cards/resolve",
+                raceCommand);
+            await Task.WhenAll(raceARequest, raceBRequest);
+            using HttpResponseMessage raceAResponse = await raceARequest;
+            using HttpResponseMessage raceBResponse = await raceBRequest;
+            Assert.IsTrue(
+                raceAResponse.StatusCode is HttpStatusCode.OK or HttpStatusCode.Created);
+            Assert.IsTrue(
+                raceBResponse.StatusCode is HttpStatusCode.OK or HttpStatusCode.Created);
+            CatalogCardResolutionResponse? raceA = await raceAResponse.Content
+                .ReadFromJsonAsync<CatalogCardResolutionResponse>();
+            CatalogCardResolutionResponse? raceB = await raceBResponse.Content
+                .ReadFromJsonAsync<CatalogCardResolutionResponse>();
+            Assert.IsNotNull(raceA);
+            Assert.IsNotNull(raceB);
+            Assert.AreEqual(raceA.Card.Id, raceB.Card.Id);
+            Assert.AreNotEqual(raceA.Created, raceB.Created);
+            Assert.IsTrue(raceA.MetadataMatched);
+            Assert.IsTrue(raceB.MetadataMatched);
+
+            await using PokeFolioDbContext verify = CreateContext(testConnectionString, null);
+            Assert.AreEqual(2, await verify.Cards.CountAsync());
+            Assert.AreEqual(1, await verify.Cards.CountAsync(card =>
+                card.Provider == "pokemon-tcg-api" &&
+                card.ProviderCardId == "sv9-025"));
+            CatalogCard stored = await verify.Cards.SingleAsync(card =>
+                card.Provider == "tcgdex" &&
+                card.ProviderCardId == "sv8-141");
+            Assert.AreEqual("Pikachu ex", stored.Name);
+            Assert.AreEqual("SV8", stored.SetCode);
+            Assert.AreEqual("219/191", stored.Number);
         }
         finally
         {
