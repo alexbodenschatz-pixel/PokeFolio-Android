@@ -99,21 +99,26 @@ jobs:
         shell: bash
         run: |
           chmod +x gradlew
-          ./gradlew --no-daemon testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace --console=plain
+          ./gradlew --no-daemon testDebugUnitTest :app:lintDebug :app:assembleDebug :app:assembleDebugAndroidTest --stacktrace --console=plain
 
       - name: Verify debug APK
         shell: bash
         run: |
           APK="app/build/outputs/apk/debug/app-debug.apk"
+          TEST_APK="app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk"
           test -f "$APK"
+          test -f "$TEST_APK"
           "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$APK" | head -25
           "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose "$APK"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose "$TEST_APK"
 
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
           name: PokeFolio-Android-debug-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          path: |
+            app/build/outputs/apk/debug/app-debug.apk
+            app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
           if-no-files-found: error
           retention-days: 30
 

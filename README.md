@@ -7,10 +7,14 @@ PokéFolio ist eine eigenständige App zum Scannen, Erkennen, Vorprüfen und Sam
 Voraussetzungen: JDK 17 und Android SDK 36.
 
 ```text
-./gradlew testDebugUnitTest lintDebug assembleDebug
+./gradlew testDebugUnitTest lintDebug assembleDebug assembleDebugAndroidTest
 ```
 
-Die Debug-APK liegt anschließend unter `app/build/outputs/apk/debug/app-debug.apk`.
+Die Debug-APK liegt anschließend unter `app/build/outputs/apk/debug/app-debug.apk`; das Instrumentierungs-APK liegt unter `app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk`.
+
+Die nicht geheime Backend-Origin wird beim Build über die Gradle-Property `pokefolioBackendOrigin` oder ersatzweise `POKEFOLIO_BACKEND_ORIGIN` gesetzt. Produktive Origins müssen pfadfreies HTTPS verwenden. Für lokale Entwicklung sind ausschließlich `localhost`, `127.0.0.1` und `::1` über HTTP erlaubt, etwa zusammen mit `adb reverse tcp:5080 tcp:5080`.
+
+Persistente Android-Refresh-Tokens werden nicht in WebView-/JavaScript-Speichern abgelegt. Der native Store schreibt einen AES-GCM-Datensatz unter `noBackupFilesDir`; der nicht exportierbare Schlüssel liegt im Android Keystore. Der Instrumentierungslauf prüft Roundtrip, fehlenden Klartext und Löschung in einem isolierten Testpfad, ohne vorhandene App-Anmeldedaten anzutasten.
 
 ## Windows bauen
 

@@ -19,6 +19,8 @@ import android.util.Log;
 
 import androidx.exifinterface.media.ExifInterface;
 
+import de.pokefolio.app.security.AndroidKeystoreCredentialInstrumentation;
+
 import java.util.Locale;
 import java.io.File;
 import java.io.FileOutputStream;
@@ -40,7 +42,8 @@ public final class CardCropInstrumentation extends Instrumentation {
             int syntheticCases = runCropCases();
             int geometryCases = runPreviewMappingCase() + runSafeFallbackCase() + runTrackingCase()
                     + runFastDetectorCadenceCase() + runFastDetectorPerformanceCase()
-                    + runExifOrientationCases();
+                    + runExifOrientationCases()
+                    + AndroidKeystoreCredentialInstrumentation.run(getTargetContext());
             int externalCases = runExternalPhotoCases();
             int total = syntheticCases + geometryCases + externalCases;
             result.putString("stream", "\nCardCropInstrumentation: " + total + "/" + total
