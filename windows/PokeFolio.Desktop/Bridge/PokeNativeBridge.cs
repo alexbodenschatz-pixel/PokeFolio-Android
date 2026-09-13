@@ -5,6 +5,7 @@ using PokeFolio.Desktop.Backend;
 using PokeFolio.Desktop.Capture;
 using PokeFolio.Desktop.Diagnostics;
 using PokeFolio.Desktop.Recognition;
+using PokeFolio.Desktop.Sync;
 using PokeFolio.Desktop.Vision;
 
 namespace PokeFolio.Desktop.Bridge;
@@ -29,6 +30,7 @@ public sealed class PokeNativeBridge : IDisposable
     private readonly AccountBridgeController accountBridge;
     private readonly CatalogBridgeController catalogBridge;
     private readonly SyncBridgeController syncBridge;
+    private readonly SyncStateBridgeController syncStateBridge;
     private readonly SemaphoreSlim recognitionGate = new(2, 2);
     private readonly SemaphoreSlim visualGate = new(2, 2);
     private readonly SemaphoreSlim eosCaptureGate = new(1, 1);
@@ -53,7 +55,8 @@ public sealed class PokeNativeBridge : IDisposable
         IWindowsCardRecognitionService recognition,
         IVisualComparisonService visualComparison,
         CanonEosCapture canon,
-        IPokeFolioCloudService? cloud = null)
+        IPokeFolioCloudService? cloud = null,
+        IAccountSyncStateStore? syncStateStore = null)
     {
         this.callbacks = callbacks;
         this.http = http;
@@ -73,6 +76,9 @@ public sealed class PokeNativeBridge : IDisposable
             this.cloud);
         catalogBridge = new CatalogBridgeController(callbacks, this.cloud);
         syncBridge = new SyncBridgeController(callbacks, this.cloud);
+        syncStateBridge = new SyncStateBridgeController(
+            this.cloud,
+            syncStateStore ?? new AccountSyncStateStore());
     }
 
     public string consumeCaptureMetadata() => "";
@@ -126,6 +132,14 @@ public sealed class PokeNativeBridge : IDisposable
 
     public void pullSyncChanges(string cursor, int limit, string requestId) =>
         syncBridge.Pull(cursor, limit, requestId);
+
+    public string loadAccountSyncSnapshot() => syncStateBridge.Load() ?? "";
+
+    public bool saveAccountSyncSnapshot(string snapshotJson)
+    {
+        syncStateBridge.Save(snapshotJson);
+        return true;
+    }
 
     public void prepareCardImage(string dataUrl, string requestId) =>
         _ = PrepareCardImageAsync(dataUrl, requestId);

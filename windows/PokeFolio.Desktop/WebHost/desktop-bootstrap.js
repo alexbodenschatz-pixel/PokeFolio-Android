@@ -217,6 +217,40 @@
     configurable: false, enumerable: true, writable: false, value: syncTransportFacade
   });
 
+  const maximumSyncSnapshotCharacters = 32 * 1024 * 1024;
+  const parseSyncSnapshot = json => {
+    const text = String(json || '');
+    if (!text) return null;
+    if (text.length > maximumSyncSnapshotCharacters) {
+      throw new RangeError('Der lokale Sync-Snapshot ist zu gross.');
+    }
+    const value = JSON.parse(text);
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      throw new TypeError('Der lokale Sync-Snapshot muss ein Objekt sein.');
+    }
+    return value;
+  };
+  const syncStorageFacade = Object.freeze({
+    load: () => parseSyncSnapshot(nativeHost.loadAccountSyncSnapshot()),
+    save: snapshot => {
+      if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) {
+        throw new TypeError('Der lokale Sync-Snapshot muss ein Objekt sein.');
+      }
+      const json = JSON.stringify(snapshot);
+      if (typeof json !== 'string' || json.length < 2
+        || json.length > maximumSyncSnapshotCharacters) {
+        throw new RangeError('Der lokale Sync-Snapshot hat eine ungueltige Groesse.');
+      }
+      if (nativeHost.saveAccountSyncSnapshot(json) !== true) {
+        throw new Error('Der lokale Sync-Snapshot konnte nicht gespeichert werden.');
+      }
+      return true;
+    }
+  });
+  Object.defineProperty(window, 'PokeSyncStorage', {
+    configurable: false, enumerable: true, writable: false, value: syncStorageFacade
+  });
+
   window.addEventListener('DOMContentLoaded', () => {
     const style = document.createElement('link');
     style.rel = 'stylesheet';

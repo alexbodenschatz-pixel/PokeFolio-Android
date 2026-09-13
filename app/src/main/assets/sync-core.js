@@ -99,6 +99,10 @@
     return entities;
   }
 
+  function createEntities(raw) {
+    return normalizeEntities(raw === undefined || raw === null ? {} : raw);
+  }
+
   function normalizeHolding(value) {
     const allowed = ['id', 'cardId', 'variantId', 'language', 'variant', 'condition', 'quantity', 'notes'];
     requireExactKeys(value, allowed, 'holding');
@@ -503,6 +507,7 @@
     MAX_PENDING_OPERATIONS,
     MAX_CHANGE_PAGE,
     createState,
+    createEntities,
     normalizeOperation,
     enqueue,
     nextBatch,

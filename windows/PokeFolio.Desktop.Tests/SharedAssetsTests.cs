@@ -84,6 +84,30 @@ public sealed class SharedAssetsTests
     }
 
     [TestMethod]
+    public void DesktopSyncDriverUsesNativeAccountStorageAndSharedCore()
+    {
+        var root = TestPaths.RepositoryRoot();
+        string bootstrap = File.ReadAllText(Path.Combine(
+            root, "windows", "PokeFolio.Desktop", "WebHost", "desktop-bootstrap.js"));
+        string driver = File.ReadAllText(Path.Combine(
+            root, "windows", "PokeFolio.Desktop", "WebHost", "desktop-sync-driver.js"));
+
+        StringAssert.Contains(bootstrap, "Object.defineProperty(window, 'PokeSyncStorage'");
+        StringAssert.Contains(bootstrap, "nativeHost.loadAccountSyncSnapshot");
+        StringAssert.Contains(bootstrap, "nativeHost.saveAccountSyncSnapshot");
+        StringAssert.Contains(driver, "Object.defineProperty(window, 'PokeSyncClient'");
+        StringAssert.Contains(driver, "window.PokeSyncStorage.save(next)");
+        StringAssert.Contains(driver, "window.PokeSyncTransport.push");
+        StringAssert.Contains(driver, "window.PokeSyncTransport.pull");
+        StringAssert.Contains(driver, "pokefolio:account-state");
+        Assert.IsFalse(bootstrap.Contains("accessToken", StringComparison.Ordinal));
+        Assert.IsFalse(bootstrap.Contains("refreshToken", StringComparison.Ordinal));
+        Assert.IsFalse(driver.Contains("localStorage", StringComparison.Ordinal));
+        Assert.IsFalse(driver.Contains("accessToken", StringComparison.Ordinal));
+        Assert.IsFalse(driver.Contains("refreshToken", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
     public void DesktopBootstrapExposesTokenFreeBoundedCatalogFacade()
     {
         var root = TestPaths.RepositoryRoot();

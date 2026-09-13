@@ -35,6 +35,21 @@ test('validiert persistierten Zustand verlustfrei und lehnt unbekannte Felder ab
   assert.throws(() => Sync.createState({...state, schemaVersion: 99}), /schemaVersion/);
 });
 
+test('validiert und kanonisiert separat persistierte Server-Entities', () => {
+  const entities = Sync.createEntities({
+    ['HOLDING:' + ids.holdingLetters.toUpperCase()]: {
+      id: ids.holdingLetters,
+      quantity: 2,
+      version: 3
+    }
+  });
+  assert.deepEqual(Object.keys(entities), ['holding:' + ids.holdingLetters]);
+  assert.equal(entities['holding:' + ids.holdingLetters].quantity, 2);
+  assert.deepEqual(Sync.createEntities(), {});
+  assert.throws(() => Sync.createEntities([]), /must be an object/);
+  assert.throws(() => Sync.createEntities({invalid: {}}), /invalid entity type/);
+});
+
 test('dedupliziert identische Offline-Operationen und blockiert Operation-ID-Wiederverwendung', () => {
   const first = Sync.enqueue(Sync.createState(), delta(ids.operation1), 1000);
   const duplicate = Sync.enqueue(first.state, delta(ids.operation1), 2000);

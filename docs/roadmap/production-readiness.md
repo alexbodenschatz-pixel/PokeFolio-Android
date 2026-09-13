@@ -10,7 +10,7 @@ This roadmap converts the product brief into testable increments. Status values 
 | 2. Architecture stabilization | In progress | ADRs, host security, contract boundaries, supported runtime plan |
 | 3. Regression baseline | In progress | Test taxonomy, CI parity, real-image manifest and E2E harness foundations |
 | 4-6. Backend, accounts, isolation | In progress | PostgreSQL integration and cross-user denial tests pass; recovery and deployment remain |
-| 7-10. Sync, clients, shared core | In progress | Server push/pull, shared offline queue, protected Windows credentials, token-free account/sync/catalog bridges, stable local account partition identity and global provider-card resolution are tested; persistent collection wiring, visible account UI and Android transport remain |
+| 7-10. Sync, clients, shared core | In progress | Server push/pull, shared offline queue, protected Windows credentials, token-free account/sync/catalog bridges, account-separated atomic Windows queue persistence, restart/retry/account-switch tests, stable account identity and global provider-card resolution are tested; visible collection wiring, account UI and Android transport remain |
 | 11-21. Product and scanner slices | Not started | Slice-specific tests/builds/benchmarks |
 | 22-25. Audit through release | Not started | Security review, restore test, RC builds and release report |
 
@@ -28,7 +28,7 @@ File ownership is used to avoid parallel edits. Cross-cutting contracts land bef
 | F Grading | grading models, native analysis and reference tests | Image/host contracts |
 | G Tests/QA/CI | `tests/`, CI workflows and release evidence | Contracts from all workstreams |
 
-The current branch is based on `feature/windows-vision-eos`; it must not merge to `main` before that dependency or an equivalent rebased change is available.
+The active production-foundation branch includes the Windows vision/EOS foundation. Each later workstream must be rebased or integrated only after its required API and shared-core contracts are present.
 
 ## Increment sequence
 

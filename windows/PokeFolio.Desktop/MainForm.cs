@@ -123,6 +123,10 @@ public sealed class MainForm : Form
         webView.CoreWebView2.AddHostObjectToScript("PokeNative", nativeBridge);
         var bootstrap = await File.ReadAllTextAsync(Path.Combine(assets.DesktopRoot, "desktop-bootstrap.js"));
         await webView.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync(bootstrap);
+        var syncDriver = await File.ReadAllTextAsync(Path.Combine(
+            assets.DesktopRoot,
+            "desktop-sync-driver.js"));
+        await webView.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync(syncDriver);
         webView.Source = new Uri(WebViewSecurityPolicy.StartPage);
     }
 

@@ -5,6 +5,7 @@ using PokeFolio.Desktop.Backend;
 using PokeFolio.Desktop.Bridge;
 using PokeFolio.Desktop.Capture;
 using PokeFolio.Desktop.Recognition;
+using PokeFolio.Desktop.Sync;
 using PokeFolio.Desktop.Vision;
 
 namespace PokeFolio.Desktop.Tests;
@@ -294,7 +295,32 @@ public sealed class PokeNativeBridgeTests
         Assert.AreEqual(1, cloud.DisposeCount);
     }
 
-    private static BridgeContext CreateContext(IPokeFolioCloudService? cloud = null)
+    [TestMethod]
+    public async Task AccountSyncStorageUsesOnlyAuthenticatedServerSessionIdentity()
+    {
+        var cloud = new FakeCloudService(Guid.NewGuid());
+        var store = new RecordingSyncStateStore();
+        var context = CreateContext(cloud, store);
+        await using var disposable = context;
+
+        Assert.ThrowsExactly<InvalidOperationException>(() =>
+            context.Bridge.loadAccountSyncSnapshot());
+        Assert.ThrowsExactly<InvalidOperationException>(() =>
+            context.Bridge.saveAccountSyncSnapshot("{}"));
+        Assert.IsNull(store.LastUserId);
+
+        await cloud.LoginAsync("owner@example.com", "password", "Desktop test");
+        const string snapshot =
+            "{\"schemaVersion\":1,\"state\":{\"schemaVersion\":1,\"cursor\":\"\",\"lastSequence\":0,\"pending\":[],\"conflicts\":[],\"rejected\":[],\"entityVersions\":{}},\"entities\":{}}";
+        Assert.IsTrue(context.Bridge.saveAccountSyncSnapshot(snapshot));
+        Assert.AreEqual(FakeCloudService.UserId, store.LastUserId);
+        Assert.AreEqual(snapshot, context.Bridge.loadAccountSyncSnapshot());
+        Assert.AreEqual(FakeCloudService.UserId, store.LastUserId);
+    }
+
+    private static BridgeContext CreateContext(
+        IPokeFolioCloudService? cloud = null,
+        IAccountSyncStateStore? syncStateStore = null)
     {
         var callbacks = new RecordingDispatcher();
         var http = new HttpBridgeService();
@@ -306,7 +332,8 @@ public sealed class PokeNativeBridgeTests
         var recognition = new FakeRecognitionService(FakeRecognitionService.ExactPokemon());
         var bridge = new PokeNativeBridge(callbacks, http, new LocalDataService(root),
             new DesktopStatusService(), fileCapture, new ICardCaptureDevice[] { fileCapture, canon },
-            vision, codec, recognition, new FakeVisualComparisonService(), canon, cloud);
+            vision, codec, recognition, new FakeVisualComparisonService(), canon, cloud,
+            syncStateStore);
         return new BridgeContext(callbacks, bridge, http, canon, root);
     }
 
@@ -332,6 +359,25 @@ public sealed class PokeNativeBridgeTests
     }
 
     private sealed record Callback(string Name, string Json);
+
+    private sealed class RecordingSyncStateStore : IAccountSyncStateStore
+    {
+        private string? snapshot;
+
+        public Guid? LastUserId { get; private set; }
+
+        public string? Load(Guid userId)
+        {
+            LastUserId = userId;
+            return snapshot;
+        }
+
+        public void Save(Guid userId, string snapshotJson)
+        {
+            LastUserId = userId;
+            snapshot = snapshotJson;
+        }
+    }
 
     private sealed class FakeCloudService(Guid deviceId) : IPokeFolioCloudService
     {

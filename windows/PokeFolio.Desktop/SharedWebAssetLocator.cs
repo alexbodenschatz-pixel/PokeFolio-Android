@@ -56,7 +56,12 @@ public static class StartupValidator
             errors.AddRange(assets.FindMissingRequiredFiles().Select(file => $"Required shared asset is missing: {file}"));
         }
 
-        foreach (var desktopAsset in new[] { "desktop-bootstrap.js", "desktop.css" })
+        foreach (var desktopAsset in new[]
+                 {
+                     "desktop-bootstrap.js",
+                     "desktop-sync-driver.js",
+                     "desktop.css"
+                 })
         {
             if (!File.Exists(Path.Combine(assets.DesktopRoot, desktopAsset)))
             {

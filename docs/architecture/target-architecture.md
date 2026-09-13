@@ -122,6 +122,8 @@ Conflict semantics are field-appropriate:
 
 The server change log contains user-scoped sequence numbers. A client commits local state and its cursor atomically after applying a page. Retries use bounded exponential backoff with jitter.
 
+On Windows, the native session selects the account snapshot; WebView JavaScript cannot provide a `userId` or storage key. Queue, cursor, conflict history, entity versions and pulled entities are replaced atomically after every transition in an account-separated `%LOCALAPPDATA%\PokeFolio\Sync` file. Invalid state fails closed and remains recoverable. This file contains no credentials and is outside the generic WebView-addressable local-data namespace. The current whole-snapshot format is bounded to 32 MiB; migration to transactional SQLite must precede workloads that approach that limit or require multiple concurrent desktop processes.
+
 ## Local-data migration
 
 Existing browser collection schema 6 and grading schema 2 are supported migration inputs. First account sign-in follows a non-destructive workflow:
