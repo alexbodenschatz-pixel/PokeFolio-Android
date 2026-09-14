@@ -5,11 +5,16 @@ import de.pokefolio.app.security.RefreshTokenStore;
 
 import java.io.Closeable;
 import java.io.IOException;
+import java.net.URLEncoder;
 import java.util.Arrays;
+import java.util.UUID;
 
 /** Thread-safe native account client with one rotating device session. */
 public final class PokeFolioApiClient implements Closeable {
     private static final int MAXIMUM_AUTH_RESPONSE_BYTES = 128 * 1024;
+    private static final int MAXIMUM_CATALOG_RESPONSE_BYTES = 128 * 1024;
+    private static final int MAXIMUM_SYNC_RESPONSE_BYTES = 8 * 1024 * 1024;
+    private static final UUID EMPTY_UUID = new UUID(0L, 0L);
     private static final PokeFolioApiProblem SESSION_MISSING = new PokeFolioApiProblem(
             401,
             "session_missing",
@@ -137,6 +142,59 @@ public final class PokeFolioApiClient implements Closeable {
                 refreshTokenStore.delete();
             }
         }
+    }
+
+    public PokeFolioApiResponse pushSyncOperations(String operationBatchJson)
+            throws IOException {
+        byte[] body = PokeFolioApiPayloads.validateSyncOperationBatch(operationBatchJson);
+        try {
+            return executeAuthenticated(
+                    "POST",
+                    "/api/v1/sync/operations",
+                    body,
+                    MAXIMUM_SYNC_RESPONSE_BYTES);
+        } finally {
+            clear(body);
+        }
+    }
+
+    public PokeFolioApiResponse pullSyncChanges(String cursor, int limit) throws IOException {
+        if (limit < 1 || limit > 500) {
+            throw new IllegalArgumentException("Sync page size must be 1 to 500.");
+        }
+        if (cursor != null && cursor.length() > 2048) {
+            throw new IllegalArgumentException("Sync cursor exceeds 2048 characters.");
+        }
+        String path = "/api/v1/sync/changes?limit=" + limit;
+        if (cursor != null && !cursor.isEmpty()) {
+            path += "&cursor=" + URLEncoder.encode(cursor, "UTF-8").replace("+", "%20");
+        }
+        return executeAuthenticated("GET", path, null, MAXIMUM_SYNC_RESPONSE_BYTES);
+    }
+
+    public PokeFolioApiResponse resolveCatalogCard(String cardReferenceJson)
+            throws IOException {
+        byte[] body = PokeFolioApiPayloads.normalizeCatalogCardReference(cardReferenceJson);
+        try {
+            return executeAuthenticated(
+                    "POST",
+                    "/api/v1/cards/resolve",
+                    body,
+                    MAXIMUM_CATALOG_RESPONSE_BYTES);
+        } finally {
+            clear(body);
+        }
+    }
+
+    public PokeFolioApiResponse getCatalogCard(UUID cardId) throws IOException {
+        if (cardId == null || EMPTY_UUID.equals(cardId)) {
+            throw new IllegalArgumentException("Catalog card id must not be empty.");
+        }
+        return executeAuthenticated(
+                "GET",
+                "/api/v1/cards/" + cardId.toString(),
+                null,
+                MAXIMUM_CATALOG_RESPONSE_BYTES);
     }
 
     PokeFolioApiResponse executeAuthenticated(

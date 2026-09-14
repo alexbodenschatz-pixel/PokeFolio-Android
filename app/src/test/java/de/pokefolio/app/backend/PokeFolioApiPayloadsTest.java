@@ -84,6 +84,45 @@ public final class PokeFolioApiPayloadsTest {
         assertEquals("authentication_required", duplicate.getCode());
     }
 
+    @Test
+    public void catalogReferenceIsNormalizedAndStrictlyBounded() throws Exception {
+        byte[] body = PokeFolioApiPayloads.normalizeCatalogCardReference(
+                "{\"provider\":\" TCGDEX \",\"providerCardId\":\" SV8-141 \","
+                        + "\"tcg\":\" POKEMON \",\"name\":\" Pikachu ex \","
+                        + "\"setCode\":\" SV8 \",\"number\":\" 219/191 \"}");
+        JSONObject normalized = new JSONObject(new String(body, StandardCharsets.UTF_8));
+
+        assertEquals(6, normalized.length());
+        assertEquals("tcgdex", normalized.getString("provider"));
+        assertEquals("sv8-141", normalized.getString("providerCardId"));
+        assertEquals("pokemon", normalized.getString("tcg"));
+        assertEquals("Pikachu ex", normalized.getString("name"));
+        assertThrows(IllegalArgumentException.class, () ->
+                PokeFolioApiPayloads.normalizeCatalogCardReference(
+                        "{\"provider\":\"ygoprodeck\",\"providerCardId\":\"lob-001\","
+                                + "\"tcg\":\"pokemon\",\"name\":\"Card\","
+                                + "\"setCode\":\"LOB\",\"number\":\"001\"}"));
+        assertThrows(IllegalArgumentException.class, () ->
+                PokeFolioApiPayloads.normalizeCatalogCardReference(
+                        "{\"provider\":\"tcgdex\",\"provider\":\"tcgdex\","
+                                + "\"providerCardId\":\"sv8-141\",\"tcg\":\"pokemon\","
+                                + "\"name\":\"Pikachu\",\"setCode\":\"SV8\","
+                                + "\"number\":\"141/191\"}"));
+    }
+
+    @Test
+    public void syncBatchRequiresOneUtf8ObjectWithoutDuplicateProperties() {
+        byte[] body = PokeFolioApiPayloads.validateSyncOperationBatch("{\"operations\":[]}");
+        assertEquals("{\"operations\":[]}", new String(body, StandardCharsets.UTF_8));
+        assertThrows(IllegalArgumentException.class, () ->
+                PokeFolioApiPayloads.validateSyncOperationBatch("[]"));
+        assertThrows(IllegalArgumentException.class, () ->
+                PokeFolioApiPayloads.validateSyncOperationBatch(
+                        "{\"operations\":[],\"operations\":[]}"));
+        assertThrows(IllegalArgumentException.class, () ->
+                PokeFolioApiPayloads.validateSyncOperationBatch("{\"value\":\"\ud800\"}"));
+    }
+
     static final UUID USER_ID = UUID.fromString("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
     static final UUID DEVICE_ID = UUID.fromString("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
 

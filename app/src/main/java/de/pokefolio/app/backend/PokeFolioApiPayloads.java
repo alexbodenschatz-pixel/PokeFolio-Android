@@ -6,6 +6,7 @@ import org.json.JSONObject;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.CharBuffer;
 import java.nio.charset.CharacterCodingException;
 import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
@@ -24,13 +25,28 @@ import java.util.Set;
 import java.util.UUID;
 
 final class PokeFolioApiPayloads {
+    private static final int MAXIMUM_CATALOG_REQUEST_BYTES = 16 * 1024;
+    private static final int MAXIMUM_SYNC_REQUEST_BYTES = 1024 * 1024;
     private static final UUID EMPTY_UUID = new UUID(0L, 0L);
+    private static final Map<String, String> CATALOG_PROVIDER_TCGS;
+    private static final Set<String> CATALOG_REFERENCE_PROPERTIES = Collections.unmodifiableSet(
+            new HashSet<>(Arrays.asList(
+                    "provider", "providerCardId", "tcg", "name", "setCode", "number")));
     private static final Set<String> SESSION_PROPERTIES = Collections.unmodifiableSet(
             new HashSet<>(Arrays.asList(
                     "userId", "accessToken", "refreshToken", "accessTokenExpiresAt", "device")));
     private static final Set<String> DEVICE_PROPERTIES = Collections.unmodifiableSet(
             new HashSet<>(Arrays.asList(
                     "id", "name", "platform", "createdAt", "lastSeenAt", "current")));
+
+    static {
+        Map<String, String> providers = new LinkedHashMap<>();
+        providers.put("pokemon-tcg-api", "pokemon");
+        providers.put("tcgdex", "pokemon");
+        providers.put("ygoprodeck", "yugioh");
+        providers.put("optcgapi", "onepiece");
+        CATALOG_PROVIDER_TCGS = Collections.unmodifiableMap(providers);
+    }
 
     private PokeFolioApiPayloads() {
     }
@@ -60,6 +76,59 @@ final class PokeFolioApiPayloads {
                     .getBytes(StandardCharsets.UTF_8);
         } catch (JSONException error) {
             throw new IllegalArgumentException("Refresh request cannot be serialized.", error);
+        }
+    }
+
+    static byte[] normalizeCatalogCardReference(String json) {
+        byte[] input = encodeRequest(json, MAXIMUM_CATALOG_REQUEST_BYTES, "Catalog card reference");
+        try {
+            StrictJsonValidator.validateObject(json);
+            JSONObject root = new JSONObject(json);
+            requireExactProperties(root, CATALOG_REFERENCE_PROPERTIES, "catalog card reference");
+            String provider = requiredRequestString(root, "provider").trim().toLowerCase(java.util.Locale.ROOT);
+            String providerCardId = requiredRequestString(root, "providerCardId")
+                    .trim()
+                    .toLowerCase(java.util.Locale.ROOT);
+            String tcg = requiredRequestString(root, "tcg").trim().toLowerCase(java.util.Locale.ROOT);
+            String name = normalizeCatalogText(root, "name", 240);
+            String setCode = normalizeCatalogText(root, "setCode", 64);
+            String number = normalizeCatalogText(root, "number", 64);
+            String expectedTcg = CATALOG_PROVIDER_TCGS.get(provider);
+            if (expectedTcg == null) {
+                throw new IllegalArgumentException("Catalog provider is not supported.");
+            }
+            if (!expectedTcg.equals(tcg)) {
+                throw new IllegalArgumentException("Catalog provider does not match the selected TCG.");
+            }
+            if (providerCardId.length() < 1 || providerCardId.length() > 160
+                    || !isProviderCardId(providerCardId)) {
+                throw new IllegalArgumentException("Provider card id contains invalid characters.");
+            }
+            JSONObject normalized = new JSONObject();
+            normalized.put("provider", provider);
+            normalized.put("providerCardId", providerCardId);
+            normalized.put("tcg", tcg);
+            normalized.put("name", name);
+            normalized.put("setCode", setCode);
+            normalized.put("number", number);
+            return normalized.toString().getBytes(StandardCharsets.UTF_8);
+        } catch (IOException | JSONException error) {
+            throw new IllegalArgumentException("Catalog card reference must be valid contract JSON.", error);
+        } finally {
+            Arrays.fill(input, (byte) 0);
+        }
+    }
+
+    static byte[] validateSyncOperationBatch(String json) {
+        byte[] body = encodeRequest(json, MAXIMUM_SYNC_REQUEST_BYTES, "Sync operation batch");
+        try {
+            StrictJsonValidator.validateObject(json);
+            return body;
+        } catch (IOException error) {
+            Arrays.fill(body, (byte) 0);
+            throw new IllegalArgumentException(
+                    "Sync operation batch must be one JSON object without duplicate properties.",
+                    error);
         }
     }
 
@@ -132,6 +201,68 @@ final class PokeFolioApiPayloads {
         } catch (CharacterCodingException error) {
             throw new IOException("Backend response is not valid UTF-8.", error);
         }
+    }
+
+    private static byte[] encodeRequest(String value, int maximumBytes, String label) {
+        if (value == null) throw new IllegalArgumentException(label + " is required.");
+        try {
+            ByteBuffer encoded = StandardCharsets.UTF_8.newEncoder()
+                    .onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT)
+                    .encode(CharBuffer.wrap(value));
+            int size = encoded.remaining();
+            if (size < 2 || size > maximumBytes) {
+                throw new IllegalArgumentException(label + " has an invalid size.");
+            }
+            byte[] result = new byte[size];
+            encoded.get(result);
+            return result;
+        } catch (CharacterCodingException error) {
+            throw new IllegalArgumentException(label + " is not valid Unicode.", error);
+        }
+    }
+
+    private static String requiredRequestString(JSONObject value, String property)
+            throws JSONException {
+        Object raw = value.opt(property);
+        if (!(raw instanceof String)) {
+            throw new IllegalArgumentException("Catalog field " + property + " must be text.");
+        }
+        return (String) raw;
+    }
+
+    private static String normalizeCatalogText(
+            JSONObject value,
+            String property,
+            int maximumLength
+    ) throws JSONException {
+        String normalized = requiredRequestString(value, property).trim();
+        if (normalized.isEmpty() || normalized.length() > maximumLength
+                || containsControlCharacter(normalized)) {
+            throw new IllegalArgumentException("Catalog field " + property + " is invalid.");
+        }
+        return normalized;
+    }
+
+    private static boolean containsControlCharacter(String value) {
+        for (int index = 0; index < value.length(); index++) {
+            if (Character.isISOControl(value.charAt(index))) return true;
+        }
+        return false;
+    }
+
+    private static boolean isProviderCardId(String value) {
+        for (int index = 0; index < value.length(); index++) {
+            char character = value.charAt(index);
+            if ((character >= 'a' && character <= 'z')
+                    || (character >= '0' && character <= '9')
+                    || character == '-' || character == '_' || character == '.'
+                    || character == ':' || character == '/') {
+                continue;
+            }
+            return false;
+        }
+        return true;
     }
 
     private static Map<String, List<String>> parseErrors(Object raw) throws JSONException {

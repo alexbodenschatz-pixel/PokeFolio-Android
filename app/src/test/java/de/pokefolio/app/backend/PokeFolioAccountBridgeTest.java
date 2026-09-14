@@ -41,6 +41,10 @@ public final class PokeFolioAccountBridgeTest {
             assertEquals("PokeFolio backend is not configured.", status.getConfigurationError());
             assertFalse(result.isSucceeded());
             assertEquals("backend_not_configured", result.getProblem().getCode());
+            PokeFolioApiResponse sync = cloud.pullSyncChanges(null, 100);
+            assertFalse(sync.isSucceeded());
+            assertEquals(503, sync.getStatus());
+            assertEquals("backend_not_configured", sync.getProblem().getCode());
         } finally {
             cloud.close();
         }

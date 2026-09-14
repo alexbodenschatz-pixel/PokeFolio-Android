@@ -4,6 +4,7 @@ import de.pokefolio.app.security.RefreshTokenStore;
 
 import java.io.Closeable;
 import java.io.IOException;
+import java.util.UUID;
 
 /** Owns the one native Android account session that later catalog and sync bridges will share. */
 public final class PokeFolioCloudService implements Closeable {
@@ -81,6 +82,34 @@ public final class PokeFolioCloudService implements Closeable {
                 : client.logout();
     }
 
+    public PokeFolioApiResponse pushSyncOperations(String operationBatchJson) throws IOException {
+        throwIfClosed();
+        return client == null
+                ? unavailableResponse()
+                : client.pushSyncOperations(operationBatchJson);
+    }
+
+    public PokeFolioApiResponse pullSyncChanges(String cursor, int limit) throws IOException {
+        throwIfClosed();
+        return client == null
+                ? unavailableResponse()
+                : client.pullSyncChanges(cursor, limit);
+    }
+
+    public PokeFolioApiResponse resolveCatalogCard(String cardReferenceJson) throws IOException {
+        throwIfClosed();
+        return client == null
+                ? unavailableResponse()
+                : client.resolveCatalogCard(cardReferenceJson);
+    }
+
+    public PokeFolioApiResponse getCatalogCard(UUID cardId) throws IOException {
+        throwIfClosed();
+        return client == null
+                ? unavailableResponse()
+                : client.getCatalogCard(cardId);
+    }
+
     private PokeFolioAuthenticationResult unavailableAuthentication() {
         return PokeFolioAuthenticationResult.failed(unavailableProblem());
     }
@@ -91,6 +120,11 @@ public final class PokeFolioCloudService implements Closeable {
                 "backend_not_configured",
                 configurationMessage(),
                 null);
+    }
+
+    private PokeFolioApiResponse unavailableResponse() {
+        PokeFolioApiProblem problem = unavailableProblem();
+        return new PokeFolioApiResponse(problem.getStatus(), "", problem);
     }
 
     private String configurationMessage() {

@@ -220,6 +220,75 @@ public final class PokeFolioApiClientTest {
         assertThrows(IOException.class, client::restoreSession);
     }
 
+    @Test
+    public void catalogAndSyncMethodsUseAuthenticatedVersionedRoutes() throws Exception {
+        MemoryRefreshTokenStore store = new MemoryRefreshTokenStore();
+        RecordingTransport transport = new RecordingTransport(request -> {
+            if ("/api/v1/auth/login".equals(request.path)) {
+                return jsonResponse(200, sessionBody(
+                        DEVICE_ID, FIRST_ACCESS_TOKEN, FIRST_REFRESH_TOKEN));
+            }
+            assertEquals(FIRST_ACCESS_TOKEN, request.accessToken);
+            if ("/api/v1/cards/resolve".equals(request.path)) {
+                assertEquals("POST", request.method);
+                JSONObject reference = new JSONObject(
+                        new String(request.body, StandardCharsets.UTF_8));
+                assertEquals("tcgdex", reference.getString("provider"));
+                assertEquals("sv8-141", reference.getString("providerCardId"));
+                return jsonResponse(201, "{\"card\":{},\"created\":true,\"metadataMatched\":true}");
+            }
+            if (("/api/v1/cards/" + PokeFolioApiPayloadsTest.USER_ID).equals(request.path)) {
+                assertEquals("GET", request.method);
+                assertNull(request.body);
+                return jsonResponse(200, "{\"id\":\"" + PokeFolioApiPayloadsTest.USER_ID + "\"}");
+            }
+            if ("/api/v1/sync/operations".equals(request.path)) {
+                assertEquals("POST", request.method);
+                assertEquals("{\"operations\":[]}",
+                        new String(request.body, StandardCharsets.UTF_8));
+                return jsonResponse(200, "{\"results\":[]}");
+            }
+            if ("/api/v1/sync/changes?limit=250&cursor=opaque%2B%2Fcursor%3D".equals(
+                    request.path)) {
+                assertEquals("GET", request.method);
+                assertNull(request.body);
+                return jsonResponse(200, "{\"changes\":[],\"nextCursor\":\"next\",\"hasMore\":false}");
+            }
+            throw new IOException("Unexpected request: " + request.path);
+        });
+        PokeFolioApiClient client = new PokeFolioApiClient(store, transport);
+        client.login("owner@example.test", "valid-password", "Pixel test");
+
+        assertTrue(client.resolveCatalogCard(
+                "{\"provider\":\"TCGDEX\",\"providerCardId\":\"SV8-141\","
+                        + "\"tcg\":\"POKEMON\",\"name\":\"Pikachu\","
+                        + "\"setCode\":\"SV8\",\"number\":\"141/191\"}")
+                .isSucceeded());
+        assertTrue(client.getCatalogCard(PokeFolioApiPayloadsTest.USER_ID).isSucceeded());
+        assertTrue(client.pushSyncOperations("{\"operations\":[]}").isSucceeded());
+        assertTrue(client.pullSyncChanges("opaque+/cursor=", 250).isSucceeded());
+        assertEquals(5, transport.requests.size());
+    }
+
+    @Test
+    public void invalidCloudInputsFailBeforeAuthenticationOrNetwork() {
+        MemoryRefreshTokenStore store = new MemoryRefreshTokenStore();
+        RecordingTransport transport = new RecordingTransport(request -> {
+            throw new IOException("Network must not be reached.");
+        });
+        PokeFolioApiClient client = new PokeFolioApiClient(store, transport);
+
+        assertThrows(IllegalArgumentException.class, () ->
+                client.pushSyncOperations("[]"));
+        assertThrows(IllegalArgumentException.class, () ->
+                client.pullSyncChanges(null, 0));
+        assertThrows(IllegalArgumentException.class, () ->
+                client.getCatalogCard(new UUID(0L, 0L)));
+        assertThrows(IllegalArgumentException.class, () ->
+                client.resolveCatalogCard("{}"));
+        assertEquals(0, transport.requests.size());
+    }
+
     private static String sessionBody(
             UUID deviceId,
             String accessToken,
