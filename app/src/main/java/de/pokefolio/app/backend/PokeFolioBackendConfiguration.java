@@ -29,7 +29,7 @@ public final class PokeFolioBackendConfiguration {
             boolean https = "https".equals(scheme);
             boolean loopbackHttp = "http".equals(scheme) && isLoopbackHost(host);
             if (candidate.isOpaque()
-                    || host == null || host.isBlank()
+                    || host == null || host.isEmpty()
                     || candidate.getRawUserInfo() != null
                     || candidate.getRawQuery() != null
                     || candidate.getRawFragment() != null

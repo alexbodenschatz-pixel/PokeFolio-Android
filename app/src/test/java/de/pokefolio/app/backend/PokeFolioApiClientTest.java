@@ -1,0 +1,345 @@
+package de.pokefolio.app.backend;
+
+import de.pokefolio.app.security.RefreshTokenCredential;
+import de.pokefolio.app.security.RefreshTokenStore;
+
+import org.json.JSONObject;
+import org.junit.Test;
+
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+
+import static org.junit.Assert.assertArrayEquals;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertThrows;
+import static org.junit.Assert.assertTrue;
+
+public final class PokeFolioApiClientTest {
+    private static final UUID DEVICE_ID =
+            UUID.fromString("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+    private static final String FIRST_ACCESS_TOKEN = "access-" + repeat('a', 64);
+    private static final String ROTATED_ACCESS_TOKEN = "access-" + repeat('b', 64);
+    private static final String FIRST_REFRESH_TOKEN = "refresh-" + repeat('c', 64);
+    private static final String ROTATED_REFRESH_TOKEN = "refresh-" + repeat('d', 64);
+
+    @Test
+    public void loginPersistsOnlyRotatingCredentialAndKeepsTokensOutOfPublicSession()
+            throws Exception {
+        MemoryRefreshTokenStore store = new MemoryRefreshTokenStore();
+        RecordingTransport transport = new RecordingTransport(request -> {
+            assertEquals("POST", request.method);
+            assertEquals("/api/v1/auth/login", request.path);
+            assertNull(request.accessToken);
+            JSONObject body = new JSONObject(new String(request.body, StandardCharsets.UTF_8));
+            assertEquals("android", body.getString("platform"));
+            assertEquals("Pixel test", body.getString("deviceName"));
+            return jsonResponse(200, sessionBody(
+                    DEVICE_ID, FIRST_ACCESS_TOKEN, FIRST_REFRESH_TOKEN));
+        });
+        PokeFolioApiClient client = new PokeFolioApiClient(store, transport);
+
+        PokeFolioAuthenticationResult result = client.login(
+                "owner@example.test",
+                "correct horse battery staple",
+                "Pixel test");
+
+        assertTrue(result.isSucceeded());
+        assertEquals(PokeFolioApiPayloadsTest.USER_ID, result.getSession().getUserId());
+        assertEquals(DEVICE_ID, client.getCurrentSession().getDevice().getId());
+        assertEquals(DEVICE_ID, store.credential.getDeviceId());
+        assertEquals(FIRST_REFRESH_TOKEN, store.credential.getRefreshToken());
+        assertEquals(1, store.saveCount);
+        assertFalse(Arrays.stream(PokeFolioSession.class.getMethods())
+                .map(java.lang.reflect.Method::getName)
+                .anyMatch(name -> "getAccessToken".equals(name) || "getRefreshToken".equals(name)));
+        assertFalse(client.getCurrentSession().toString().contains(FIRST_ACCESS_TOKEN));
+        assertTrue(allZero(transport.lastResponseBody));
+    }
+
+    @Test
+    public void invalidAuthenticationEnvelopeNeverActivatesOrPersistsSession() {
+        MemoryRefreshTokenStore store = new MemoryRefreshTokenStore();
+        String valid = sessionBody(DEVICE_ID, FIRST_ACCESS_TOKEN, FIRST_REFRESH_TOKEN);
+        RecordingTransport transport = new RecordingTransport(request -> jsonResponse(
+                200,
+                valid.replace("\"accessToken\":", "\"accessToken\":\"duplicate\",\"accessToken\":")));
+        PokeFolioApiClient client = new PokeFolioApiClient(store, transport);
+
+        assertThrows(IOException.class, () -> client.login(
+                "owner@example.test", "valid-password", "Pixel test"));
+
+        assertNull(client.getCurrentSession());
+        assertNull(store.credential);
+        assertEquals(0, store.saveCount);
+        assertTrue(allZero(transport.lastResponseBody));
+    }
+
+    @Test
+    public void restoreRejectsAnotherDeviceAndDeletesTheStoredCredential() {
+        MemoryRefreshTokenStore store = new MemoryRefreshTokenStore();
+        store.credential = new RefreshTokenCredential(DEVICE_ID, FIRST_REFRESH_TOKEN);
+        UUID otherDevice = UUID.fromString("cccccccc-cccc-cccc-cccc-cccccccccccc");
+        RecordingTransport transport = new RecordingTransport(request -> jsonResponse(
+                200,
+                sessionBody(otherDevice, ROTATED_ACCESS_TOKEN, ROTATED_REFRESH_TOKEN)));
+        PokeFolioApiClient client = new PokeFolioApiClient(store, transport);
+
+        assertThrows(IOException.class, client::restoreSession);
+
+        assertNull(client.getCurrentSession());
+        assertNull(store.credential);
+        assertEquals(1, store.deleteCount);
+    }
+
+    @Test
+    public void concurrentUnauthorizedCallsShareOneRotatingRefresh() throws Exception {
+        MemoryRefreshTokenStore store = new MemoryRefreshTokenStore();
+        CountDownLatch bothOldTokenRequestsArrived = new CountDownLatch(2);
+        AtomicInteger refreshCount = new AtomicInteger();
+        RecordingTransport transport = new RecordingTransport(request -> {
+            if ("/api/v1/auth/login".equals(request.path)) {
+                return jsonResponse(200, sessionBody(
+                        DEVICE_ID, FIRST_ACCESS_TOKEN, FIRST_REFRESH_TOKEN));
+            }
+            if ("/api/v1/test".equals(request.path)
+                    && FIRST_ACCESS_TOKEN.equals(request.accessToken)) {
+                bothOldTokenRequestsArrived.countDown();
+                if (!bothOldTokenRequestsArrived.await(5, TimeUnit.SECONDS)) {
+                    throw new IOException("Concurrent authenticated requests did not overlap.");
+                }
+                return jsonResponse(401, "{\"code\":\"authentication_required\"}");
+            }
+            if ("/api/v1/auth/refresh".equals(request.path)) {
+                refreshCount.incrementAndGet();
+                return jsonResponse(200, sessionBody(
+                        DEVICE_ID, ROTATED_ACCESS_TOKEN, ROTATED_REFRESH_TOKEN));
+            }
+            if ("/api/v1/test".equals(request.path)
+                    && ROTATED_ACCESS_TOKEN.equals(request.accessToken)) {
+                return jsonResponse(200, "{\"ok\":true}");
+            }
+            throw new IOException("Unexpected request: " + request.path);
+        });
+        PokeFolioApiClient client = new PokeFolioApiClient(store, transport);
+        client.login("owner@example.test", "valid-password", "Pixel test");
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        try {
+            Future<PokeFolioApiResponse> first = executor.submit(() ->
+                    client.executeAuthenticated("GET", "/api/v1/test", null, 1024));
+            Future<PokeFolioApiResponse> second = executor.submit(() ->
+                    client.executeAuthenticated("GET", "/api/v1/test", null, 1024));
+
+            assertTrue(first.get(10, TimeUnit.SECONDS).isSucceeded());
+            assertTrue(second.get(10, TimeUnit.SECONDS).isSucceeded());
+        } finally {
+            executor.shutdownNow();
+        }
+
+        assertEquals(1, refreshCount.get());
+        assertEquals(2, store.saveCount);
+        assertEquals(ROTATED_REFRESH_TOKEN, store.credential.getRefreshToken());
+        assertEquals(2, transport.count("/api/v1/test", FIRST_ACCESS_TOKEN));
+        assertEquals(2, transport.count("/api/v1/test", ROTATED_ACCESS_TOKEN));
+    }
+
+    @Test
+    public void secondUnauthorizedResponseIsReturnedWithoutAnUnboundedRetry() throws Exception {
+        MemoryRefreshTokenStore store = new MemoryRefreshTokenStore();
+        AtomicInteger protectedCalls = new AtomicInteger();
+        RecordingTransport transport = new RecordingTransport(request -> {
+            if ("/api/v1/auth/login".equals(request.path)) {
+                return jsonResponse(200, sessionBody(
+                        DEVICE_ID, FIRST_ACCESS_TOKEN, FIRST_REFRESH_TOKEN));
+            }
+            if ("/api/v1/auth/refresh".equals(request.path)) {
+                return jsonResponse(200, sessionBody(
+                        DEVICE_ID, ROTATED_ACCESS_TOKEN, ROTATED_REFRESH_TOKEN));
+            }
+            protectedCalls.incrementAndGet();
+            return jsonResponse(401, "{\"code\":\"authentication_required\"}");
+        });
+        PokeFolioApiClient client = new PokeFolioApiClient(store, transport);
+        client.login("owner@example.test", "valid-password", "Pixel test");
+
+        PokeFolioApiResponse response = client.executeAuthenticated(
+                "GET", "/api/v1/test", null, 1024);
+
+        assertFalse(response.isSucceeded());
+        assertEquals(401, response.getStatus());
+        assertEquals("authentication_required", response.getProblem().getCode());
+        assertEquals(2, protectedCalls.get());
+    }
+
+    @Test
+    public void logoutFailureStillClearsMemoryAndPersistentCredential() throws Exception {
+        MemoryRefreshTokenStore store = new MemoryRefreshTokenStore();
+        RecordingTransport transport = new RecordingTransport(request -> {
+            if ("/api/v1/auth/login".equals(request.path)) {
+                return jsonResponse(200, sessionBody(
+                        DEVICE_ID, FIRST_ACCESS_TOKEN, FIRST_REFRESH_TOKEN));
+            }
+            return jsonResponse(503, "{\"code\":\"database_unavailable\"}");
+        });
+        PokeFolioApiClient client = new PokeFolioApiClient(store, transport);
+        client.login("owner@example.test", "valid-password", "Pixel test");
+
+        PokeFolioLogoutResult result = client.logout();
+
+        assertFalse(result.isServerSessionRevoked());
+        assertEquals("database_unavailable", result.getProblem().getCode());
+        assertNull(client.getCurrentSession());
+        assertNull(store.credential);
+        assertEquals(1, store.deleteCount);
+    }
+
+    @Test
+    public void closeClearsMemoryAndRejectsFurtherRequests() throws Exception {
+        MemoryRefreshTokenStore store = new MemoryRefreshTokenStore();
+        RecordingTransport transport = new RecordingTransport(request -> jsonResponse(
+                200,
+                sessionBody(DEVICE_ID, FIRST_ACCESS_TOKEN, FIRST_REFRESH_TOKEN)));
+        PokeFolioApiClient client = new PokeFolioApiClient(store, transport);
+        client.login("owner@example.test", "valid-password", "Pixel test");
+
+        client.close();
+
+        assertNull(client.getCurrentSession());
+        assertTrue(transport.closed);
+        assertThrows(IOException.class, client::restoreSession);
+    }
+
+    private static String sessionBody(
+            UUID deviceId,
+            String accessToken,
+            String refreshToken
+    ) {
+        return new String(PokeFolioApiPayloadsTest.sessionJson(
+                "android", deviceId, accessToken, refreshToken), StandardCharsets.UTF_8);
+    }
+
+    private static PokeFolioRawResponse jsonResponse(int status, String body) {
+        return new PokeFolioRawResponse(status, body.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static String repeat(char value, int count) {
+        char[] result = new char[count];
+        Arrays.fill(result, value);
+        return new String(result);
+    }
+
+    private static boolean allZero(byte[] value) {
+        if (value == null) return false;
+        for (byte item : value) {
+            if (item != 0) return false;
+        }
+        return true;
+    }
+
+    private interface Responder {
+        PokeFolioRawResponse respond(RecordedRequest request) throws Exception;
+    }
+
+    private static final class RecordedRequest {
+        final String method;
+        final String path;
+        final byte[] body;
+        final String accessToken;
+
+        RecordedRequest(String method, String path, byte[] body, String accessToken) {
+            this.method = method;
+            this.path = path;
+            this.body = body;
+            this.accessToken = accessToken;
+        }
+    }
+
+    private static final class RecordingTransport implements PokeFolioApiTransport {
+        private final Responder responder;
+        private final List<RecordedRequest> requests = new ArrayList<>();
+        volatile byte[] lastResponseBody;
+        volatile boolean closed;
+
+        RecordingTransport(Responder responder) {
+            this.responder = responder;
+        }
+
+        @Override
+        public PokeFolioRawResponse send(
+                String method,
+                String path,
+                byte[] body,
+                String accessToken,
+                int maximumResponseBytes
+        ) throws IOException {
+            RecordedRequest request = new RecordedRequest(
+                    method,
+                    path,
+                    body == null ? null : body.clone(),
+                    accessToken);
+            synchronized (requests) {
+                requests.add(request);
+            }
+            try {
+                PokeFolioRawResponse response = responder.respond(request);
+                lastResponseBody = response.body;
+                return response;
+            } catch (IOException error) {
+                throw error;
+            } catch (Exception error) {
+                throw new IOException("Test transport failed.", error);
+            }
+        }
+
+        int count(String path, String accessToken) {
+            synchronized (requests) {
+                int matches = 0;
+                for (RecordedRequest request : requests) {
+                    if (path.equals(request.path) && accessToken.equals(request.accessToken)) {
+                        matches++;
+                    }
+                }
+                return matches;
+            }
+        }
+
+        @Override
+        public void close() {
+            closed = true;
+        }
+    }
+
+    private static final class MemoryRefreshTokenStore implements RefreshTokenStore {
+        RefreshTokenCredential credential;
+        int saveCount;
+        int deleteCount;
+
+        @Override
+        public synchronized RefreshTokenCredential load() {
+            return credential;
+        }
+
+        @Override
+        public synchronized void save(RefreshTokenCredential value) {
+            credential = value;
+            saveCount++;
+        }
+
+        @Override
+        public synchronized void delete() {
+            credential = null;
+            deleteCount++;
+        }
+    }
+}

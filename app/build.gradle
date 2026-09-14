@@ -71,4 +71,6 @@ dependencies {
     implementation 'com.google.mlkit:text-recognition-korean:16.0.1'
 
     testImplementation 'junit:junit:4.13.2'
+    // Android supplies org.json at runtime; this mirrors it for local JVM contract tests.
+    testImplementation 'org.json:json:20250517'
 }

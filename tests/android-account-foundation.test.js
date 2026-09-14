@@ -52,6 +52,25 @@ test('Android refresh credentials stay in no-backup native AES-GCM storage', () 
   assert.doesNotMatch(activity, /getRefreshToken|loadRefreshToken|saveRefreshToken/);
 });
 
+test('Android native account transport keeps tokens outside the WebView boundary', () => {
+  const client = read(
+    'app/src/main/java/de/pokefolio/app/backend/PokeFolioApiClient.java');
+  const transport = read(
+    'app/src/main/java/de/pokefolio/app/backend/PokeFolioHttpTransport.java');
+  const publicSession = read(
+    'app/src/main/java/de/pokefolio/app/backend/PokeFolioSession.java');
+  const activity = read('app/src/main/java/de/pokefolio/app/MainActivity.java');
+
+  assert.match(client, /private final Object sessionGate/);
+  assert.match(client, /refreshAfterUnauthorized\(current\.accessToken\)/);
+  assert.match(client, /refreshTokenStore\.save/);
+  assert.match(transport, /setInstanceFollowRedirects\(false\)/);
+  assert.match(transport, /readBounded\(raw, maximumResponseBytes\)/);
+  assert.match(transport, /!target\.getRawPath\(\)\.startsWith\("\/api\/v1\/"\)/);
+  assert.doesNotMatch(publicSession, /getAccessToken\s*\(|getRefreshToken\s*\(/);
+  assert.doesNotMatch(activity, /getAccessToken|refreshToken|Authorization/);
+});
+
 test('Android test APK compiles the device-side Keystore roundtrip', () => {
   const instrumentation = read(
     'app/src/androidTest/java/de/pokefolio/app/CardCropInstrumentation.java');
