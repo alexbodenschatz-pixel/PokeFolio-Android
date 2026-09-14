@@ -41,6 +41,8 @@ import com.google.mlkit.vision.text.japanese.JapaneseTextRecognizerOptions;
 import com.google.mlkit.vision.text.korean.KoreanTextRecognizerOptions;
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions;
 
+import de.pokefolio.app.backend.PokeFolioAccountBridge;
+
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -91,6 +93,7 @@ public final class MainActivity extends Activity {
     private ExecutorService bridgeExecutor;
     private ExecutorService networkExecutor;
     private ExecutorService comparisonExecutor;
+    private PokeFolioAccountBridge accountBridge;
     private int webSafeTop;
     private int webSafeRight;
     private int webSafeBottom;
@@ -120,6 +123,9 @@ public final class MainActivity extends Activity {
         webView = new WebView(this);
         setContentView(webView);
         installWebViewSafeArea();
+        accountBridge = new PokeFolioAccountBridge(
+                ((PokeFolioApplication) getApplication()).getCloudService(),
+                this::sendJs);
 
         WebSettings settings = webView.getSettings();
         settings.setJavaScriptEnabled(true);
@@ -294,6 +300,41 @@ public final class MainActivity extends Activity {
         @JavascriptInterface
         public void httpGet(String urlString, String requestId) {
             networkExecutor.execute(() -> performHttpGet(urlString, requestId));
+        }
+
+        @JavascriptInterface
+        public String getAccountStatus() {
+            return accountBridge.getStatusJson();
+        }
+
+        @JavascriptInterface
+        public void registerAccount(
+                String email,
+                String password,
+                String deviceName,
+                String requestId
+        ) {
+            accountBridge.register(email, password, deviceName, requestId);
+        }
+
+        @JavascriptInterface
+        public void loginAccount(
+                String email,
+                String password,
+                String deviceName,
+                String requestId
+        ) {
+            accountBridge.login(email, password, deviceName, requestId);
+        }
+
+        @JavascriptInterface
+        public void restoreAccountSession(String requestId) {
+            accountBridge.restore(requestId);
+        }
+
+        @JavascriptInterface
+        public void logoutAccount(String requestId) {
+            accountBridge.logout(requestId);
         }
 
         @JavascriptInterface
@@ -1379,6 +1420,10 @@ public final class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        if (accountBridge != null) {
+            accountBridge.close();
+            accountBridge = null;
+        }
         if (fileCallback != null) {
             fileCallback.onReceiveValue(null);
             fileCallback = null;

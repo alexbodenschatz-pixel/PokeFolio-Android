@@ -16,6 +16,8 @@ Die nicht geheime Backend-Origin wird beim Build über die Gradle-Property `poke
 
 Persistente Android-Refresh-Tokens werden nicht in WebView-/JavaScript-Speichern abgelegt. Der native Store schreibt einen AES-GCM-Datensatz unter `noBackupFilesDir`; der nicht exportierbare Schlüssel liegt im Android Keystore. Der Instrumentierungslauf prüft Roundtrip, fehlenden Klartext und Löschung in einem isolierten Testpfad, ohne vorhandene App-Anmeldedaten anzutasten.
 
+Der native Android-Account-Client validiert die Auth-Antworten strikt, rotiert Refresh-Tokens serialisiert und hält Access-Tokens nur im Prozessspeicher. Die gebündelte WebView erhält über `window.PokeAccount` ausschließlich tokenfreien Konto- und Gerätestatus. Eine sichtbare Login-/Registrierungsoberfläche folgt als eigener Produktschritt.
+
 ## Windows bauen
 
 ```text
