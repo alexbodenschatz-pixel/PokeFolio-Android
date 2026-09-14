@@ -57,6 +57,8 @@ test('Android native account transport keeps tokens outside the WebView boundary
     'app/src/main/java/de/pokefolio/app/backend/PokeFolioApiClient.java');
   const transport = read(
     'app/src/main/java/de/pokefolio/app/backend/PokeFolioHttpTransport.java');
+  const payloads = read(
+    'app/src/main/java/de/pokefolio/app/backend/PokeFolioApiPayloads.java');
   const publicSession = read(
     'app/src/main/java/de/pokefolio/app/backend/PokeFolioSession.java');
   const activity = read('app/src/main/java/de/pokefolio/app/MainActivity.java');
@@ -67,6 +69,8 @@ test('Android native account transport keeps tokens outside the WebView boundary
   assert.match(transport, /setInstanceFollowRedirects\(false\)/);
   assert.match(transport, /readBounded\(raw, maximumResponseBytes\)/);
   assert.match(transport, /!target\.getRawPath\(\)\.startsWith\("\/api\/v1\/"\)/);
+  assert.match(payloads, /value\.keys\(\)/);
+  assert.doesNotMatch(payloads, /\.keySet\(\)/);
   assert.doesNotMatch(publicSession, /getAccessToken\s*\(|getRefreshToken\s*\(/);
   assert.doesNotMatch(activity, /getAccessToken|refreshToken|Authorization/);
 });

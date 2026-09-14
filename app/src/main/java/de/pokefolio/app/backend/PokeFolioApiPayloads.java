@@ -16,6 +16,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -137,7 +138,9 @@ final class PokeFolioApiPayloads {
         if (!(raw instanceof JSONObject)) return null;
         JSONObject value = (JSONObject) raw;
         Map<String, List<String>> errors = new LinkedHashMap<>();
-        for (String property : value.keySet()) {
+        Iterator<String> properties = value.keys();
+        while (properties.hasNext()) {
+            String property = properties.next();
             Object rawMessages = value.opt(property);
             if (!(rawMessages instanceof JSONArray) || property.length() > 120) continue;
             JSONArray messages = (JSONArray) rawMessages;
@@ -160,7 +163,10 @@ final class PokeFolioApiPayloads {
             Set<String> expected,
             String label
     ) throws IOException {
-        if (!value.keySet().equals(expected)) {
+        Set<String> actual = new HashSet<>();
+        Iterator<String> properties = value.keys();
+        while (properties.hasNext()) actual.add(properties.next());
+        if (!actual.equals(expected)) {
             throw new IOException(label + " does not match the API contract.");
         }
     }
