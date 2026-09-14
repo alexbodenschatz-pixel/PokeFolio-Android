@@ -94,43 +94,49 @@ public sealed class PokeFolioAccountService : IPokeFolioCloudService
 
     public Task<PokeFolioApiResponse> PushSyncOperationsAsync(
         string operationBatchJson,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        Guid? expectedUserId = null)
     {
         ThrowIfDisposed();
         return client is null
             ? Task.FromResult(UnavailableApiResponse())
-            : client.PushSyncOperationsAsync(operationBatchJson, cancellationToken);
+            : client.PushSyncOperationsAsync(
+                operationBatchJson, cancellationToken, expectedUserId);
     }
 
     public Task<PokeFolioApiResponse> PullSyncChangesAsync(
         string? cursor = null,
         int limit = 100,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        Guid? expectedUserId = null)
     {
         ThrowIfDisposed();
         return client is null
             ? Task.FromResult(UnavailableApiResponse())
-            : client.PullSyncChangesAsync(cursor, limit, cancellationToken);
+            : client.PullSyncChangesAsync(cursor, limit, cancellationToken, expectedUserId);
     }
 
     public Task<PokeFolioApiResponse> ResolveCatalogCardAsync(
         string cardReferenceJson,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        Guid? expectedUserId = null)
     {
         ThrowIfDisposed();
         return client is null
             ? Task.FromResult(UnavailableApiResponse())
-            : client.ResolveCatalogCardAsync(cardReferenceJson, cancellationToken);
+            : client.ResolveCatalogCardAsync(
+                cardReferenceJson, cancellationToken, expectedUserId);
     }
 
     public Task<PokeFolioApiResponse> GetCatalogCardAsync(
         Guid cardId,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        Guid? expectedUserId = null)
     {
         ThrowIfDisposed();
         return client is null
             ? Task.FromResult(UnavailableApiResponse())
-            : client.GetCatalogCardAsync(cardId, cancellationToken);
+            : client.GetCatalogCardAsync(cardId, cancellationToken, expectedUserId);
     }
 
     private PokeFolioAuthenticationResult UnavailableAuthentication() =>

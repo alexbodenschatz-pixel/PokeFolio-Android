@@ -464,6 +464,43 @@ public sealed class PokeFolioApiClientTests
     }
 
     [TestMethod]
+    public async Task OperationBoundToPreviousAccountIsRejectedBeforeNetworkSend()
+    {
+        Guid deviceId = Guid.NewGuid();
+        Guid secondUserId = Guid.Parse("dddddddd-dddd-dddd-dddd-dddddddddddd");
+        int loginCount = 0;
+        var store = new MemoryRefreshTokenStore();
+        var handler = new RecordingHandler((request, _, _) =>
+        {
+            if (request.Uri.AbsolutePath != "/api/v1/auth/login")
+            {
+                Assert.Fail("Cross-account operation must not reach the network.");
+            }
+            loginCount++;
+            return Task.FromResult(JsonResponse(
+                HttpStatusCode.OK,
+                SessionBody(
+                    deviceId,
+                    loginCount == 1 ? FirstAccessToken : RotatedAccessToken,
+                    loginCount == 1 ? FirstRefreshToken : RotatedRefreshToken,
+                    loginCount == 1 ? UserId : secondUserId)));
+        });
+        using var client = CreateClient(store, handler);
+        await client.LoginAsync("first@example.test", "valid-password", "Desktop test");
+        await client.LoginAsync("second@example.test", "valid-password", "Desktop test");
+
+        PokeFolioApiResponse response = await client.PushSyncOperationsAsync(
+            "{\"operations\":[]}",
+            expectedUserId: UserId);
+
+        Assert.IsFalse(response.Succeeded);
+        Assert.AreEqual((int)HttpStatusCode.Conflict, response.Status);
+        Assert.AreEqual("account_changed", response.Problem?.Code);
+        Assert.AreEqual(secondUserId, client.CurrentSession?.UserId);
+        Assert.HasCount(2, handler.Requests);
+    }
+
+    [TestMethod]
     public async Task RefreshResponseForAnotherDeviceFailsClosed()
     {
         Guid deviceId = Guid.NewGuid();
@@ -510,9 +547,10 @@ public sealed class PokeFolioApiClientTests
     private static string SessionBody(
         Guid deviceId,
         string accessToken,
-        string refreshToken) => JsonSerializer.Serialize(new
+        string refreshToken,
+        Guid? sessionUserId = null) => JsonSerializer.Serialize(new
         {
-            userId = UserId,
+            userId = sessionUserId ?? UserId,
             accessToken,
             refreshToken,
             accessTokenExpiresAt = "2030-01-01T00:00:00+00:00",

@@ -42,6 +42,9 @@ import com.google.mlkit.vision.text.korean.KoreanTextRecognizerOptions;
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions;
 
 import de.pokefolio.app.backend.PokeFolioAccountBridge;
+import de.pokefolio.app.backend.PokeFolioCloudBridge;
+import de.pokefolio.app.backend.PokeFolioCloudService;
+import de.pokefolio.app.sync.PokeFolioSyncStateBridge;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -94,6 +97,8 @@ public final class MainActivity extends Activity {
     private ExecutorService networkExecutor;
     private ExecutorService comparisonExecutor;
     private PokeFolioAccountBridge accountBridge;
+    private PokeFolioCloudBridge cloudBridge;
+    private PokeFolioSyncStateBridge syncStateBridge;
     private int webSafeTop;
     private int webSafeRight;
     private int webSafeBottom;
@@ -123,9 +128,13 @@ public final class MainActivity extends Activity {
         webView = new WebView(this);
         setContentView(webView);
         installWebViewSafeArea();
-        accountBridge = new PokeFolioAccountBridge(
-                ((PokeFolioApplication) getApplication()).getCloudService(),
-                this::sendJs);
+        PokeFolioApplication application = (PokeFolioApplication) getApplication();
+        PokeFolioCloudService cloudService = application.getCloudService();
+        accountBridge = new PokeFolioAccountBridge(cloudService, this::sendJs);
+        cloudBridge = new PokeFolioCloudBridge(cloudService, this::sendJs);
+        syncStateBridge = new PokeFolioSyncStateBridge(
+                cloudService,
+                application.getSyncStateStore());
 
         WebSettings settings = webView.getSettings();
         settings.setJavaScriptEnabled(true);
@@ -335,6 +344,44 @@ public final class MainActivity extends Activity {
         @JavascriptInterface
         public void logoutAccount(String requestId) {
             accountBridge.logout(requestId);
+        }
+
+        @JavascriptInterface
+        public void resolveCatalogCard(String cardReferenceJson, String requestId) {
+            cloudBridge.resolveCatalogCard(cardReferenceJson, requestId);
+        }
+
+        @JavascriptInterface
+        public void getCatalogCard(String cardId, String requestId) {
+            cloudBridge.getCatalogCard(cardId, requestId);
+        }
+
+        @JavascriptInterface
+        public void pushSyncOperations(String operationBatchJson, String requestId) {
+            cloudBridge.pushSyncOperations(operationBatchJson, requestId);
+        }
+
+        @JavascriptInterface
+        public void pullSyncChanges(String cursor, int limit, String requestId) {
+            cloudBridge.pullSyncChanges(cursor, limit, requestId);
+        }
+
+        @JavascriptInterface
+        public String loadAccountSyncSnapshot() {
+            try {
+                return syncStateBridge.load();
+            } catch (IOException error) {
+                throw new IllegalStateException("Account sync snapshot cannot be loaded.", error);
+            }
+        }
+
+        @JavascriptInterface
+        public boolean saveAccountSyncSnapshot(String snapshotJson) {
+            try {
+                return syncStateBridge.save(snapshotJson);
+            } catch (IOException error) {
+                throw new IllegalStateException("Account sync snapshot cannot be saved.", error);
+            }
         }
 
         @JavascriptInterface
@@ -1424,6 +1471,11 @@ public final class MainActivity extends Activity {
             accountBridge.close();
             accountBridge = null;
         }
+        if (cloudBridge != null) {
+            cloudBridge.close();
+            cloudBridge = null;
+        }
+        syncStateBridge = null;
         if (fileCallback != null) {
             fileCallback.onReceiveValue(null);
             fileCallback = null;

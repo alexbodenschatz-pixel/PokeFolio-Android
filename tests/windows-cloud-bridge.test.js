@@ -14,7 +14,10 @@ const bootstrapPath = path.join(
   'WebHost',
   'desktop-bootstrap.js'
 );
+const cloudBootstrapPath = path.join(
+  __dirname, '..', 'app', 'src', 'main', 'assets', 'cloud-bootstrap.js');
 const bootstrap = fs.readFileSync(bootstrapPath, 'utf8');
+const cloudBootstrap = fs.readFileSync(cloudBootstrapPath, 'utf8');
 
 function createRuntime(nativeOverrides = {}) {
   const events = [];
@@ -38,7 +41,7 @@ function createRuntime(nativeOverrides = {}) {
     dispatchEvent: event => events.push(event)
   };
   window.window = window;
-  vm.runInNewContext(bootstrap, {
+  const context = {
     window,
     CustomEvent: class CustomEvent {
       constructor(type, options) {
@@ -55,7 +58,9 @@ function createRuntime(nativeOverrides = {}) {
     TypeError,
     RangeError,
     String
-  }, {filename: bootstrapPath});
+  };
+  vm.runInNewContext(bootstrap, context, {filename: bootstrapPath});
+  vm.runInNewContext(cloudBootstrap, context, {filename: cloudBootstrapPath});
   return {window, nativeHost, events};
 }
 
@@ -85,7 +90,7 @@ test('Windows Katalog-Fassade normalisiert Kartenreferenz und ordnet Callback zu
   });
   assert.match(nativeCall.requestId, /^catalog-/);
 
-  runtime.window.onDesktopCatalogResult(JSON.stringify({
+  runtime.window.onPokeCatalogResult(JSON.stringify({
     requestId: nativeCall.requestId,
     operation: 'resolve',
     ok: true,
@@ -151,7 +156,7 @@ test('Windows Katalog-Fassade lädt eine validierte globale Karten-ID', async ()
     'CCCCCCCC-CCCC-CCCC-CCCC-CCCCCCCCCCCC');
   assert.equal(nativeCall.cardId, 'cccccccc-cccc-cccc-cccc-cccccccccccc');
 
-  runtime.window.onDesktopCatalogResult(JSON.stringify({
+  runtime.window.onPokeCatalogResult(JSON.stringify({
     requestId: nativeCall.requestId,
     operation: 'get',
     ok: true,
@@ -175,7 +180,7 @@ test('Windows Sync-Transport serialisiert Batch und ordnet strukturierten Callba
   assert.deepEqual(JSON.parse(nativeCall.json), {operations: []});
   assert.match(nativeCall.requestId, /^sync-/);
 
-  runtime.window.onDesktopSyncResult(JSON.stringify({
+  runtime.window.onPokeSyncResult(JSON.stringify({
     requestId: nativeCall.requestId,
     operation: 'push',
     ok: true,
@@ -203,7 +208,7 @@ test('Windows Sync-Transport reicht opaken Cursor und Seitengröße unverändert
   assert.equal(nativeCall.cursor, 'opaque+/cursor=');
   assert.equal(nativeCall.limit, 250);
 
-  runtime.window.onDesktopSyncResult(JSON.stringify({
+  runtime.window.onPokeSyncResult(JSON.stringify({
     requestId: nativeCall.requestId,
     operation: 'pull',
     ok: true,

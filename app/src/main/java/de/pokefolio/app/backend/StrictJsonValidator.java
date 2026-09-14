@@ -5,13 +5,13 @@ import java.util.HashSet;
 import java.util.Set;
 
 /** Small dependency-free JSON syntax and duplicate-key validator for native trust boundaries. */
-final class StrictJsonValidator {
+public final class StrictJsonValidator {
     private static final int MAXIMUM_DEPTH = 64;
 
     private StrictJsonValidator() {
     }
 
-    static void validateObject(String json) throws IOException {
+    public static void validateObject(String json) throws IOException {
         if (json == null) throw new IOException("JSON is missing.");
         Parser parser = new Parser(json);
         parser.skipWhitespace();

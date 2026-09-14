@@ -9,9 +9,12 @@ const Sync = require('../app/src/main/assets/sync-core.js');
 
 const bootstrapPath = path.join(
   __dirname, '..', 'windows', 'PokeFolio.Desktop', 'WebHost', 'desktop-bootstrap.js');
+const cloudBootstrapPath = path.join(
+  __dirname, '..', 'app', 'src', 'main', 'assets', 'cloud-bootstrap.js');
 const driverPath = path.join(
-  __dirname, '..', 'windows', 'PokeFolio.Desktop', 'WebHost', 'desktop-sync-driver.js');
+  __dirname, '..', 'app', 'src', 'main', 'assets', 'sync-driver.js');
 const bootstrap = fs.readFileSync(bootstrapPath, 'utf8');
+const cloudBootstrap = fs.readFileSync(cloudBootstrapPath, 'utf8');
 const driver = fs.readFileSync(driverPath, 'utf8');
 
 const userA = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
@@ -49,7 +52,7 @@ function createRuntime(options = {}) {
     session: currentUserId ? {userId: currentUserId} : null
   });
   const respond = payload => queueMicrotask(() =>
-    window.onDesktopSyncResult(JSON.stringify(payload)));
+    window.onPokeSyncResult(JSON.stringify(payload)));
   const nativeHost = {
     getAccountStatus: () => JSON.stringify(status()),
     registerAccount: () => {},
@@ -132,6 +135,7 @@ function createRuntime(options = {}) {
     String
   };
   vm.runInNewContext(bootstrap, context, {filename: bootstrapPath});
+  vm.runInNewContext(cloudBootstrap, context, {filename: cloudBootstrapPath});
   window.PokeSync = Sync;
   vm.runInNewContext(driver, context, {filename: driverPath});
 

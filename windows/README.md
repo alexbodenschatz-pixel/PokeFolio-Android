@@ -116,7 +116,7 @@ Der Desktop-Bootstrap stellt der vertrauenswürdigen lokalen Oberfläche eine be
 
 ## Persistente accountgebundene Sync-Queue
 
-`desktop-sync-driver.js` verbindet den gemeinsamen `sync-core.js` seriell mit `PokeSyncTransport`. Offline-Operationen werden vor dem ersten Netzwerkversuch gespeichert. Nach jedem Push-Ergebnis, Retry-Zustand und jeder Pull-Seite wird der neue Zustand atomar ersetzt. Operations-IDs bleiben bei unklaren Netzwerkfehlern unverändert, sodass der Server einen bereits ausgeführten Retry als Duplikat erkennen kann. Ein Kontowechsel invalidiert laufende Antworten, bevor sie lokal angewendet werden.
+Der gemeinsame `sync-driver.js` verbindet `sync-core.js` auf Android und Windows seriell mit `PokeSyncTransport`. Offline-Operationen werden vor dem ersten Netzwerkversuch gespeichert. Nach jedem Push-Ergebnis, Retry-Zustand und jeder Pull-Seite wird der neue Zustand atomar ersetzt. Operations-IDs bleiben bei unklaren Netzwerkfehlern unverändert, sodass der Server einen bereits ausgeführten Retry als Duplikat erkennen kann. Ein Kontowechsel invalidiert laufende Antworten, bevor sie lokal angewendet werden.
 
 Der WebView-Code kann keinen Benutzer oder Dateischlüssel für den Speicher angeben. `PokeNative` leitet den Besitzer ausschließlich aus der authentifizierten nativen Session ab und speichert getrennte Snapshots unter `%LOCALAPPDATA%\PokeFolio\Sync`; der Dateiname enthält nur einen SHA-256-abgeleiteten Accountschlüssel. Der Snapshot ist auf 32 MiB begrenzt, wird als striktes JSON validiert und mittels Write-Through-Temporärdatei ersetzt. Ein beschädigter Snapshot bleibt zur Wiederherstellung erhalten und wird nicht automatisch mit einem leeren Zustand überschrieben.
 

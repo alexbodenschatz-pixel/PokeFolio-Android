@@ -146,19 +146,30 @@ public final class PokeFolioApiClient implements Closeable {
 
     public PokeFolioApiResponse pushSyncOperations(String operationBatchJson)
             throws IOException {
+        return pushSyncOperations(operationBatchJson, null);
+    }
+
+    PokeFolioApiResponse pushSyncOperations(String operationBatchJson, UUID expectedUserId)
+            throws IOException {
         byte[] body = PokeFolioApiPayloads.validateSyncOperationBatch(operationBatchJson);
         try {
             return executeAuthenticated(
                     "POST",
                     "/api/v1/sync/operations",
                     body,
-                    MAXIMUM_SYNC_RESPONSE_BYTES);
+                    MAXIMUM_SYNC_RESPONSE_BYTES,
+                    expectedUserId);
         } finally {
             clear(body);
         }
     }
 
     public PokeFolioApiResponse pullSyncChanges(String cursor, int limit) throws IOException {
+        return pullSyncChanges(cursor, limit, null);
+    }
+
+    PokeFolioApiResponse pullSyncChanges(String cursor, int limit, UUID expectedUserId)
+            throws IOException {
         if (limit < 1 || limit > 500) {
             throw new IllegalArgumentException("Sync page size must be 1 to 500.");
         }
@@ -169,10 +180,16 @@ public final class PokeFolioApiClient implements Closeable {
         if (cursor != null && !cursor.isEmpty()) {
             path += "&cursor=" + URLEncoder.encode(cursor, "UTF-8").replace("+", "%20");
         }
-        return executeAuthenticated("GET", path, null, MAXIMUM_SYNC_RESPONSE_BYTES);
+        return executeAuthenticated(
+                "GET", path, null, MAXIMUM_SYNC_RESPONSE_BYTES, expectedUserId);
     }
 
     public PokeFolioApiResponse resolveCatalogCard(String cardReferenceJson)
+            throws IOException {
+        return resolveCatalogCard(cardReferenceJson, null);
+    }
+
+    PokeFolioApiResponse resolveCatalogCard(String cardReferenceJson, UUID expectedUserId)
             throws IOException {
         byte[] body = PokeFolioApiPayloads.normalizeCatalogCardReference(cardReferenceJson);
         try {
@@ -180,13 +197,18 @@ public final class PokeFolioApiClient implements Closeable {
                     "POST",
                     "/api/v1/cards/resolve",
                     body,
-                    MAXIMUM_CATALOG_RESPONSE_BYTES);
+                    MAXIMUM_CATALOG_RESPONSE_BYTES,
+                    expectedUserId);
         } finally {
             clear(body);
         }
     }
 
     public PokeFolioApiResponse getCatalogCard(UUID cardId) throws IOException {
+        return getCatalogCard(cardId, null);
+    }
+
+    PokeFolioApiResponse getCatalogCard(UUID cardId, UUID expectedUserId) throws IOException {
         if (cardId == null || EMPTY_UUID.equals(cardId)) {
             throw new IllegalArgumentException("Catalog card id must not be empty.");
         }
@@ -194,7 +216,8 @@ public final class PokeFolioApiClient implements Closeable {
                 "GET",
                 "/api/v1/cards/" + cardId.toString(),
                 null,
-                MAXIMUM_CATALOG_RESPONSE_BYTES);
+                MAXIMUM_CATALOG_RESPONSE_BYTES,
+                expectedUserId);
     }
 
     PokeFolioApiResponse executeAuthenticated(
@@ -202,6 +225,16 @@ public final class PokeFolioApiClient implements Closeable {
             String path,
             byte[] body,
             int maximumResponseBytes
+    ) throws IOException {
+        return executeAuthenticated(method, path, body, maximumResponseBytes, null);
+    }
+
+    private PokeFolioApiResponse executeAuthenticated(
+            String method,
+            String path,
+            byte[] body,
+            int maximumResponseBytes,
+            UUID expectedUserId
     ) throws IOException {
         throwIfClosed();
         SessionResolution resolution = ensureSession();
@@ -212,6 +245,7 @@ public final class PokeFolioApiClient implements Closeable {
                     "",
                     resolution.problem);
         }
+        if (!belongsToExpectedUser(current, expectedUserId)) return accountChanged();
 
         PokeFolioRawResponse response = transport.send(
                 method,
@@ -227,6 +261,9 @@ public final class PokeFolioApiClient implements Closeable {
                         refreshed.problem.getStatus(),
                         "",
                         refreshed.problem);
+            }
+            if (!belongsToExpectedUser(refreshed.session, expectedUserId)) {
+                return accountChanged();
             }
             response = transport.send(
                     method,
@@ -247,6 +284,19 @@ public final class PokeFolioApiClient implements Closeable {
         } finally {
             clear(response.body);
         }
+    }
+
+    private static boolean belongsToExpectedUser(SessionState session, UUID expectedUserId) {
+        return expectedUserId == null || expectedUserId.equals(session.userId);
+    }
+
+    private static PokeFolioApiResponse accountChanged() {
+        PokeFolioApiProblem problem = new PokeFolioApiProblem(
+                409,
+                "account_changed",
+                "The authenticated account changed before the request could be sent.",
+                null);
+        return new PokeFolioApiResponse(problem.getStatus(), "", problem);
     }
 
     private PokeFolioAuthenticationResult startSession(

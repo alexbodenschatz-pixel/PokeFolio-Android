@@ -18,6 +18,8 @@ Persistente Android-Refresh-Tokens werden nicht in WebView-/JavaScript-Speichern
 
 Der native Android-Account-Client validiert die Auth-Antworten strikt, rotiert Refresh-Tokens serialisiert und hält Access-Tokens nur im Prozessspeicher. Die gebündelte WebView erhält über `window.PokeAccount` ausschließlich tokenfreien Konto- und Gerätestatus. Eine sichtbare Login-/Registrierungsoberfläche folgt als eigener Produktschritt.
 
+Katalogauflösung und Push/Pull-Synchronisation laufen auf Android und Windows über denselben tokenfreien `cloud-bootstrap.js` und denselben persistenten `sync-driver.js`. Android legt den strikt validierten Queue-Snapshot atomar und nach serverseitig authentifiziertem Konto getrennt unter dem App-Dateibereich ab; der Dateiname enthält nur einen SHA-256-Kontoschlüssel. Beschädigte Snapshots werden nicht automatisch überschrieben. Die bestehende sichtbare lokale Sammlung wird erst im folgenden, nicht-destruktiven Migrationsschritt an diese Cloud-Entities gebunden.
+
 ## Windows bauen
 
 ```text

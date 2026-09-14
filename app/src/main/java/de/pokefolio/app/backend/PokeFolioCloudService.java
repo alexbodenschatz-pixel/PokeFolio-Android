@@ -83,31 +83,50 @@ public final class PokeFolioCloudService implements Closeable {
     }
 
     public PokeFolioApiResponse pushSyncOperations(String operationBatchJson) throws IOException {
+        return pushSyncOperations(operationBatchJson, null);
+    }
+
+    PokeFolioApiResponse pushSyncOperations(String operationBatchJson, UUID expectedUserId)
+            throws IOException {
         throwIfClosed();
         return client == null
                 ? unavailableResponse()
-                : client.pushSyncOperations(operationBatchJson);
+                : client.pushSyncOperations(operationBatchJson, expectedUserId);
     }
 
     public PokeFolioApiResponse pullSyncChanges(String cursor, int limit) throws IOException {
+        return pullSyncChanges(cursor, limit, null);
+    }
+
+    PokeFolioApiResponse pullSyncChanges(String cursor, int limit, UUID expectedUserId)
+            throws IOException {
         throwIfClosed();
         return client == null
                 ? unavailableResponse()
-                : client.pullSyncChanges(cursor, limit);
+                : client.pullSyncChanges(cursor, limit, expectedUserId);
     }
 
     public PokeFolioApiResponse resolveCatalogCard(String cardReferenceJson) throws IOException {
+        return resolveCatalogCard(cardReferenceJson, null);
+    }
+
+    PokeFolioApiResponse resolveCatalogCard(String cardReferenceJson, UUID expectedUserId)
+            throws IOException {
         throwIfClosed();
         return client == null
                 ? unavailableResponse()
-                : client.resolveCatalogCard(cardReferenceJson);
+                : client.resolveCatalogCard(cardReferenceJson, expectedUserId);
     }
 
     public PokeFolioApiResponse getCatalogCard(UUID cardId) throws IOException {
+        return getCatalogCard(cardId, null);
+    }
+
+    PokeFolioApiResponse getCatalogCard(UUID cardId, UUID expectedUserId) throws IOException {
         throwIfClosed();
         return client == null
                 ? unavailableResponse()
-                : client.getCatalogCard(cardId);
+                : client.getCatalogCard(cardId, expectedUserId);
     }
 
     private PokeFolioAuthenticationResult unavailableAuthentication() {

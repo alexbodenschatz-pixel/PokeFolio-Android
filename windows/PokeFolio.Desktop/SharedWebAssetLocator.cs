@@ -12,6 +12,8 @@ public sealed class SharedWebAssetLocator
         "grading-core.js",
         "api-core.js",
         "sync-core.js",
+        "cloud-bootstrap.js",
+        "sync-driver.js",
         "variant-core.js",
         "learning-core.js",
         "pokemon-asia-core.js",
@@ -59,7 +61,6 @@ public static class StartupValidator
         foreach (var desktopAsset in new[]
                  {
                      "desktop-bootstrap.js",
-                     "desktop-sync-driver.js",
                      "desktop.css"
                  })
         {

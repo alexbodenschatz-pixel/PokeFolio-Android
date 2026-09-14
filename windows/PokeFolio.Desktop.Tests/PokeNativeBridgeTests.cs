@@ -132,6 +132,7 @@ public sealed class PokeNativeBridgeTests
     public async Task SyncPushCallbackReturnsStructuredDataWithoutCredentials()
     {
         var cloud = new FakeCloudService(Guid.NewGuid());
+        await cloud.LoginAsync("owner@example.test", "valid-password", "Desktop test");
         var context = CreateContext(cloud);
         await using var disposable = context;
         const string batch =
@@ -140,7 +141,7 @@ public sealed class PokeNativeBridgeTests
         context.Bridge.pushSyncOperations(batch, "sync-push-1");
 
         Callback callback = await context.Callbacks.NextAsync();
-        Assert.AreEqual("onDesktopSyncResult", callback.Name);
+        Assert.AreEqual("onPokeSyncResult", callback.Name);
         Assert.AreEqual(batch, cloud.LastPushJson);
         Assert.IsFalse(callback.Json.Contains("access-token", StringComparison.Ordinal));
         Assert.IsFalse(callback.Json.Contains("refresh-token", StringComparison.Ordinal));
@@ -158,13 +159,14 @@ public sealed class PokeNativeBridgeTests
     public async Task SyncPullForwardsCursorAndLimitToSharedCloudSession()
     {
         var cloud = new FakeCloudService(Guid.NewGuid());
+        await cloud.LoginAsync("owner@example.test", "valid-password", "Desktop test");
         var context = CreateContext(cloud);
         await using var disposable = context;
 
         context.Bridge.pullSyncChanges("opaque-cursor", 250, "sync-pull-1");
 
         Callback callback = await context.Callbacks.NextAsync();
-        Assert.AreEqual("onDesktopSyncResult", callback.Name);
+        Assert.AreEqual("onPokeSyncResult", callback.Name);
         Assert.AreEqual("opaque-cursor", cloud.LastCursor);
         Assert.AreEqual(250, cloud.LastLimit);
         using var json = JsonDocument.Parse(callback.Json);
@@ -182,6 +184,7 @@ public sealed class PokeNativeBridgeTests
         {
             PushResponse = new PokeFolioApiResponse(200, "not-json")
         };
+        await cloud.LoginAsync("owner@example.test", "valid-password", "Desktop test");
         var context = CreateContext(cloud);
         await using var disposable = context;
 
@@ -199,6 +202,7 @@ public sealed class PokeNativeBridgeTests
     public async Task CatalogBridgeReturnsValidatedTokenFreeResolutionAndLookup()
     {
         var cloud = new FakeCloudService(Guid.NewGuid());
+        await cloud.LoginAsync("owner@example.test", "valid-password", "Desktop test");
         var context = CreateContext(cloud);
         await using var disposable = context;
         const string reference =
@@ -207,7 +211,7 @@ public sealed class PokeNativeBridgeTests
         context.Bridge.resolveCatalogCard(reference, "catalog-resolve-1");
 
         Callback resolved = await context.Callbacks.NextAsync();
-        Assert.AreEqual("onDesktopCatalogResult", resolved.Name);
+        Assert.AreEqual("onPokeCatalogResult", resolved.Name);
         Assert.AreEqual(reference, cloud.LastCatalogReferenceJson);
         Assert.IsFalse(resolved.Json.Contains("access-token", StringComparison.Ordinal));
         Assert.IsFalse(resolved.Json.Contains("refresh-token", StringComparison.Ordinal));
@@ -227,7 +231,7 @@ public sealed class PokeNativeBridgeTests
             "catalog-get-1");
 
         Callback loaded = await context.Callbacks.NextAsync();
-        Assert.AreEqual("onDesktopCatalogResult", loaded.Name);
+        Assert.AreEqual("onPokeCatalogResult", loaded.Name);
         Assert.AreEqual(FakeCloudService.CatalogCardId, cloud.LastCatalogCardId);
         using JsonDocument loadedJson = JsonDocument.Parse(loaded.Json);
         Assert.IsTrue(loadedJson.RootElement.GetProperty("ok").GetBoolean());
@@ -247,6 +251,7 @@ public sealed class PokeNativeBridgeTests
                 201,
                 FakeCloudService.CatalogResolutionBody(created: false))
         };
+        await cloud.LoginAsync("owner@example.test", "valid-password", "Desktop test");
         var context = CreateContext(cloud);
         await using var disposable = context;
 
@@ -452,8 +457,10 @@ public sealed class PokeNativeBridgeTests
 
         public Task<PokeFolioApiResponse> PushSyncOperationsAsync(
             string operationBatchJson,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default,
+            Guid? expectedUserId = null)
         {
+            if (expectedUserId != UserId) throw new InvalidOperationException("Account binding missing.");
             LastPushJson = operationBatchJson;
             return Task.FromResult(PushResponse);
         }
@@ -461,8 +468,10 @@ public sealed class PokeNativeBridgeTests
         public Task<PokeFolioApiResponse> PullSyncChangesAsync(
             string? cursor = null,
             int limit = 100,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default,
+            Guid? expectedUserId = null)
         {
+            if (expectedUserId != UserId) throw new InvalidOperationException("Account binding missing.");
             LastCursor = cursor;
             LastLimit = limit;
             return Task.FromResult(PullResponse);
@@ -470,16 +479,20 @@ public sealed class PokeNativeBridgeTests
 
         public Task<PokeFolioApiResponse> ResolveCatalogCardAsync(
             string cardReferenceJson,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default,
+            Guid? expectedUserId = null)
         {
+            if (expectedUserId != UserId) throw new InvalidOperationException("Account binding missing.");
             LastCatalogReferenceJson = cardReferenceJson;
             return Task.FromResult(ResolveResponse);
         }
 
         public Task<PokeFolioApiResponse> GetCatalogCardAsync(
             Guid cardId,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default,
+            Guid? expectedUserId = null)
         {
+            if (expectedUserId != UserId) throw new InvalidOperationException("Account binding missing.");
             LastCatalogCardId = cardId;
             return Task.FromResult(GetCardResponse);
         }

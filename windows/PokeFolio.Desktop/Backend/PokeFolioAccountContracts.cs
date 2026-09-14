@@ -34,23 +34,27 @@ public interface IPokeFolioSyncService
 {
     Task<PokeFolioApiResponse> PushSyncOperationsAsync(
         string operationBatchJson,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default,
+        Guid? expectedUserId = null);
 
     Task<PokeFolioApiResponse> PullSyncChangesAsync(
         string? cursor = null,
         int limit = 100,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default,
+        Guid? expectedUserId = null);
 }
 
 public interface IPokeFolioCatalogService
 {
     Task<PokeFolioApiResponse> ResolveCatalogCardAsync(
         string cardReferenceJson,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default,
+        Guid? expectedUserId = null);
 
     Task<PokeFolioApiResponse> GetCatalogCardAsync(
         Guid cardId,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default,
+        Guid? expectedUserId = null);
 }
 
 public interface IPokeFolioCloudService :

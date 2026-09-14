@@ -90,7 +90,8 @@ public sealed class PokeFolioApiClient : IDisposable
 
     public async Task<PokeFolioApiResponse> PushSyncOperationsAsync(
         string operationBatchJson,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        Guid? expectedUserId = null)
     {
         byte[] body = PokeFolioApiPayloads.ValidateSyncOperationBatch(operationBatchJson);
         try
@@ -99,7 +100,8 @@ public sealed class PokeFolioApiClient : IDisposable
                 HttpMethod.Post,
                 "/api/v1/sync/operations",
                 body,
-                cancellationToken);
+                cancellationToken,
+                expectedUserId: expectedUserId);
         }
         finally
         {
@@ -110,7 +112,8 @@ public sealed class PokeFolioApiClient : IDisposable
     public async Task<PokeFolioApiResponse> PullSyncChangesAsync(
         string? cursor = null,
         int limit = 100,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        Guid? expectedUserId = null)
     {
         if (limit is < 1 or > 500)
         {
@@ -126,12 +129,18 @@ public sealed class PokeFolioApiClient : IDisposable
         {
             path += "&cursor=" + Uri.EscapeDataString(cursor);
         }
-        return await SendAuthenticatedAsync(HttpMethod.Get, path, body: null, cancellationToken);
+        return await SendAuthenticatedAsync(
+            HttpMethod.Get,
+            path,
+            body: null,
+            cancellationToken,
+            expectedUserId: expectedUserId);
     }
 
     public async Task<PokeFolioApiResponse> ResolveCatalogCardAsync(
         string cardReferenceJson,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        Guid? expectedUserId = null)
     {
         byte[] body = PokeFolioApiPayloads.NormalizeCatalogCardReference(cardReferenceJson);
         try
@@ -141,7 +150,8 @@ public sealed class PokeFolioApiClient : IDisposable
                 "/api/v1/cards/resolve",
                 body,
                 cancellationToken,
-                MaximumCatalogResponseBytes);
+                MaximumCatalogResponseBytes,
+                expectedUserId);
         }
         finally
         {
@@ -151,7 +161,8 @@ public sealed class PokeFolioApiClient : IDisposable
 
     public Task<PokeFolioApiResponse> GetCatalogCardAsync(
         Guid cardId,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        Guid? expectedUserId = null)
     {
         if (cardId == Guid.Empty)
         {
@@ -162,7 +173,8 @@ public sealed class PokeFolioApiClient : IDisposable
             $"/api/v1/cards/{cardId:D}",
             body: null,
             cancellationToken,
-            MaximumCatalogResponseBytes);
+            MaximumCatalogResponseBytes,
+            expectedUserId);
     }
 
     public async Task<PokeFolioLogoutResult> LogoutAsync(
@@ -335,7 +347,8 @@ public sealed class PokeFolioApiClient : IDisposable
         string path,
         byte[]? body,
         CancellationToken cancellationToken,
-        int maximumResponseBytes = MaximumSyncResponseBytes)
+        int maximumResponseBytes = MaximumSyncResponseBytes,
+        Guid? expectedUserId = null)
     {
         ThrowIfDisposed();
         SessionResolution resolution = await EnsureSessionAsync(cancellationToken);
@@ -347,6 +360,7 @@ public sealed class PokeFolioApiClient : IDisposable
                 "",
                 resolution.Problem);
         }
+        if (!BelongsToExpectedUser(current, expectedUserId)) return AccountChanged();
 
         PokeFolioRawResponse response = await transport.SendAsync(
             method,
@@ -370,6 +384,7 @@ public sealed class PokeFolioApiClient : IDisposable
             }
 
             current = refreshed.Session;
+            if (!BelongsToExpectedUser(current, expectedUserId)) return AccountChanged();
             response = await transport.SendAsync(
                 method,
                 path,
@@ -393,6 +408,18 @@ public sealed class PokeFolioApiClient : IDisposable
         {
             CryptographicOperations.ZeroMemory(response.Body);
         }
+    }
+
+    private static bool BelongsToExpectedUser(SessionState session, Guid? expectedUserId) =>
+        expectedUserId is null || session.UserId == expectedUserId.Value;
+
+    private static PokeFolioApiResponse AccountChanged()
+    {
+        var problem = new PokeFolioApiProblem(
+            (int)HttpStatusCode.Conflict,
+            "account_changed",
+            "The authenticated account changed before the request could be sent.");
+        return new PokeFolioApiResponse(problem.Status, "", problem);
     }
 
     private async Task<SessionResolution> EnsureSessionAsync(CancellationToken cancellationToken)

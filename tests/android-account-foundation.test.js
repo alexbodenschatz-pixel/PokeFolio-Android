@@ -84,16 +84,21 @@ test('Android test APK compiles the device-side Keystore roundtrip', () => {
   assert.match(workflow, /app-debug-androidTest\.apk/);
 });
 
-test('Android Activity owns and closes the token-free account bridge', () => {
+test('Android process owns cloud state while Activity owns token-free bridges', () => {
   const activity = read('app/src/main/java/de/pokefolio/app/MainActivity.java');
   const application = read('app/src/main/java/de/pokefolio/app/PokeFolioApplication.java');
   const manifest = read('app/src/main/AndroidManifest.xml');
   assert.match(manifest, /android:name="\.PokeFolioApplication"/);
   assert.match(application, /new PokeFolioCloudService\(/);
-  assert.match(activity, /getApplication\(\)\)\.getCloudService\(\)/);
+  assert.match(application, /new AccountSyncStateStore\(/);
+  assert.match(activity, /application\.getCloudService\(\)/);
+  assert.match(activity, /new PokeFolioCloudBridge\(/);
+  assert.match(activity, /new PokeFolioSyncStateBridge\(/);
   assert.match(activity, /public String getAccountStatus\(\)/);
   assert.match(activity, /public void loginAccount\(/);
   assert.match(activity, /public void restoreAccountSession\(/);
   assert.match(activity, /accountBridge\.close\(\)/);
+  assert.match(activity, /cloudBridge\.close\(\)/);
+  assert.match(activity, /public String loadAccountSyncSnapshot\(\)/);
   assert.doesNotMatch(activity, /getAccessToken\s*\(|getRefreshToken\s*\(/);
 });

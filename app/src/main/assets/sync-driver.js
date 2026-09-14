@@ -1,6 +1,9 @@
 (() => {
   'use strict';
 
+  if (window.PokeSyncClient || !window.PokeAccount
+    || !window.PokeSyncTransport || !window.PokeSyncStorage) return;
+
   const SNAPSHOT_SCHEMA_VERSION = 1;
   const PUSH_BATCH_LIMIT = 100;
   const PULL_PAGE_LIMIT = 500;

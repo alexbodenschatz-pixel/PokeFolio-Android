@@ -7,34 +7,53 @@ namespace PokeFolio.Desktop.Bridge;
 internal sealed class SyncBridgeController : IDisposable
 {
     private readonly IJavaScriptCallbackDispatcher callbacks;
-    private readonly IPokeFolioSyncService sync;
+    private readonly IPokeFolioCloudService cloud;
     private readonly CancellationTokenSource lifetime = new();
     private int disposed;
 
     public SyncBridgeController(
         IJavaScriptCallbackDispatcher callbacks,
-        IPokeFolioSyncService sync)
+        IPokeFolioCloudService cloud)
     {
         this.callbacks = callbacks ?? throw new ArgumentNullException(nameof(callbacks));
-        this.sync = sync ?? throw new ArgumentNullException(nameof(sync));
+        this.cloud = cloud ?? throw new ArgumentNullException(nameof(cloud));
     }
 
-    public void Push(string operationBatchJson, string requestId) =>
+    public void Push(string operationBatchJson, string requestId)
+    {
+        Guid expectedUserId = AuthenticatedUserId();
         _ = RunAsync(
             "push",
             requestId,
-            cancellationToken => sync.PushSyncOperationsAsync(
+            cancellationToken => cloud.PushSyncOperationsAsync(
                 operationBatchJson,
-                cancellationToken));
+                cancellationToken,
+                expectedUserId));
+    }
 
-    public void Pull(string? cursor, int limit, string requestId) =>
+    public void Pull(string? cursor, int limit, string requestId)
+    {
+        Guid expectedUserId = AuthenticatedUserId();
         _ = RunAsync(
             "pull",
             requestId,
-            cancellationToken => sync.PullSyncChangesAsync(
+            cancellationToken => cloud.PullSyncChangesAsync(
                 string.IsNullOrEmpty(cursor) ? null : cursor,
                 limit,
-                cancellationToken));
+                cancellationToken,
+                expectedUserId));
+    }
+
+    private Guid AuthenticatedUserId()
+    {
+        PokeFolioAccountStatus status = cloud.GetStatus();
+        if (!status.Authenticated || status.Session is null || status.Session.UserId == Guid.Empty)
+        {
+            throw new InvalidOperationException(
+                "An authenticated account is required for sync operations.");
+        }
+        return status.Session.UserId;
+    }
 
     private async Task RunAsync(
         string operation,
@@ -53,7 +72,7 @@ internal sealed class SyncBridgeController : IDisposable
                 ("operation", operation),
                 ("success", response.Succeeded),
                 ("status", response.Status));
-            await callbacks.SendAsync("onDesktopSyncResult", new
+            await callbacks.SendAsync("onPokeSyncResult", new
             {
                 requestId = safeRequestId,
                 operation,
@@ -77,7 +96,7 @@ internal sealed class SyncBridgeController : IDisposable
                 "SYNC_OPERATION_FAILED",
                 ("operation", operation),
                 ("type", error.GetType().Name));
-            await callbacks.SendAsync("onDesktopSyncResult", new
+            await callbacks.SendAsync("onPokeSyncResult", new
             {
                 requestId = safeRequestId,
                 operation,

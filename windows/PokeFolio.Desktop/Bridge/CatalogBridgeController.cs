@@ -30,33 +30,52 @@ internal sealed class CatalogBridgeController : IDisposable
     };
 
     private readonly IJavaScriptCallbackDispatcher callbacks;
-    private readonly IPokeFolioCatalogService catalog;
+    private readonly IPokeFolioCloudService cloud;
     private readonly CancellationTokenSource lifetime = new();
     private int disposed;
 
     public CatalogBridgeController(
         IJavaScriptCallbackDispatcher callbacks,
-        IPokeFolioCatalogService catalog)
+        IPokeFolioCloudService cloud)
     {
         this.callbacks = callbacks ?? throw new ArgumentNullException(nameof(callbacks));
-        this.catalog = catalog ?? throw new ArgumentNullException(nameof(catalog));
+        this.cloud = cloud ?? throw new ArgumentNullException(nameof(cloud));
     }
 
-    public void Resolve(string cardReferenceJson, string requestId) =>
+    public void Resolve(string cardReferenceJson, string requestId)
+    {
+        Guid expectedUserId = AuthenticatedUserId();
         _ = RunAsync(
             "resolve",
             requestId,
-            cancellationToken => catalog.ResolveCatalogCardAsync(
+            cancellationToken => cloud.ResolveCatalogCardAsync(
                 cardReferenceJson,
-                cancellationToken));
+                cancellationToken,
+                expectedUserId));
+    }
 
-    public void Get(string cardId, string requestId) =>
+    public void Get(string cardId, string requestId)
+    {
+        Guid expectedUserId = AuthenticatedUserId();
         _ = RunAsync(
             "get",
             requestId,
-            cancellationToken => catalog.GetCatalogCardAsync(
+            cancellationToken => cloud.GetCatalogCardAsync(
                 ParseCardId(cardId),
-                cancellationToken));
+                cancellationToken,
+                expectedUserId));
+    }
+
+    private Guid AuthenticatedUserId()
+    {
+        PokeFolioAccountStatus status = cloud.GetStatus();
+        if (!status.Authenticated || status.Session is null || status.Session.UserId == Guid.Empty)
+        {
+            throw new InvalidOperationException(
+                "An authenticated account is required for catalog operations.");
+        }
+        return status.Session.UserId;
+    }
 
     private async Task RunAsync(
         string operation,
@@ -75,7 +94,7 @@ internal sealed class CatalogBridgeController : IDisposable
                 ("operation", operation),
                 ("success", response.Succeeded),
                 ("status", response.Status));
-            await callbacks.SendAsync("onDesktopCatalogResult", new
+            await callbacks.SendAsync("onPokeCatalogResult", new
             {
                 requestId = safeRequestId,
                 operation,
@@ -99,7 +118,7 @@ internal sealed class CatalogBridgeController : IDisposable
                 "CATALOG_OPERATION_FAILED",
                 ("operation", operation),
                 ("type", error.GetType().Name));
-            await callbacks.SendAsync("onDesktopCatalogResult", new
+            await callbacks.SendAsync("onPokeCatalogResult", new
             {
                 requestId = safeRequestId,
                 operation,

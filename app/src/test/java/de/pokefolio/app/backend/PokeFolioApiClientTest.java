@@ -289,6 +289,43 @@ public final class PokeFolioApiClientTest {
         assertEquals(0, transport.requests.size());
     }
 
+    @Test
+    public void operationBoundToPreviousAccountIsRejectedBeforeNetworkSend() throws Exception {
+        MemoryRefreshTokenStore store = new MemoryRefreshTokenStore();
+        UUID secondUser = UUID.fromString("dddddddd-dddd-dddd-dddd-dddddddddddd");
+        AtomicInteger loginCount = new AtomicInteger();
+        RecordingTransport transport = new RecordingTransport(request -> {
+            if (!"/api/v1/auth/login".equals(request.path)) {
+                throw new IOException("Cross-account operation must not reach the network.");
+            }
+            String session = sessionBody(
+                    DEVICE_ID,
+                    loginCount.incrementAndGet() == 1
+                            ? FIRST_ACCESS_TOKEN : ROTATED_ACCESS_TOKEN,
+                    loginCount.get() == 1 ? FIRST_REFRESH_TOKEN : ROTATED_REFRESH_TOKEN);
+            if (loginCount.get() == 2) {
+                session = session.replace(
+                        PokeFolioApiPayloadsTest.USER_ID.toString(),
+                        secondUser.toString());
+            }
+            return jsonResponse(200, session);
+        });
+        PokeFolioApiClient client = new PokeFolioApiClient(store, transport);
+        client.login("first@example.test", "valid-password", "Pixel test");
+        UUID firstUser = client.getCurrentSession().getUserId();
+        client.login("second@example.test", "valid-password", "Pixel test");
+
+        PokeFolioApiResponse result = client.pushSyncOperations(
+                "{\"operations\":[]}",
+                firstUser);
+
+        assertFalse(result.isSucceeded());
+        assertEquals(409, result.getStatus());
+        assertEquals("account_changed", result.getProblem().getCode());
+        assertEquals(secondUser, client.getCurrentSession().getUserId());
+        assertEquals(2, transport.requests.size());
+    }
+
     private static String sessionBody(
             UUID deviceId,
             String accessToken,

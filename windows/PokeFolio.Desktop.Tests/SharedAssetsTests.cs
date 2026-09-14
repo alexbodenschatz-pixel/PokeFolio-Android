@@ -66,14 +66,10 @@ public sealed class SharedAssetsTests
     {
         var root = TestPaths.RepositoryRoot();
         string bootstrap = File.ReadAllText(Path.Combine(
-            root,
-            "windows",
-            "PokeFolio.Desktop",
-            "WebHost",
-            "desktop-bootstrap.js"));
+            root, "app", "src", "main", "assets", "cloud-bootstrap.js"));
 
         StringAssert.Contains(bootstrap, "Object.defineProperty(window, 'PokeSyncTransport'");
-        StringAssert.Contains(bootstrap, "pendingSyncRequests.size >= 8");
+        StringAssert.Contains(bootstrap, "pending.size >= 8");
         StringAssert.Contains(bootstrap, "nativeHost.pushSyncOperations");
         StringAssert.Contains(bootstrap, "nativeHost.pullSyncChanges");
         StringAssert.Contains(bootstrap, "pokefolio:sync-result");
@@ -88,9 +84,9 @@ public sealed class SharedAssetsTests
     {
         var root = TestPaths.RepositoryRoot();
         string bootstrap = File.ReadAllText(Path.Combine(
-            root, "windows", "PokeFolio.Desktop", "WebHost", "desktop-bootstrap.js"));
+            root, "app", "src", "main", "assets", "cloud-bootstrap.js"));
         string driver = File.ReadAllText(Path.Combine(
-            root, "windows", "PokeFolio.Desktop", "WebHost", "desktop-sync-driver.js"));
+            root, "app", "src", "main", "assets", "sync-driver.js"));
 
         StringAssert.Contains(bootstrap, "Object.defineProperty(window, 'PokeSyncStorage'");
         StringAssert.Contains(bootstrap, "nativeHost.loadAccountSyncSnapshot");
@@ -112,14 +108,10 @@ public sealed class SharedAssetsTests
     {
         var root = TestPaths.RepositoryRoot();
         string bootstrap = File.ReadAllText(Path.Combine(
-            root,
-            "windows",
-            "PokeFolio.Desktop",
-            "WebHost",
-            "desktop-bootstrap.js"));
+            root, "app", "src", "main", "assets", "cloud-bootstrap.js"));
 
         StringAssert.Contains(bootstrap, "Object.defineProperty(window, 'PokeCatalog'");
-        StringAssert.Contains(bootstrap, "pendingCatalogRequests.size >= 8");
+        StringAssert.Contains(bootstrap, "pending.size >= 8");
         StringAssert.Contains(bootstrap, "nativeHost.resolveCatalogCard");
         StringAssert.Contains(bootstrap, "nativeHost.getCatalogCard");
         StringAssert.Contains(bootstrap, "pokefolio:catalog-result");
