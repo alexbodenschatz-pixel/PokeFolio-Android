@@ -124,6 +124,8 @@ The server change log contains user-scoped sequence numbers. A client commits lo
 
 On Windows, the native session selects the account snapshot; WebView JavaScript cannot provide a `userId` or storage key. Queue, cursor, conflict history, entity versions and pulled entities are replaced atomically after every transition in an account-separated `%LOCALAPPDATA%\PokeFolio\Sync` file. Invalid state fails closed and remains recoverable. This file contains no credentials and is outside the generic WebView-addressable local-data namespace. The current whole-snapshot format is bounded to 32 MiB; migration to transactional SQLite must precede workloads that approach that limit or require multiple concurrent desktop processes.
 
+The shared collection-cloud layer only hydrates after a complete idle pull with an empty pending queue. It resolves global card IDs through the token-free catalog facade, links holdings to unbound legacy entries by provider identity plus language/variant/condition, and never rebinds an entry that already belongs to another holding. Local rich scan metadata remains client-side while server quantity, editable fields and version form the synchronization baseline. Quantity differences become ordered signed deltas; supported text/identity edits become optimistic versioned updates. Invalid remote holdings, stale-account responses and snapshots overtaken by a newly queued local operation fail closed without replacing the local cache.
+
 ## Local-data migration
 
 Existing browser collection schema 6 and grading schema 2 are supported migration inputs. Collection schema 6 now follows this non-destructive first-account workflow; grading-state upload remains a later extension:
@@ -137,6 +139,8 @@ Existing browser collection schema 6 and grading schema 2 are supported migratio
 7. mark the local plan complete, but do not delete the legacy collection automatically.
 
 Android and Windows migration fixtures must cover older schemas, malformed records, interruption and retry.
+
+After migration, pulled holdings can therefore render on a second device and later mutations of already linked holdings enter the durable queue automatically. Creating and catalog-resolving a completely new post-migration local holding remains a separate asynchronous outbox increment; until that lands, such unlinked entries remain preserved in their account-local area rather than being guessed or discarded.
 
 ## Scanner and recognition
 

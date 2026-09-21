@@ -569,12 +569,52 @@ function claimLegacyCollection(userId) {
 window.loadCollectionForMigration = loadCollectionForMigration;
 window.claimLegacyCollection = claimLegacyCollection;
 
-function persistCollection(collection) {
+function persistCollection(collection, options = {}) {
+  if (!options.cloudOrigin && window.PokeCollectionCloud) {
+    try {
+      window.PokeCollectionCloud.queueCollectionChanges(loadCollection(), collection);
+    } catch (error) {
+      console.error('[PokeFolio Collection] Cloud-Änderung konnte nicht vorgemerkt werden:', error);
+      alert('Die Änderung wurde nicht gespeichert, weil sie nicht sicher für die Cloud vorgemerkt werden konnte. Bitte erneut versuchen.');
+      return false;
+    }
+  }
   const storageKey = collectionStorageKey();
-  localStorage.setItem(storageKey, JSON.stringify(collection));
-  localStorage.setItem(collectionSchemaKey(storageKey), String(Collection.SCHEMA_VERSION));
+  try {
+    localStorage.setItem(storageKey, JSON.stringify(collection));
+    localStorage.setItem(collectionSchemaKey(storageKey), String(Collection.SCHEMA_VERSION));
+  } catch (error) {
+    console.error('[PokeFolio Collection] Lokaler Speicher konnte nicht aktualisiert werden:', error);
+    alert('Die Sammlung konnte auf diesem Gerät nicht gespeichert werden. Bitte lokalen Speicher prüfen.');
+    return false;
+  }
   window.dispatchEvent(new CustomEvent('pokefolio:collection-changed'));
+  return true;
 }
+
+Object.defineProperty(window, 'PokeCollectionStore', {
+  configurable: false,
+  enumerable: true,
+  writable: false,
+  value: Object.freeze({
+    read(userId) {
+      const normalized = String(userId || '').toLowerCase();
+      if (!UUID_PATTERN.test(normalized) || normalized !== activeCollectionUserId()) {
+        throw new Error('Cloud-Sammlung gehört nicht zum aktiven Konto.');
+      }
+      return JSON.parse(JSON.stringify(loadCollection()));
+    },
+    replaceFromCloud(userId, collection) {
+      const normalized = String(userId || '').toLowerCase();
+      if (!UUID_PATTERN.test(normalized) || normalized !== activeCollectionUserId()) return false;
+      if (!Array.isArray(collection) || collection.length > 100000) {
+        throw new TypeError('Cloud-Sammlung ist ungültig oder zu groß.');
+      }
+      const migrated = Collection.migrateCollection(collection).collection;
+      return persistCollection(migrated, {cloudOrigin: true});
+    }
+  })
+});
 
 function loadGradingState() {
   let raw = null;
@@ -2770,7 +2810,7 @@ function scheduleBulkMetadataRefresh(entry, hints, kind) {
         pricesByVariant: {...(collection[index].pricesByVariant || {}), ...(richer.pricesByVariant || {})},
         metadataUpdatedAt: new Date().toISOString()
       };
-      persistCollection(collection);
+      if (!persistCollection(collection)) throw new Error('Sammlungsmetadaten konnten nicht gespeichert werden.');
       console.debug('[PokeFolio Bulk] METADATA_BACKGROUND_UPDATED collectionKey=' + expectedKey);
     } catch (error) {
       console.warn('[PokeFolio Bulk] METADATA_BACKGROUND_FAILED ' + (error.message || error));
@@ -2935,7 +2975,12 @@ function commitBulkCandidate(candidate, trigger, options = {}) {
   }
   bulkScanLock = gate.lock;
   const saved = Collection.upsertCollection(loadCollection(), entry);
-  persistCollection(saved.collection);
+  if (!persistCollection(saved.collection)) {
+    bulkScanLock = null;
+    setBulkStatus('error', 'Cloud-Speicherung fehlgeschlagen',
+      'Die Karte blieb unverändert. Bitte Synchronisationsstatus prüfen und erneut versuchen.');
+    return false;
+  }
   if (trigger === 'MANUAL_SELECTION' || trigger === 'AUTO_VARIANT_SELECTION') {
     recordLearningSelection(bulkLearningScan, candidate, 'bulk-manual-selection');
   }
@@ -3416,7 +3461,7 @@ $('#saveIdentifiedCard').onclick = () => {
   if (!entry) return;
   if (recognition.accepted) recordLearningSelection(learningScan, recognition, 'single-collection-save');
   const saved = Collection.upsertCollection(loadCollection(), entry);
-  persistCollection(saved.collection);
+  if (!persistCollection(saved.collection)) return;
   recordScanHistory('SAVED', recognition, null);
   const message = saved.action === 'NEW_CARD'
     ? `${saved.entry.name} wurde zur Sammlung hinzugefügt.`
@@ -4923,7 +4968,7 @@ window.adjustDetailQuantity = (encodedId, delta) => {
 window.toggleCollectionFavorite = encodedId => {
   const id = decodeURIComponent(encodedId);
   const collection = loadCollection().map(card => String(card.id) === id ? {...card, favorite: !card.favorite} : card);
-  persistCollection(collection);
+  if (!persistCollection(collection)) return;
   renderCollection();
   openCollectionDetail(encodedId);
 };
@@ -4932,7 +4977,7 @@ window.saveCollectionNotes = encodedId => {
   const id = decodeURIComponent(encodedId);
   const value = $('#collectionDetailNotes').value.trim();
   const collection = loadCollection().map(card => String(card.id) === id ? {...card, collectionNotes: value} : card);
-  persistCollection(collection);
+  if (!persistCollection(collection)) return;
   renderCollection();
   openCollectionDetail(encodedId);
 };
@@ -4960,7 +5005,7 @@ window.changeCollectionVariant = async (encodedId, value) => {
   const localPrice = Variants.priceForVariant(current, value);
   let changed = Collection.changeVariant(loadCollection(), id, value, localPrice);
   if (!changed.entry || changed.action === 'INVALID_VARIANT') return;
-  persistCollection(changed.collection);
+  if (!persistCollection(changed.collection)) return;
 
   const nextIdentity = changed.entry.collectionKey;
   const migratedGrading = Grading.createState(gradingState);
@@ -4979,7 +5024,7 @@ window.changeCollectionVariant = async (encodedId, value) => {
   const freshPrice = await refreshedVariantPrice(changed.entry, value);
   if (!freshPrice) return;
   changed = Collection.changeVariant(loadCollection(), changed.entry.id, value, freshPrice);
-  persistCollection(changed.collection);
+  if (!persistCollection(changed.collection)) return;
   renderCollection();
   openCollectionDetail(encodeURIComponent(String(changed.entry.id)));
 };
@@ -4990,7 +5035,7 @@ window.adjustCardQuantity = (id, delta) => {
   if (!card) return;
   if (delta < 0 && card.quantity === 1 && !confirm(`${card.name} aus der Sammlung entfernen?`)) return;
   const adjusted = Collection.adjustQuantity(current, id, delta);
-  persistCollection(adjusted.collection);
+  if (!persistCollection(adjusted.collection)) return;
   console.debug('[PokeFolio Collection] Menge geändert collectionKey=' + card.collectionKey
     + ' Delta=' + delta + ' Neu=' + (adjusted.entry ? adjusted.entry.quantity : 0));
   renderCollection();
@@ -5001,7 +5046,7 @@ window.delCard = id => {
   const card = current.find(item => String(item.id) === String(id));
   if (!card || !confirm(`${card.name} vollständig aus der Sammlung entfernen?`)) return;
   const collection = current.filter(item => String(item.id) !== String(id));
-  persistCollection(collection);
+  if (!persistCollection(collection)) return;
   closeCollectionDetail();
   renderCollection();
 };

@@ -46,12 +46,21 @@ test('neue Einzel- und Bulk-Scans bewahren die Provider-Kartenidentität für Cl
 
 test('Migrationscore und Konto-UI laden in sicherer Reihenfolge', () => {
   const collection = index.indexOf('collection-core.js');
+  const cloudCore = index.indexOf('collection-cloud-core.js');
   const migration = index.indexOf('account-migration-core.js');
   const account = index.indexOf('android-account-bootstrap.js');
   const syncDriver = index.indexOf('sync-driver.js');
   const application = index.indexOf('app.js');
+  const cloudDriver = index.indexOf('collection-cloud-driver.js');
   const accountUi = index.indexOf('account-ui.js');
-  assert.ok(collection >= 0 && collection < migration);
+  assert.ok(collection >= 0 && collection < cloudCore && cloudCore < migration);
   assert.ok(migration < account && account < syncDriver);
-  assert.ok(syncDriver < application && application < accountUi);
+  assert.ok(syncDriver < application && application < cloudDriver && cloudDriver < accountUi);
+});
+
+test('aktive Sammlung exponiert nur kontogebundenen Cloud-Store und queue-basierte Mutationen', () => {
+  assert.match(app, /Object\.defineProperty\(window, 'PokeCollectionStore'/);
+  assert.match(app, /PokeCollectionCloud\.queueCollectionChanges\(loadCollection\(\), collection\)/);
+  assert.match(app, /persistCollection\(migrated, \{cloudOrigin: true\}\)/);
+  assert.doesNotMatch(app, /PokeCollectionStore[\s\S]{0,300}(accessToken|refreshToken)/);
 });

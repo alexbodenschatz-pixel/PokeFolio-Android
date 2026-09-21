@@ -142,8 +142,10 @@ test('Android index loads platform, cloud and sync layers before application sta
   const cloud = index.indexOf('cloud-bootstrap.js');
   const driver = index.indexOf('sync-driver.js');
   const app = index.indexOf('app.js');
+  const collectionDriver = index.indexOf('collection-cloud-driver.js');
 
   assert.ok(account >= 0 && account < cloud);
   assert.ok(cloud < driver);
   assert.ok(driver < app);
+  assert.ok(app < collectionDriver);
 });

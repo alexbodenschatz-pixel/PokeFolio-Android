@@ -14,6 +14,7 @@
   let activeStatus = account ? safeStatus() : unavailableStatus();
   let migrationRunning = false;
   let message = {kind: '', text: ''};
+  let cloudCollectionState = {phase: ''};
 
   const element = id => document.getElementById(id);
 
@@ -101,7 +102,7 @@
     let holdings = [];
     let status;
     try {
-      holdings = cloudHoldings();
+      holdings = cloudHoldings().filter(holding => Number(holding.quantity) > 0);
       status = sync.status();
     } catch (_) {
       status = {phase: 'storage-error', pending: 0};
@@ -114,8 +115,14 @@
       offline: 'Offline · Änderungen bleiben vorgemerkt', 'storage-error': 'Lokaler Sync-Speicher fehlerhaft'
     };
     const pending = Number(status.pending) || 0;
+    const hydration = {
+      hydrating: ' · Sammlung wird aufgebaut',
+      partial: ` · ${Number(cloudCollectionState.unresolved) || 0} Kartenmetadaten ausstehend`,
+      error: ' · Lokaler Bestand aus Sicherheitsgründen unverändert'
+    };
     element('cloudSyncStatus').textContent = (phases[status.phase] || status.phase || 'Noch nicht bereit')
-      + (pending ? ` · ${pending} ausstehend` : '');
+      + (pending ? ` · ${pending} ausstehend` : '')
+      + (hydration[cloudCollectionState.phase] || '');
   }
 
   function renderMigration() {
@@ -445,6 +452,10 @@
     renderAccount();
   });
   window.addEventListener('pokefolio:sync-state', renderAccount);
+  window.addEventListener('pokefolio:cloud-collection-state', event => {
+    cloudCollectionState = event && event.detail || {phase: ''};
+    renderCloudStatus();
+  });
   window.addEventListener('pokefolio:collection-changed', renderAccount);
 
   renderAccount();

@@ -128,11 +128,16 @@ public sealed class SharedAssetsTests
         string index = File.ReadAllText(Path.Combine(assets, "index.html"));
         string accountUi = File.ReadAllText(Path.Combine(assets, "account-ui.js"));
         string migration = File.ReadAllText(Path.Combine(assets, "account-migration-core.js"));
+        string collectionCloud = File.ReadAllText(Path.Combine(assets, "collection-cloud-driver.js"));
 
         Assert.IsTrue(index.IndexOf("account-migration-core.js", StringComparison.Ordinal)
             < index.IndexOf("app.js", StringComparison.Ordinal));
         Assert.IsTrue(index.IndexOf("app.js", StringComparison.Ordinal)
             < index.IndexOf("account-ui.js", StringComparison.Ordinal));
+        Assert.IsTrue(index.IndexOf("collection-cloud-core.js", StringComparison.Ordinal)
+            < index.IndexOf("app.js", StringComparison.Ordinal));
+        Assert.IsTrue(index.IndexOf("app.js", StringComparison.Ordinal)
+            < index.IndexOf("collection-cloud-driver.js", StringComparison.Ordinal));
         StringAssert.Contains(accountUi, "window.PokeAccount");
         StringAssert.Contains(accountUi, "window.PokeCatalog");
         StringAssert.Contains(accountUi, "window.PokeSyncClient");
@@ -140,9 +145,13 @@ public sealed class SharedAssetsTests
         StringAssert.Contains(accountUi, "claimLegacyCollection");
         StringAssert.Contains(migration, "deterministicUuid");
         StringAssert.Contains(migration, "holding.quantityDelta");
+        StringAssert.Contains(collectionCloud, "queueCollectionChanges");
+        StringAssert.Contains(collectionCloud, "store.replaceFromCloud");
         Assert.IsFalse(accountUi.Contains("accessToken", StringComparison.Ordinal));
         Assert.IsFalse(accountUi.Contains("refreshToken", StringComparison.Ordinal));
         Assert.IsFalse(migration.Contains("accessToken", StringComparison.Ordinal));
         Assert.IsFalse(migration.Contains("refreshToken", StringComparison.Ordinal));
+        Assert.IsFalse(collectionCloud.Contains("accessToken", StringComparison.Ordinal));
+        Assert.IsFalse(collectionCloud.Contains("refreshToken", StringComparison.Ordinal));
     }
 }
