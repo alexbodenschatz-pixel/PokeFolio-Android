@@ -119,4 +119,30 @@ public sealed class SharedAssetsTests
         Assert.IsFalse(bootstrap.Contains("refreshToken", StringComparison.Ordinal));
         Assert.IsFalse(bootstrap.Contains("localStorage", StringComparison.Ordinal));
     }
+
+    [TestMethod]
+    public void SharedAccountUiKeepsCredentialsNativeAndMigrationExplicit()
+    {
+        var root = TestPaths.RepositoryRoot();
+        string assets = Path.Combine(root, "app", "src", "main", "assets");
+        string index = File.ReadAllText(Path.Combine(assets, "index.html"));
+        string accountUi = File.ReadAllText(Path.Combine(assets, "account-ui.js"));
+        string migration = File.ReadAllText(Path.Combine(assets, "account-migration-core.js"));
+
+        Assert.IsTrue(index.IndexOf("account-migration-core.js", StringComparison.Ordinal)
+            < index.IndexOf("app.js", StringComparison.Ordinal));
+        Assert.IsTrue(index.IndexOf("app.js", StringComparison.Ordinal)
+            < index.IndexOf("account-ui.js", StringComparison.Ordinal));
+        StringAssert.Contains(accountUi, "window.PokeAccount");
+        StringAssert.Contains(accountUi, "window.PokeCatalog");
+        StringAssert.Contains(accountUi, "window.PokeSyncClient");
+        StringAssert.Contains(accountUi, "window.confirm");
+        StringAssert.Contains(accountUi, "claimLegacyCollection");
+        StringAssert.Contains(migration, "deterministicUuid");
+        StringAssert.Contains(migration, "holding.quantityDelta");
+        Assert.IsFalse(accountUi.Contains("accessToken", StringComparison.Ordinal));
+        Assert.IsFalse(accountUi.Contains("refreshToken", StringComparison.Ordinal));
+        Assert.IsFalse(migration.Contains("accessToken", StringComparison.Ordinal));
+        Assert.IsFalse(migration.Contains("refreshToken", StringComparison.Ordinal));
+    }
 }

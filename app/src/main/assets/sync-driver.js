@@ -21,6 +21,7 @@
   let phase = 'signed-out';
   let lastErrorType = null;
   let pullFailureCount = 0;
+  let continuationPending = false;
   let started = false;
 
   const isObject = value => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -79,6 +80,7 @@
     rejected: snapshot ? snapshot.state.rejected.length : 0,
     entities: snapshot ? Object.keys(snapshot.entities).length : 0,
     cursorAvailable: Boolean(snapshot && snapshot.state.cursor),
+    continuationPending,
     lastErrorType
   });
 
@@ -159,6 +161,7 @@
     if (!activeUserId || !snapshot) return publicStatus();
     if (window.navigator && window.navigator.onLine === false) {
       phase = 'offline';
+      continuationPending = false;
       lastErrorType = 'offline';
       emit();
       schedule(OFFLINE_RETRY_MS);
@@ -169,6 +172,7 @@
     const runGeneration = generation;
     const sync = core();
     phase = 'syncing';
+    continuationPending = false;
     lastErrorType = null;
     emit();
 
@@ -233,6 +237,7 @@
       }
       pullFailureCount = 0;
       phase = 'idle';
+      continuationPending = pushLimitReached || pullLimitReached;
       lastErrorType = null;
       emit();
       scheduleFromState(pushLimitReached || pullLimitReached);
@@ -242,12 +247,14 @@
       assertCurrent(runUserId, runGeneration);
       if (errorType === 'storage') {
         phase = 'storage-error';
+        continuationPending = false;
         lastErrorType = errorType;
         emit();
         return publicStatus();
       }
       pullFailureCount = Math.min(pullFailureCount + 1, 20);
       phase = 'retry';
+      continuationPending = false;
       lastErrorType = errorType;
       emit();
       schedule(sync.retryDelay(pullFailureCount));
@@ -276,6 +283,7 @@
     activeUserId = userId;
     snapshot = null;
     pullFailureCount = 0;
+    continuationPending = false;
     lastErrorType = null;
     if (!userId) {
       phase = 'signed-out';
@@ -294,25 +302,78 @@
     }
   };
 
-  const enqueue = operation => {
+  const enqueueMany = operations => {
     if (!activeUserId || !snapshot) {
       throw new Error('Fuer Offline-Aenderungen ist ein angemeldetes Konto erforderlich.');
     }
+    if (!Array.isArray(operations) || operations.length < 1 || operations.length > 100) {
+      throw new TypeError('Ein lokaler Sync-Batch muss 1 bis 100 Operationen enthalten.');
+    }
     const runUserId = activeUserId;
     const runGeneration = generation;
-    const result = core().enqueue(snapshot.state, operation, Date.now());
-    if (result.queued) {
-      persistTransition(result.state, snapshot.entities, runUserId, runGeneration);
+    let nextState = snapshot.state;
+    let queued = 0;
+    operations.forEach(operation => {
+      const result = core().enqueue(nextState, operation, Date.now());
+      nextState = result.state;
+      if (result.queued) queued++;
+    });
+    if (queued) {
+      persistTransition(nextState, snapshot.entities, runUserId, runGeneration);
       schedule(0);
     }
-    return Object.freeze({queued: result.queued, status: publicStatus()});
+    return Object.freeze({queued, status: publicStatus()});
+  };
+
+  const enqueue = operation => {
+    const result = enqueueMany([operation]);
+    return Object.freeze({queued: result.queued === 1, status: result.status});
+  };
+
+  const entities = entityType => {
+    if (!snapshot) return Object.freeze([]);
+    const normalizedType = String(entityType || '').trim().toLowerCase();
+    if (!/^[a-z][a-z0-9.-]{0,79}$/.test(normalizedType)) {
+      throw new TypeError('Der Cloud-Entitätstyp ist ungültig.');
+    }
+    const prefix = normalizedType + ':';
+    const values = Object.entries(snapshot.entities)
+      .filter(([key]) => key.startsWith(prefix))
+      .map(([, value]) => Object.freeze(JSON.parse(JSON.stringify(value))));
+    return Object.freeze(values);
+  };
+
+  const inspectOperations = operationIds => {
+    if (!snapshot) throw new Error('Der lokale Sync-Snapshot ist nicht bereit.');
+    if (!Array.isArray(operationIds) || operationIds.length > 10000) {
+      throw new TypeError('Die Liste der Sync-Operationen ist ungültig.');
+    }
+    const ids = operationIds.map(value => {
+      const id = String(value || '').toLowerCase();
+      if (!uuidPattern.test(id) || id === '00000000-0000-0000-0000-000000000000') {
+        throw new TypeError('Eine Sync-Operation besitzt keine gültige UUID.');
+      }
+      return id;
+    });
+    const pending = new Set(snapshot.state.pending.map(entry => entry.operation.operationId));
+    const conflicts = new Set(snapshot.state.conflicts.map(entry => entry.operation.operationId));
+    const rejected = new Set(snapshot.state.rejected.map(entry => entry.operation.operationId));
+    const results = ids.map(operationId => Object.freeze({
+      operationId,
+      state: pending.has(operationId) ? 'queued'
+        : conflicts.has(operationId) ? 'conflict'
+          : rejected.has(operationId) ? 'rejected' : 'complete'
+    }));
+    return Object.freeze(results);
   };
 
   Object.defineProperty(window, 'PokeSyncClient', {
     configurable: false,
     enumerable: true,
     writable: false,
-    value: Object.freeze({enqueue, syncNow, status: publicStatus})
+    value: Object.freeze({
+      enqueue, enqueueMany, syncNow, status: publicStatus, entities, inspectOperations
+    })
   });
 
   window.addEventListener('pokefolio:account-state', event => {

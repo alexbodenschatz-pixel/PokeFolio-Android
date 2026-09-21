@@ -9,8 +9,12 @@ const Collection = window.PokeCollection;
 const Learning = window.PokeLearning;
 const Grading = window.PokeGrading;
 const BulkFast = window.PokeBulkFast;
+const AccountMigration = window.PokeAccountMigration;
 const RecognitionMode = BulkFast.RecognitionMode;
 const BULK_IDENTITY_CACHE_KEY = 'pokefolio_bulk_identity_cache_v1';
+const LEGACY_COLLECTION_KEY = 'pf_collection';
+const LEGACY_COLLECTION_OWNER_KEY = 'pf_legacy_collection_owner_v1';
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 let selectedTcg = 'auto';
 let recognizedTcg = 'pokemon';
@@ -502,27 +506,74 @@ function activeRecognitionLanguage() {
   return scanMode === 'bulk' ? $('#bulkLang').value : $('#lang').value;
 }
 
-function loadCollection() {
+function activeCollectionUserId() {
+  try {
+    const status = window.PokeAccount && window.PokeAccount.status();
+    const userId = status && status.authenticated && status.session
+      && String(status.session.userId || '').toLowerCase();
+    return userId && UUID_PATTERN.test(userId) ? userId : '';
+  } catch (_) {
+    return '';
+  }
+}
+
+function collectionStorageKey() {
+  const userId = activeCollectionUserId();
+  const owner = String(localStorage.getItem(LEGACY_COLLECTION_OWNER_KEY) || '').toLowerCase();
+  return AccountMigration.collectionStorageKey(userId, owner);
+}
+
+function collectionSchemaKey(storageKey) {
+  return storageKey === LEGACY_COLLECTION_KEY ? 'pf_collection_schema' : storageKey + ':schema';
+}
+
+function loadCollectionFrom(storageKey) {
   let raw = [];
   try {
-    raw = JSON.parse(localStorage.getItem('pf_collection') || '[]');
+    raw = JSON.parse(localStorage.getItem(storageKey) || '[]');
   } catch (error) {
     console.error('[PokeFolio Collection] Migration konnte Altbestand nicht lesen:', error.message);
   }
   const migrated = Collection.migrateCollection(raw);
-  const storedSchema = Number(localStorage.getItem('pf_collection_schema') || 0);
+  const schemaKey = collectionSchemaKey(storageKey);
+  const storedSchema = Number(localStorage.getItem(schemaKey) || 0);
   if (migrated.changed || storedSchema !== Collection.SCHEMA_VERSION) {
-    localStorage.setItem('pf_collection', JSON.stringify(migrated.collection));
-    localStorage.setItem('pf_collection_schema', String(Collection.SCHEMA_VERSION));
+    localStorage.setItem(storageKey, JSON.stringify(migrated.collection));
+    localStorage.setItem(schemaKey, String(Collection.SCHEMA_VERSION));
     console.debug('[PokeFolio Collection] Migration Schema=' + Collection.SCHEMA_VERSION
       + ' Einträge=' + migrated.collection.length + ' Zusammengeführt=' + migrated.mergedCount);
   }
   return migrated.collection;
 }
 
+function loadCollection() {
+  return loadCollectionFrom(collectionStorageKey());
+}
+
+function loadCollectionForMigration(userId) {
+  const normalizedUserId = String(userId || '').toLowerCase();
+  if (!UUID_PATTERN.test(normalizedUserId)) throw new TypeError('Konto-ID ist ungültig.');
+  const owner = String(localStorage.getItem(LEGACY_COLLECTION_OWNER_KEY) || '').toLowerCase();
+  return loadCollectionFrom(AccountMigration.migrationCollectionStorageKey(normalizedUserId, owner));
+}
+
+function claimLegacyCollection(userId) {
+  const normalizedUserId = String(userId || '').toLowerCase();
+  if (!UUID_PATTERN.test(normalizedUserId)) throw new TypeError('Konto-ID ist ungültig.');
+  const owner = String(localStorage.getItem(LEGACY_COLLECTION_OWNER_KEY) || '').toLowerCase();
+  if (owner && owner !== normalizedUserId) return false;
+  if (!owner) localStorage.setItem(LEGACY_COLLECTION_OWNER_KEY, normalizedUserId);
+  return true;
+}
+
+window.loadCollectionForMigration = loadCollectionForMigration;
+window.claimLegacyCollection = claimLegacyCollection;
+
 function persistCollection(collection) {
-  localStorage.setItem('pf_collection', JSON.stringify(collection));
-  localStorage.setItem('pf_collection_schema', String(Collection.SCHEMA_VERSION));
+  const storageKey = collectionStorageKey();
+  localStorage.setItem(storageKey, JSON.stringify(collection));
+  localStorage.setItem(collectionSchemaKey(storageKey), String(Collection.SCHEMA_VERSION));
+  window.dispatchEvent(new CustomEvent('pokefolio:collection-changed'));
 }
 
 function loadGradingState() {
@@ -2828,6 +2879,7 @@ function bulkCollectionEntry(candidate) {
   let setId = candidate.setId || candidate.setCode || '';
   if (!setId && candidate.tcg === 'onepiece') setId = String(number).split('-')[0];
   if (!setId && candidate.tcg === 'yugioh') setId = String(number).replace(/-\w+$/, '');
+  const catalogReference = AccountMigration && AccountMigration.referenceForCandidate(candidate);
   return {
     id: Date.now(),
     tcg: candidate.tcg || recognizedTcg,
@@ -2854,6 +2906,7 @@ function bulkCollectionEntry(candidate) {
     variantSelectionConfirmed: Variants.explicitVariant(candidate) !== 'unknown',
     recognitionConfidence: Number(candidate.identificationScore) || Number(candidate.confidence) || 0,
     recognitionSource: candidate.source || '',
+    ...(catalogReference ? {catalogReference} : {}),
     date: new Date().toISOString()
   };
 }
@@ -3290,6 +3343,7 @@ function identifiedCollectionEntry(candidate) {
   const value = candidate || recognition;
   if (!value) return null;
   if (Variants.explicitVariant(value) === 'unknown') return null;
+  const catalogReference = AccountMigration && AccountMigration.referenceForCandidate(value);
   return {
     ...value,
     id: value.collectionId || value.localCollectionId || Date.now(),
@@ -3307,7 +3361,8 @@ function identifiedCollectionEntry(candidate) {
     date: new Date().toISOString(),
     image: value.imageSmall || value.imageLarge || '',
     imageSmall: value.imageSmall || '',
-    imageLarge: value.imageLarge || ''
+    imageLarge: value.imageLarge || '',
+    ...(catalogReference ? {catalogReference} : {})
   };
 }
 
@@ -4954,3 +5009,13 @@ window.delCard = id => {
 loadCollection();
 renderDashboard();
 renderLearningSettings();
+
+function refreshAccountCollectionScope() {
+  renderDashboard();
+  if ($('#collection').classList.contains('active')) renderCollection();
+  if ($('#portfolio').classList.contains('active')) renderPortfolio();
+  if ($('#grading').classList.contains('active')) renderGradingPage();
+}
+
+window.addEventListener('pokefolio:account-state', refreshAccountCollectionScope);
+window.addEventListener('pokefolio:collection-scope', refreshAccountCollectionScope);

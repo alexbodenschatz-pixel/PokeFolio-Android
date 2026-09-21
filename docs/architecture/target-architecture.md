@@ -126,14 +126,15 @@ On Windows, the native session selects the account snapshot; WebView JavaScript 
 
 ## Local-data migration
 
-Existing browser collection schema 6 and grading schema 2 are supported migration inputs. First account sign-in follows a non-destructive workflow:
+Existing browser collection schema 6 and grading schema 2 are supported migration inputs. Collection schema 6 now follows this non-destructive first-account workflow; grading-state upload remains a later extension:
 
 1. detect and validate local state;
-2. create an exportable local backup and checksum;
-3. show an import preview and conflict policy;
-4. upload an idempotent migration batch;
-5. compare accepted/rejected counts and server checksum;
-6. mark local data as migrated, but do not delete it automatically.
+2. show an explicit import preview and keep incomplete identities local;
+3. bind the legacy area to the confirmed account so other accounts and signed-out guests cannot render or overwrite it;
+4. derive deterministic account/legacy-key UUIDv8 holding and operation IDs before network work;
+5. resolve allowlisted provider identities to global catalog IDs and choose create or atomic quantity delta against pulled cloud holdings;
+6. persist operations in bounded atomic queue batches and compare completed/conflict/rejected states;
+7. mark the local plan complete, but do not delete the legacy collection automatically.
 
 Android and Windows migration fixtures must cover older schemas, malformed records, interruption and retry.
 
@@ -159,7 +160,7 @@ The Android API client keeps access tokens only in native process memory, expose
 
 One process-scoped Android cloud service owns that session for the account, catalog and sync bridges. Activity recreation reuses this single session gate, preventing two host instances from racing the same rotating refresh credential. The packaged WebView receives only token-free account/device state and strictly validated catalog/sync envelopes through bounded callback facades; it cannot select a user ID or read credentials. A configured unauthenticated host attempts one persistent-session restore during page startup. Activity shutdown drops its pending callbacks without closing the process-owned session.
 
-Android and Windows load one shared cloud facade and one shared persistent sync driver. The driver persists each enqueue, push reconciliation, retry transition and pull page before exposing the new state. Native storage derives its partition only from the authenticated session, hashes the UUID used in filenames, validates the exact snapshot envelope and replaces files atomically. Corrupt snapshots fail closed and remain available for recovery. Android stores this token-free state below its application files directory; refresh credentials remain separately encrypted under `noBackupFilesDir`. Visible account controls, legacy-collection migration and cloud-entity rendering remain separate product steps.
+Android and Windows load one shared cloud facade and one shared persistent sync driver. The driver persists each enqueue, push reconciliation, retry transition and pull page before exposing the new state. Native storage derives its partition only from the authenticated session, hashes the UUID used in filenames, validates the exact snapshot envelope and replaces files atomically. Corrupt snapshots fail closed and remain available for recovery. Android stores this token-free state below its application files directory; refresh credentials remain separately encrypted under `noBackupFilesDir`. Shared visible account controls and the non-destructive collection migration are implemented. Rendering a fully hydrated cloud collection on a second device, continuously translating post-migration local edits into sync operations, and grading-state migration remain subsequent product steps.
 
 ## Observability and operations
 

@@ -10,7 +10,7 @@ This roadmap converts the product brief into testable increments. Status values 
 | 2. Architecture stabilization | In progress | ADRs, host security, contract boundaries, supported runtime plan |
 | 3. Regression baseline | In progress | Test taxonomy, CI parity, real-image manifest, Android instrumented-test APK and E2E harness foundations |
 | 4-6. Backend, accounts, isolation | In progress | PostgreSQL integration and cross-user denial tests pass; recovery and deployment remain |
-| 7-10. Sync, clients, shared core | In progress | Server push/pull, shared offline queue/driver, protected native credentials, token-free Android/Windows account/sync/catalog bridges, account-separated atomic queue persistence, restart/retry/account-switch tests, stable account identity and global provider-card resolution are tested; account UI, legacy migration and visible cloud-collection wiring remain |
+| 7-10. Sync, clients, shared core | In progress | Server push/pull, shared offline queue/driver, protected native credentials, token-free Android/Windows bridges, visible account UI, account-separated persistence and idempotent non-destructive local collection migration are tested; hydrated cloud-collection rendering and continuous local-edit translation remain |
 | 11-21. Product and scanner slices | Not started | Slice-specific tests/builds/benchmarks |
 | 22-25. Audit through release | Not started | Security review, restore test, RC builds and release report |
 

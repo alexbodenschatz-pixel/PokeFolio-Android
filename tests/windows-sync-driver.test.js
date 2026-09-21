@@ -20,7 +20,10 @@ const driver = fs.readFileSync(driverPath, 'utf8');
 const userA = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 const userB = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
 const operationId = '10000000-0000-0000-0000-000000000001';
+const operationId2 = '10000000-0000-0000-0000-000000000002';
+const operationId3 = '10000000-0000-0000-0000-000000000003';
 const holdingId = '20000000-0000-0000-0000-000000000001';
+const holdingId2 = '20000000-0000-0000-0000-000000000002';
 
 function emptySnapshot() {
   return {schemaVersion: 1, state: Sync.createState(), entities: Sync.createEntities()};
@@ -177,6 +180,106 @@ test('Windows Sync-Treiber persistiert Offline-Operation vor jedem Transportvers
   assert.equal(runtime.saved.length, 1);
   assert.equal(runtime.saved[0].userId, userA);
   assert.equal(runtime.saved[0].value.state.pending[0].operation.operationId, operationId);
+});
+
+test('Windows Sync-Treiber schreibt lokale Migrations-Batches in genau einem atomaren Snapshot', () => {
+  const runtime = createRuntime({snapshots: {[userA]: emptySnapshot()}});
+
+  const result = runtime.window.PokeSyncClient.enqueueMany([{
+    operationId,
+    kind: 'holding.quantityDelta',
+    holdingId,
+    delta: 1
+  }, {
+    operationId: operationId2,
+    kind: 'holding.quantityDelta',
+    holdingId: holdingId2,
+    delta: 2
+  }]);
+
+  assert.equal(result.queued, 2);
+  assert.equal(runtime.saved.length, 1);
+  assert.deepEqual(runtime.saved[0].value.state.pending.map(entry => entry.operation.operationId),
+    [operationId, operationId2]);
+});
+
+test('Windows Sync-Treiber exponiert nur Kopien von Cloud-Entitäten und sichere Operationszustände', () => {
+  const snapshot = pendingSnapshot();
+  snapshot.entities['holding:' + holdingId] = {
+    id: holdingId,
+    cardId: '30000000-0000-0000-0000-000000000001',
+    quantity: 4
+  };
+  snapshot.state.conflicts.push({
+    operation: {
+      operationId: operationId2,
+      kind: 'holding.quantityDelta',
+      holdingId,
+      delta: 1
+    },
+    problem: {code: 'version_conflict'},
+    recordedAt: 1000
+  });
+  snapshot.state.rejected.push({
+    operation: {
+      operationId: operationId3,
+      kind: 'holding.quantityDelta',
+      holdingId,
+      delta: 1
+    },
+    problem: {code: 'validation_failed'},
+    recordedAt: 1000
+  });
+  const runtime = createRuntime({snapshots: {[userA]: snapshot}});
+
+  const holdings = runtime.window.PokeSyncClient.entities('holding');
+  assert.throws(() => { holdings[0].quantity = 999; }, TypeError);
+  assert.equal(runtime.window.PokeSyncClient.entities('holding')[0].quantity, 4);
+  assert.deepEqual(
+    Array.from(runtime.window.PokeSyncClient.inspectOperations([
+      operationId, operationId2, operationId3,
+      '10000000-0000-0000-0000-000000000004'
+    ]), result => result.state),
+    ['queued', 'conflict', 'rejected', 'complete']);
+});
+
+test('Windows Sync-Treiber signalisiert begrenzte Pull-Fortsetzung statt unvollständigen Bestand', async () => {
+  let pulls = 0;
+  const runtime = createRuntime({
+    snapshots: {[userA]: emptySnapshot()},
+    pull({requestId, respond}) {
+      pulls++;
+      const id = `40000000-0000-0000-0000-${String(pulls).padStart(12, '0')}`;
+      respond({
+        requestId,
+        operation: 'pull',
+        ok: true,
+        status: 200,
+        data: {
+          changes: [{
+            sequence: pulls,
+            entityType: 'holding',
+            entityId: id,
+            action: 'upsert',
+            version: 1,
+            payload: {id, quantity: 1, version: 1},
+            occurredAt: '2026-09-21T12:00:00Z'
+          }],
+          nextCursor: `cursor-${pulls}`,
+          hasMore: pulls <= 10
+        },
+        problem: null
+      });
+    }
+  });
+
+  const first = await runtime.window.PokeSyncClient.syncNow();
+  assert.equal(pulls, 10);
+  assert.equal(first.continuationPending, true);
+  const second = await runtime.window.PokeSyncClient.syncNow();
+  assert.equal(pulls, 11);
+  assert.equal(second.continuationPending, false);
+  assert.equal(second.entities, 11);
 });
 
 test('Windows Sync-Treiber behaelt fehlgeschlagene Operation mit begrenztem Retry', async () => {

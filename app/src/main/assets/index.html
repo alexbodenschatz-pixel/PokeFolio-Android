@@ -336,6 +336,50 @@
   <section id="settings" class="page">
     <h1>System</h1>
     <div class="card"><b>PokéFolio v0.16.5</b><p>Pokémon-Erkennung liest zuerst die untere linke Kartennummer; Voll-OCR und Artwork folgen nur bei Bedarf.</p></div>
+    <section id="accountSettings" class="card account-settings" aria-labelledby="accountTitle">
+      <div class="account-heading">
+        <div><span class="section-kicker">Cloud-Konto</span><h2 id="accountTitle">Ein Konto · alle Geräte</h2></div>
+        <span id="accountStatusBadge" class="status neutral">Wird geprüft</span>
+      </div>
+      <p id="accountConfigurationMessage" class="muted">Die native Kontokonfiguration wird geprüft.</p>
+      <form id="accountSignedOut" class="account-form" hidden>
+        <label>E-Mail<input id="accountEmail" type="email" inputmode="email" autocomplete="username" maxlength="320" required></label>
+        <label>Passwort<input id="accountPassword" type="password" autocomplete="current-password" minlength="12" maxlength="200" required></label>
+        <label>Gerätename<input id="accountDeviceName" type="text" autocomplete="off" maxlength="120" required></label>
+        <div class="account-actions">
+          <button id="accountLogin" type="submit" class="primary">Anmelden</button>
+          <button id="accountRegister" type="button" class="secondary">Konto erstellen</button>
+        </div>
+      </form>
+      <div id="accountSignedIn" class="account-session" hidden>
+        <dl>
+          <div><dt>Konto-ID</dt><dd id="accountUserId">–</dd></div>
+          <div><dt>Dieses Gerät</dt><dd id="accountDevice">–</dd></div>
+          <div><dt>Backend</dt><dd id="accountBackend">–</dd></div>
+        </dl>
+        <div class="account-actions">
+          <button id="accountSyncNow" type="button" class="primary compact">Jetzt synchronisieren</button>
+          <button id="accountLogout" type="button" class="secondary compact">Abmelden</button>
+        </div>
+      </div>
+      <p id="accountMessage" class="account-message" role="status" aria-live="polite"></p>
+      <section id="legacyMigration" class="legacy-migration" hidden aria-labelledby="legacyMigrationTitle">
+        <div class="legacy-migration-heading">
+          <div><span class="section-kicker">Sichere Datenübernahme</span><h3 id="legacyMigrationTitle">Lokale Sammlung mit diesem Konto verbinden</h3></div>
+          <span id="legacyMigrationStatus" class="status neutral">Bereit</span>
+        </div>
+        <p id="legacyMigrationSummary"></p>
+        <progress id="legacyMigrationProgress" value="0" max="1" hidden></progress>
+        <div id="legacyMigrationIssues" class="account-message" hidden></div>
+        <button id="legacyMigrationStart" type="button" class="primary">Lokale Sammlung übernehmen</button>
+        <small>Erst nach deiner Bestätigung. Die lokale Sammlung bleibt als wiederherstellbare Kopie erhalten und wird nicht automatisch gelöscht.</small>
+      </section>
+      <section id="cloudCollectionStatus" class="cloud-collection-status" hidden>
+        <span class="section-kicker">Cloud-Sammlung</span>
+        <div><b id="cloudHoldingCount">0</b><span>Positionen</span><b id="cloudCardCount">0</b><span>Karten</span></div>
+        <small id="cloudSyncStatus">Noch nicht synchronisiert</small>
+      </section>
+    </section>
     <section class="card learning-settings" aria-labelledby="learningTitle">
       <span class="section-kicker">KI &amp; Erkennung</span>
       <div class="learning-title"><div><h2 id="learningTitle">PokéFolio Lernsystem</h2><p>Bestätigte Scans und eindeutige Korrekturen verbessern die Erkennung ausschließlich lokal auf diesem Gerät.</p></div><span id="learningStatus" class="status good">Lokales Lernen aktiv</span></div>
@@ -392,9 +436,11 @@
 <script src="learning-core.js"></script>
 <script src="grading-core.js"></script>
 <script src="bulk-fast-core.js"></script>
+<script src="account-migration-core.js"></script>
 <script src="android-account-bootstrap.js"></script>
 <script src="cloud-bootstrap.js"></script>
 <script src="sync-driver.js"></script>
 <script src="app.js"></script>
+<script src="account-ui.js"></script>
 </body>
 </html>

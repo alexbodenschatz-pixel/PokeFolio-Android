@@ -14,6 +14,8 @@ public sealed class SharedWebAssetLocator
         "sync-core.js",
         "cloud-bootstrap.js",
         "sync-driver.js",
+        "account-migration-core.js",
+        "account-ui.js",
         "variant-core.js",
         "learning-core.js",
         "pokemon-asia-core.js",
