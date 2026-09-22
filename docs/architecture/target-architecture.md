@@ -164,7 +164,7 @@ The Android API client keeps access tokens only in native process memory, expose
 
 One process-scoped Android cloud service owns that session for the account, catalog and sync bridges. Activity recreation reuses this single session gate, preventing two host instances from racing the same rotating refresh credential. The packaged WebView receives only token-free account/device state and strictly validated catalog/sync envelopes through bounded callback facades; it cannot select a user ID or read credentials. A configured unauthenticated host attempts one persistent-session restore during page startup. Activity shutdown drops its pending callbacks without closing the process-owned session.
 
-Android and Windows load one shared cloud facade and one shared persistent sync driver. The driver persists each enqueue, push reconciliation, retry transition and pull page before exposing the new state. Native storage derives its partition only from the authenticated session, hashes the UUID used in filenames, validates the exact snapshot envelope and replaces files atomically. Corrupt snapshots fail closed and remain available for recovery. Android stores this token-free state below its application files directory; refresh credentials remain separately encrypted under `noBackupFilesDir`. Shared visible account controls and the non-destructive collection migration are implemented. Rendering a fully hydrated cloud collection on a second device, continuously translating post-migration local edits into sync operations, and grading-state migration remain subsequent product steps.
+Android and Windows load one shared cloud facade and one shared persistent sync driver. The driver persists each enqueue, push reconciliation, retry transition and pull page before exposing the new state. Native storage derives its partition only from the authenticated session, hashes the UUID used in filenames, validates the exact snapshot envelope and replaces files atomically. Corrupt snapshots fail closed and remain available for recovery. Android stores this token-free state below its application files directory; refresh credentials remain separately encrypted under `noBackupFilesDir`. Shared visible account controls, non-destructive collection migration, second-device hydration, linked edits and the post-migration scan create outbox are implemented. Physical Android/Windows end-to-end automation, background scheduling and grading-state migration remain subsequent product steps.
 
 ## Observability and operations
 
@@ -179,6 +179,7 @@ The architecture foundation is complete only when:
 - both existing client builds remain green;
 - API and sync contracts have executable compatibility tests;
 - a PostgreSQL-backed multi-user integration test proves isolation and atomic concurrent quantity updates;
+- a PostgreSQL-backed API end-to-end test proves the 20-scan Android-to-Windows flow, reverse edits and cross-account denial;
 - existing local state has a tested, non-destructive migration path;
 - authentication tokens never enter WebView storage;
 - both clients can consume the same account collection and recover from offline retry;

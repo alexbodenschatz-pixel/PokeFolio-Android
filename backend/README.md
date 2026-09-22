@@ -25,7 +25,7 @@ The `BoundHoldingQuantity` migration preserves legacy rows above the current one
 
 `Auth:SigningKey` is mandatory and intentionally empty in `appsettings.json`. Supply it through environment or deployment secret configuration. Access tokens are short-lived JWTs with validated signature, issuer, audience and expiry. Refresh tokens are random opaque values; only SHA-256 hashes are stored. Every access token is also checked against its active server-side device session, so logout and replay revocation take effect immediately.
 
-The PostgreSQL integration test creates and removes a uniquely named temporary database. Point `POKEFOLIO_TEST_POSTGRES` at an administrative test server to enable it; without that variable, the test is reported as skipped. Never point it at a production server.
+The PostgreSQL integration tests create and remove uniquely named temporary databases. They include an API-level end-to-end scenario in which Android uploads 20 scans, Windows hydrates and edits the same account, Android receives the changes, and a second account remains empty and cannot address the first account's holding. Point `POKEFOLIO_TEST_POSTGRES` at an administrative test server to enable them; without that variable, they are reported as skipped. Never point it at a production server.
 
 ```powershell
 $env:POKEFOLIO_TEST_POSTGRES='Host=localhost;Port=5432;Database=postgres;Username=postgres'

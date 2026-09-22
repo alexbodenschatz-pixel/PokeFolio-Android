@@ -26,7 +26,7 @@ using PokeFolio.Infrastructure.Sync;
 namespace PokeFolio.Backend.Tests;
 
 [TestClass]
-public sealed class PostgreSqlIsolationTests
+public sealed partial class PostgreSqlIsolationTests
 {
     private static readonly byte[] ApiSigningKey = Enumerable.Range(1, 32)
         .Select(value => (byte)value)
