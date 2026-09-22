@@ -9,6 +9,12 @@
   const providerIdPattern = /^[a-z0-9_.:/-]+$/;
   const maximumOperations = 100;
   const maximumDelta = 10000;
+  const cloudLanguages = Object.freeze({
+    de: 'de', deu: 'de', en: 'en', eng: 'en', ja: 'ja', jpn: 'ja',
+    fr: 'fr', fra: 'fr', it: 'it', ita: 'it', es: 'es', spa: 'es',
+    ko: 'ko', kor: 'ko', 'zh-cn': 'zh-Hans', zhs: 'zh-Hans', zhhans: 'zh-Hans',
+    'zh-tw': 'zh-Hant', zht: 'zh-Hant', zhhant: 'zh-Hant'
+  });
 
   const isObject = value => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
   const clone = value => JSON.parse(JSON.stringify(value));
@@ -45,6 +51,11 @@
     return normalized;
   }
 
+  function cloudLanguageCode(value) {
+    const normalized = String(value || '').trim();
+    return cloudLanguages[normalized.toLowerCase()] || normalized;
+  }
+
   function version(value, label) {
     const normalized = Number(value);
     if (!Number.isSafeInteger(normalized) || normalized < 1) fail(label + ' is invalid.');
@@ -61,7 +72,7 @@
       id: uuid(value.id, 'cloud holding id'),
       cardId: uuid(value.cardId, 'cloud holding card id'),
       variantId: value.variantId == null ? null : uuid(value.variantId, 'cloud variant id'),
-      language: boundedText(value.language, 40, 'cloud holding language'),
+      language: cloudLanguageCode(boundedText(value.language, 40, 'cloud holding language')),
       variant: boundedText(value.variant, 80, 'cloud holding variant'),
       condition: boundedText(value.condition, 40, 'cloud holding condition'),
       quantity: quantity(value.quantity, 'cloud holding quantity'),
@@ -91,7 +102,13 @@
   }
 
   function localLanguage(card) {
-    return String(card && (card.lang || card.language) || '').trim().toLowerCase();
+    return cloudLanguageCode(card && (card.lang || card.language));
+  }
+
+  function displayLanguage(value) {
+    if (value === 'zh-Hans') return 'zh-CN';
+    if (value === 'zh-Hant') return 'zh-TW';
+    return value;
   }
 
   function localVariant(card) {
@@ -117,7 +134,7 @@
   function identityMatches(card, holding, catalog) {
     const sameCloudCard = String(card && card.cloudCardId || '').toLowerCase() === holding.cardId;
     return (sameCloudCard || catalog && referenceMatches(card, catalog))
-      && localLanguage(card) === holding.language.toLowerCase()
+      && localLanguage(card) === holding.language
       && localVariant(card) === holding.variant
       && localCondition(card) === holding.condition;
   }
@@ -161,8 +178,8 @@
       setId: catalog ? catalog.setCode : existing.setId,
       setCode: catalog ? catalog.setCode : existing.setCode,
       number: catalog ? catalog.number : existing.number,
-      lang: language,
-      language,
+      lang: displayLanguage(language),
+      language: displayLanguage(language),
       printingVariant: variant,
       variant,
       condition,
@@ -314,9 +331,113 @@
     return operations;
   }
 
+  function deterministicId(factory, seed, label) {
+    if (typeof factory !== 'function') fail('deterministic id factory is required.');
+    return uuid(factory(seed), label);
+  }
+
+  function markCreateIntent(entry, accountUserId, idFactory) {
+    if (!isObject(entry)) fail('collection entry must be an object.');
+    const userId = uuid(accountUserId, 'account user id');
+    const localId = boundedText(String(entry.id == null ? '' : entry.id), 240, 'local entry id');
+    const collectionKey = boundedText(entry.collectionKey, 1024, 'local collection key');
+    const createKey = deterministicId(
+      idFactory,
+      `pokefolio-live-entry-v1|${userId}|${localId}|${collectionKey}`,
+      'cloud create key');
+    return {
+      ...entry,
+      cloudSyncIntent: 'create',
+      cloudSyncState: 'pending',
+      cloudCreateKey: createKey
+    };
+  }
+
+  function buildCreateIntent(entry, catalogValue, cloudHoldings, accountUserId, idFactory) {
+    if (!isObject(entry) || entry.cloudSyncIntent !== 'create') {
+      fail('collection entry has no cloud create intent.');
+    }
+    const userId = uuid(accountUserId, 'account user id');
+    const createKey = uuid(entry.cloudCreateKey, 'cloud create key');
+    const catalog = normalizeCatalogCard(catalogValue);
+    if (!referenceMatches(entry, catalog)) {
+      fail('resolved catalog card does not match the queued provider identity.');
+    }
+    const language = localLanguage(entry);
+    const variant = localVariant(entry);
+    const condition = localCondition(entry);
+    const count = quantity(entry.quantity, 'create intent quantity');
+    const notes = localNotes(entry);
+    if (!language || !variant || !condition || count < 1
+      || notes !== null && (typeof notes !== 'string' || notes.length > 10000)) {
+      fail('collection create intent is incomplete.');
+    }
+    const holdings = (Array.isArray(cloudHoldings) ? cloudHoldings : []).map(normalizeHolding);
+    const existing = holdings.find(holding => identityMatches(entry, holding, catalog)) || null;
+    const seed = `pokefolio-live-v1|${userId}|${createKey}`;
+    const operations = [];
+    let holdingId;
+    let cloudVersion;
+    let cloudQuantity;
+    if (existing) {
+      holdingId = existing.id;
+      cloudVersion = existing.version;
+      cloudQuantity = existing.quantity;
+      let remaining = count;
+      let index = 0;
+      while (remaining > 0) {
+        const delta = Math.min(remaining, maximumDelta);
+        operations.push({
+          operationId: deterministicId(idFactory, `${seed}|merge|${index++}`, 'merge operation id'),
+          kind: 'holding.quantityDelta',
+          holdingId,
+          delta
+        });
+        remaining -= delta;
+      }
+    } else {
+      holdingId = deterministicId(idFactory, `${seed}|holding`, 'new holding id');
+      cloudVersion = 1;
+      cloudQuantity = count;
+      operations.push({
+        operationId: deterministicId(idFactory, `${seed}|create`, 'create operation id'),
+        kind: 'holding.create',
+        holding: {
+          id: holdingId,
+          cardId: catalog.id,
+          variantId: null,
+          language,
+          variant,
+          condition,
+          quantity: count,
+          notes
+        }
+      });
+    }
+    if (operations.length > maximumOperations) fail('cloud create intent exceeds 100 operations.');
+    return {
+      operations,
+      link: {
+        cloudHoldingId: holdingId,
+        cloudCardId: catalog.id,
+        cloudVariantId: existing ? existing.variantId : null,
+        cloudVersion,
+        cloudQuantity,
+        cloudLanguage: language,
+        cloudVariant: variant,
+        cloudCondition: condition,
+        cloudNotes: notes,
+        cloudDirty: false,
+        cloudConflict: false
+      }
+    };
+  }
+
   return {
     hydrate,
     createOperations,
+    markCreateIntent,
+    buildCreateIntent,
     normalizeHolding,
     normalizeCatalogCard
   };

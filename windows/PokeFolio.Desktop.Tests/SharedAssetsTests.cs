@@ -147,6 +147,8 @@ public sealed class SharedAssetsTests
         StringAssert.Contains(migration, "holding.quantityDelta");
         StringAssert.Contains(collectionCloud, "queueCollectionChanges");
         StringAssert.Contains(collectionCloud, "store.replaceFromCloud");
+        StringAssert.Contains(collectionCloud, "core.buildCreateIntent");
+        StringAssert.Contains(collectionCloud, "cloudCreateOperationIds");
         Assert.IsFalse(accountUi.Contains("accessToken", StringComparison.Ordinal));
         Assert.IsFalse(accountUi.Contains("refreshToken", StringComparison.Ordinal));
         Assert.IsFalse(migration.Contains("accessToken", StringComparison.Ordinal));

@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const Core = require('../app/src/main/assets/collection-cloud-core.js');
+const Migration = require('../app/src/main/assets/account-migration-core.js');
 
 const source = fs.readFileSync(path.join(
   __dirname, '..', 'app', 'src', 'main', 'assets', 'collection-cloud-driver.js'), 'utf8');
@@ -28,36 +29,51 @@ function runtime(options = {}) {
   let ready = options.ready === undefined ? true : options.ready;
   let currentUserId = options.userId === undefined ? userId : options.userId;
   let uuidSequence = 0;
+  const operationStates = new Map();
+  let storedCollection = JSON.parse(JSON.stringify(options.collection || []));
+  let storedHoldings = JSON.parse(JSON.stringify(options.holdings === undefined ? [{
+    id: holdingId, cardId, variantId: null, language: 'de', variant: 'normal',
+    condition: 'near-mint', quantity: 2, notes: null, version: 1,
+    createdAt: '2026-09-21T10:00:00Z', updatedAt: '2026-09-21T10:00:00Z'
+  }] : options.holdings));
+  const catalogCard = id => ({
+    id, provider: 'tcgdex', providerCardId: 'sv8-141', tcg: 'pokemon',
+    name: 'Pikachu ex', setCode: 'SV8', number: '141/191'
+  });
   const window = {
     PokeCollectionCloudCore: Core,
+    PokeAccountMigration: Migration,
     PokeAccount: {
       status: () => currentUserId
         ? ({authenticated: true, session: {userId: currentUserId}})
         : ({authenticated: false, session: null})
     },
     PokeCatalog: {
-      get: options.getCatalog || (async id => ({ok: true, data: {
-        id, provider: 'tcgdex', providerCardId: 'sv8-141', tcg: 'pokemon',
-        name: 'Pikachu ex', setCode: 'SV8', number: '141/191'
-      }}))
+      get: options.getCatalog || (async id => ({ok: true, data: catalogCard(id)})),
+      resolve: options.resolveCatalog || (async () => ({
+        ok: true,
+        data: {card: catalogCard(cardId), created: true, metadataMatched: true}
+      }))
     },
     PokeSyncClient: {
       status: () => ({ready, phase: 'idle', pending, continuationPending: false}),
-      entities: () => [{
-        id: holdingId, cardId, variantId: null, language: 'de', variant: 'normal',
-        condition: 'near-mint', quantity: 2, notes: null, version: 1,
-        createdAt: '2026-09-21T10:00:00Z', updatedAt: '2026-09-21T10:00:00Z'
-      }],
+      entities: () => JSON.parse(JSON.stringify(storedHoldings)),
       enqueueMany: operations => {
         queued.push(...operations);
+        operations.forEach(operation => operationStates.set(operation.operationId, 'queued'));
         pending += operations.length;
         return {queued: operations.length};
-      }
+      },
+      inspectOperations: operationIds => operationIds.map(operationId => ({
+        operationId,
+        state: operationStates.get(operationId) || 'complete'
+      }))
     },
     PokeCollectionStore: {
-      read: () => [],
+      read: () => JSON.parse(JSON.stringify(storedCollection)),
       replaceFromCloud: (id, collection) => {
         writes.push({id, collection});
+        storedCollection = JSON.parse(JSON.stringify(collection));
         return true;
       }
     },
@@ -81,8 +97,28 @@ function runtime(options = {}) {
     window,
     writes,
     queued,
+    collection: () => JSON.parse(JSON.stringify(storedCollection)),
+    setHoldings: value => { storedHoldings = JSON.parse(JSON.stringify(value)); },
     setPending: value => { pending = value; },
     setReady: value => { ready = value; },
+    resolveOperations: (state, addEntities = true) => {
+      operationStates.forEach((_, operationId) => operationStates.set(operationId, state));
+      if (state === 'complete' && addEntities) {
+        queued.filter(operation => operation.kind === 'holding.create').forEach(operation => {
+          const value = operation.holding;
+          if (!storedHoldings.some(holding => holding.id === value.id)) {
+            storedHoldings.push({
+              ...value,
+              version: 1,
+              createdAt: '2026-09-21T10:00:00Z',
+              updatedAt: '2026-09-21T10:00:00Z'
+            });
+          }
+        });
+      }
+      pending = 0;
+      window.dispatchEvent(new TestEvent('pokefolio:sync-state'));
+    },
     setUser: value => {
       currentUserId = value;
       window.dispatchEvent(new TestEvent('pokefolio:account-state'));
@@ -169,4 +205,117 @@ test('Antwort des vorherigen Kontos wird nach Kontowechsel niemals geschrieben',
 
   assert.equal(app.writes.some(write => write.id === userId), false);
   assert.equal(app.writes.some(write => write.id === userB), true);
+});
+
+test('Create-Outbox löst neuen Scan auf, queued Create und verknüpft lokalen Eintrag', async () => {
+  const app = runtime({holdings: [], collection: [{
+    id: 77,
+    tcg: 'pokemon',
+    name: 'Pikachu ex',
+    setId: 'SV8',
+    number: '141/191',
+    lang: 'de',
+    printingVariant: 'normal',
+    condition: 'near-mint',
+    quantity: 2,
+    collectionNotes: '',
+    catalogReference: {
+      provider: 'tcgdex', providerCardId: 'sv8-141', tcg: 'pokemon',
+      name: 'Pikachu ex', setCode: 'SV8', number: '141/191'
+    },
+    cloudSyncIntent: 'create',
+    cloudSyncState: 'pending',
+    cloudCreateKey: '50000000-0000-0000-0000-000000000001'
+  }]});
+  await new Promise(resolve => setTimeout(resolve, 80));
+
+  assert.equal(app.queued.length, 1);
+  assert.equal(app.queued[0].kind, 'holding.create');
+  assert.equal(app.queued[0].holding.quantity, 2);
+  assert.equal(app.collection()[0].cloudSyncState, 'queued');
+  assert.equal(app.collection()[0].cloudHoldingId, app.queued[0].holding.id);
+
+  app.resolveOperations('complete');
+  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.equal(app.collection()[0].cloudSyncIntent, undefined);
+  assert.equal(app.collection()[0].cloudSyncState, undefined);
+});
+
+test('Abgelehnter Create-Outbox-Eintrag bleibt lokal und wird nicht hydriert', async () => {
+  const entry = {
+    id: 78,
+    tcg: 'pokemon', name: 'Pikachu ex', setId: 'SV8', number: '141/191',
+    lang: 'de', printingVariant: 'normal', condition: 'near-mint', quantity: 5,
+    collectionNotes: '',
+    catalogReference: {
+      provider: 'tcgdex', providerCardId: 'sv8-141', tcg: 'pokemon',
+      name: 'Pikachu ex', setCode: 'SV8', number: '141/191'
+    },
+    cloudSyncIntent: 'create', cloudSyncState: 'pending',
+    cloudCreateKey: '50000000-0000-0000-0000-000000000002'
+  };
+  const app = runtime({holdings: [], collection: [entry]});
+  await new Promise(resolve => setTimeout(resolve, 80));
+  app.resolveOperations('rejected');
+  await new Promise(resolve => setTimeout(resolve, 50));
+
+  assert.equal(app.collection()[0].quantity, 5);
+  assert.equal(app.collection()[0].cloudSyncState, 'rejected');
+  assert.equal(app.collection()[0].cloudSyncIntent, 'create');
+});
+
+test('Fehlender gezogener Serverdatensatz wird nicht fälschlich als Create-Erfolg gewertet', async () => {
+  const entry = {
+    id: 79,
+    tcg: 'pokemon', name: 'Pikachu ex', setId: 'SV8', number: '141/191',
+    lang: 'de', printingVariant: 'normal', condition: 'near-mint', quantity: 1,
+    collectionNotes: '',
+    catalogReference: {
+      provider: 'tcgdex', providerCardId: 'sv8-141', tcg: 'pokemon',
+      name: 'Pikachu ex', setCode: 'SV8', number: '141/191'
+    },
+    cloudSyncIntent: 'create', cloudSyncState: 'pending',
+    cloudCreateKey: '50000000-0000-0000-0000-000000000003'
+  };
+  const app = runtime({holdings: [], collection: [entry]});
+  await new Promise(resolve => setTimeout(resolve, 80));
+  app.resolveOperations('complete', false);
+  await new Promise(resolve => setTimeout(resolve, 50));
+
+  assert.equal(app.collection()[0].cloudSyncState, 'queued');
+  assert.equal(app.collection()[0].cloudSyncIntent, 'create');
+  assert.equal(app.collection()[0].quantity, 1);
+});
+
+test('Paralleler Create auf anderem Gerät wird nach Pull automatisch als Delta fortgesetzt', async () => {
+  const entry = {
+    id: 80,
+    tcg: 'pokemon', name: 'Pikachu ex', setId: 'SV8', number: '141/191',
+    lang: 'de', printingVariant: 'normal', condition: 'near-mint', quantity: 2,
+    collectionNotes: '',
+    catalogReference: {
+      provider: 'tcgdex', providerCardId: 'sv8-141', tcg: 'pokemon',
+      name: 'Pikachu ex', setCode: 'SV8', number: '141/191'
+    },
+    cloudSyncIntent: 'create', cloudSyncState: 'pending',
+    cloudCreateKey: '50000000-0000-0000-0000-000000000004'
+  };
+  const competingHolding = {
+    id: holdingId, cardId, variantId: null, language: 'de', variant: 'normal',
+    condition: 'near-mint', quantity: 1, notes: null, version: 1,
+    createdAt: '2026-09-21T10:00:00Z', updatedAt: '2026-09-21T10:00:00Z'
+  };
+  const app = runtime({holdings: [], collection: [entry]});
+  await new Promise(resolve => setTimeout(resolve, 80));
+  assert.equal(app.queued[0].kind, 'holding.create');
+
+  app.setHoldings([competingHolding]);
+  app.resolveOperations('conflict', false);
+  await new Promise(resolve => setTimeout(resolve, 100));
+
+  assert.equal(app.queued.length, 2);
+  assert.equal(app.queued[1].kind, 'holding.quantityDelta');
+  assert.equal(app.queued[1].holdingId, holdingId);
+  assert.equal(app.queued[1].delta, 2);
+  assert.equal(app.collection()[0].cloudCreateMode, 'merge');
 });

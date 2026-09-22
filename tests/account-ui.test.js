@@ -64,3 +64,10 @@ test('aktive Sammlung exponiert nur kontogebundenen Cloud-Store und queue-basier
   assert.match(app, /persistCollection\(migrated, \{cloudOrigin: true\}\)/);
   assert.doesNotMatch(app, /PokeCollectionStore[\s\S]{0,300}(accessToken|refreshToken)/);
 });
+
+test('neue Einzel- und Bulk-Einträge erhalten erst nach sicherer Kontozuordnung einen Create-Outbox-Marker', () => {
+  assert.match(app, /function cloudCreateAllowed\(/);
+  assert.match(app, /AccountMigration\.parsePlan\(raw, userId\)\.status === 'complete'/);
+  assert.match(app, /CollectionCloudCore\.markCreateIntent\(/);
+  assert.equal((app.match(/saved = markCloudCreateIntent\(saved, previousCollection\)/g) || []).length, 2);
+});

@@ -118,6 +118,12 @@
     const hydration = {
       hydrating: ' · Sammlung wird aufgebaut',
       partial: ` · ${Number(cloudCollectionState.unresolved) || 0} Kartenmetadaten ausstehend`,
+      'outbox-pending': ' · Neue Scans werden vorbereitet',
+      'outbox-syncing': ` · ${Number(cloudCollectionState.pendingCreates) || 0} neue Scans werden katalogisiert`,
+      'outbox-partial': ` · ${Number(cloudCollectionState.failed) || 0} neue Scans warten auf Wiederholung`,
+      'outbox-queued': ' · Neue Scans sicher vorgemerkt',
+      'outbox-confirmed': ' · Neue Scans bestätigt',
+      'outbox-review': ` · ${Number(cloudCollectionState.failed) || 0} neue Scans benötigen Prüfung`,
       error: ' · Lokaler Bestand aus Sicherheitsgründen unverändert'
     };
     element('cloudSyncStatus').textContent = (phases[status.phase] || status.phase || 'Noch nicht bereit')

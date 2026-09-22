@@ -3,6 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const Cloud = require('../app/src/main/assets/collection-cloud-core.js');
+const Migration = require('../app/src/main/assets/account-migration-core.js');
 
 const holdingId = '10000000-0000-0000-0000-000000000001';
 const holdingId2 = '10000000-0000-0000-0000-000000000002';
@@ -181,4 +182,73 @@ test('Doppelte Cloud-Holding-Zuordnung wird vor dem Queue-Schreiben abgelehnt', 
   const entry = local({cloudHoldingId: holdingId, cloudCardId: cardId, cloudVersion: 1});
   assert.throws(() => Cloud.createOperations([entry, {...entry, id: 99}], [], () =>
     '30000000-0000-0000-0000-000000000001'), /duplicate cloud holding/);
+});
+
+test('Neuer Scan erzeugt kontogebundene deterministische Create-Operation', () => {
+  const entry = local({
+    id: 99,
+    quantity: 3,
+    lang: 'zh-CN',
+    language: 'zh-CN',
+    cloudSyncIntent: 'create',
+    cloudCreateKey: '50000000-0000-0000-0000-000000000001'
+  });
+  const first = Cloud.buildCreateIntent(
+    entry, catalog(), [], '40000000-0000-0000-0000-000000000001',
+    Migration.deterministicUuid);
+  const replay = Cloud.buildCreateIntent(
+    entry, catalog(), [], '40000000-0000-0000-0000-000000000001',
+    Migration.deterministicUuid);
+
+  assert.deepEqual(first, replay);
+  assert.equal(first.operations.length, 1);
+  assert.equal(first.operations[0].kind, 'holding.create');
+  assert.equal(first.operations[0].holding.language, 'zh-Hans');
+  assert.equal(first.operations[0].holding.quantity, 3);
+  assert.equal(first.link.cloudHoldingId, first.operations[0].holding.id);
+  assert.match(first.operations[0].operationId, /^[0-9a-f-]{36}$/);
+});
+
+test('Outbox-Marker ist für Eintrag und Konto stabil, aber kontogetrennt', () => {
+  const entry = local({id: 123, collectionKey: 'pokemon|sv8|141|de|normal'});
+  const userA = '40000000-0000-0000-0000-000000000001';
+  const userB = '40000000-0000-0000-0000-000000000002';
+  const first = Cloud.markCreateIntent(entry, userA, Migration.deterministicUuid);
+  const replay = Cloud.markCreateIntent(entry, userA, Migration.deterministicUuid);
+  const otherAccount = Cloud.markCreateIntent(entry, userB, Migration.deterministicUuid);
+
+  assert.equal(first.cloudSyncIntent, 'create');
+  assert.equal(first.cloudSyncState, 'pending');
+  assert.equal(first.cloudCreateKey, replay.cloudCreateKey);
+  assert.notEqual(first.cloudCreateKey, otherAccount.cloudCreateKey);
+  assert.equal(entry.cloudCreateKey, undefined);
+});
+
+test('Neuer Scan dedupliziert gegen bestehendes Holding mit begrenzten atomaren Deltas', () => {
+  const entry = local({
+    quantity: 10001,
+    cloudSyncIntent: 'create',
+    cloudCreateKey: '50000000-0000-0000-0000-000000000001'
+  });
+  const result = Cloud.buildCreateIntent(
+    entry, catalog(), [holding({quantity: 2, version: 9})],
+    '40000000-0000-0000-0000-000000000001', Migration.deterministicUuid);
+
+  assert.deepEqual(result.operations.map(operation => operation.kind),
+    ['holding.quantityDelta', 'holding.quantityDelta']);
+  assert.deepEqual(result.operations.map(operation => operation.delta), [10000, 1]);
+  assert.equal(result.link.cloudHoldingId, holdingId);
+  assert.equal(result.link.cloudVersion, 9);
+  assert.equal(result.link.cloudQuantity, 2);
+});
+
+test('Create-Outbox lehnt vertauschte Provider-Antwort geschlossen ab', () => {
+  const entry = local({
+    cloudSyncIntent: 'create',
+    cloudCreateKey: '50000000-0000-0000-0000-000000000001'
+  });
+  assert.throws(() => Cloud.buildCreateIntent(
+    entry, catalog({providerCardId: 'other-card'}), [],
+    '40000000-0000-0000-0000-000000000001', Migration.deterministicUuid),
+  /does not match/);
 });

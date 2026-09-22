@@ -115,7 +115,9 @@ test('Grading aus Sammlung übernimmt Identität ohne erneute OCR', () => {
 test('Bulk-Scan bleibt ohne Front-Back-Grading und verwendet weiter Quantity', () => {
   const bulk = index.match(/<div id="bulkScanPanel"[\s\S]*?<section id="collection"/)[0];
   assert.doesNotMatch(bulk, /gradingBack|PokéFolio Vorgrading starten/);
-  assert.match(app, /Collection\.upsertCollection\(loadCollection\(\), entry\)/);
+  assert.match(app, /let saved = Collection\.upsertCollection\(previousCollection, entry\)/);
+  assert.match(app, /saved = markCloudCreateIntent\(saved, previousCollection\)/);
+  assert.match(app, /BulkFast\.recordAccepted\(bulkFastSession, saved\.entry\.collectionKey/);
 });
 
 test('eine Karte mit quantity 5 und einem Grading behält quantity 5', () => {

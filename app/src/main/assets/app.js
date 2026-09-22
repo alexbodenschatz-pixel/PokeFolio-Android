@@ -10,10 +10,12 @@ const Learning = window.PokeLearning;
 const Grading = window.PokeGrading;
 const BulkFast = window.PokeBulkFast;
 const AccountMigration = window.PokeAccountMigration;
+const CollectionCloudCore = window.PokeCollectionCloudCore;
 const RecognitionMode = BulkFast.RecognitionMode;
 const BULK_IDENTITY_CACHE_KEY = 'pokefolio_bulk_identity_cache_v1';
 const LEGACY_COLLECTION_KEY = 'pf_collection';
 const LEGACY_COLLECTION_OWNER_KEY = 'pf_legacy_collection_owner_v1';
+const LEGACY_MIGRATION_PLAN_PREFIX = 'pf_legacy_collection_migration_v1:';
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 let selectedTcg = 'auto';
@@ -564,6 +566,34 @@ function claimLegacyCollection(userId) {
   if (owner && owner !== normalizedUserId) return false;
   if (!owner) localStorage.setItem(LEGACY_COLLECTION_OWNER_KEY, normalizedUserId);
   return true;
+}
+
+function cloudCreateAllowed(currentCollection, userId) {
+  if (!userId || !UUID_PATTERN.test(userId)) return false;
+  if (collectionStorageKey() !== LEGACY_COLLECTION_KEY) return true;
+  if (!Array.isArray(currentCollection) || currentCollection.length === 0) {
+    return claimLegacyCollection(userId);
+  }
+  try {
+    const raw = localStorage.getItem(LEGACY_MIGRATION_PLAN_PREFIX + userId);
+    return Boolean(raw && AccountMigration.parsePlan(raw, userId).status === 'complete');
+  } catch (_) {
+    return false;
+  }
+}
+
+function markCloudCreateIntent(saved, previousCollection) {
+  const userId = activeCollectionUserId();
+  if (!saved || saved.action !== 'NEW_CARD'
+    || !cloudCreateAllowed(previousCollection, userId)) return saved;
+  const entry = saved.entry;
+  const marked = CollectionCloudCore.markCreateIntent(
+    entry, userId, AccountMigration.deterministicUuid);
+  return {
+    ...saved,
+    entry: marked,
+    collection: saved.collection.map(card => String(card.id) === String(entry.id) ? marked : card)
+  };
 }
 
 window.loadCollectionForMigration = loadCollectionForMigration;
@@ -2974,7 +3004,9 @@ function commitBulkCandidate(candidate, trigger, options = {}) {
     return false;
   }
   bulkScanLock = gate.lock;
-  const saved = Collection.upsertCollection(loadCollection(), entry);
+  const previousCollection = loadCollection();
+  let saved = Collection.upsertCollection(previousCollection, entry);
+  saved = markCloudCreateIntent(saved, previousCollection);
   if (!persistCollection(saved.collection)) {
     bulkScanLock = null;
     setBulkStatus('error', 'Cloud-Speicherung fehlgeschlagen',
@@ -3460,7 +3492,9 @@ $('#saveIdentifiedCard').onclick = () => {
   const entry = identifiedCollectionEntry(recognition);
   if (!entry) return;
   if (recognition.accepted) recordLearningSelection(learningScan, recognition, 'single-collection-save');
-  const saved = Collection.upsertCollection(loadCollection(), entry);
+  const previousCollection = loadCollection();
+  let saved = Collection.upsertCollection(previousCollection, entry);
+  saved = markCloudCreateIntent(saved, previousCollection);
   if (!persistCollection(saved.collection)) return;
   recordScanHistory('SAVED', recognition, null);
   const message = saved.action === 'NEW_CARD'

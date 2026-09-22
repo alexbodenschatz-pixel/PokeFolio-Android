@@ -140,7 +140,7 @@ Existing browser collection schema 6 and grading schema 2 are supported migratio
 
 Android and Windows migration fixtures must cover older schemas, malformed records, interruption and retry.
 
-After migration, pulled holdings can therefore render on a second device and later mutations of already linked holdings enter the durable queue automatically. Creating and catalog-resolving a completely new post-migration local holding remains a separate asynchronous outbox increment; until that lands, such unlinked entries remain preserved in their account-local area rather than being guessed or discarded.
+After migration, pulled holdings can therefore render on a second device and later mutations of already linked holdings enter the durable queue automatically. A completely new post-migration scan receives a persistent, account-bound create intent only after the local area is safely owned. The outbox resolves its allowlisted provider identity, deduplicates against the complete pulled snapshot, and derives holding and operation UUIDs deterministically from the persisted intent key. The intent is cleared only after every operation is no longer pending and the resulting holding is present in the pulled entity snapshot. If another device created the same identity concurrently, a pulled matching holding converts the failed create into deterministic additive deltas; other rejected/conflicting intents remain local and block hydration from silently replacing their quantity.
 
 ## Scanner and recognition
 
