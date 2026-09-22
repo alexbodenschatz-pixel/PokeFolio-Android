@@ -9,6 +9,11 @@ Use a PostgreSQL connection string from environment/secret configuration; do not
 ```powershell
 $env:ConnectionStrings__PokeFolio='Host=localhost;Port=5432;Database=pokefolio;Username=pokefolio;Password=<local-secret>'
 $env:Auth__SigningKey='<base64-encoded-random-secret-with-at-least-32-bytes>'
+$env:PasswordReset__PublicResetUrl='https://app.example.com/reset-password'
+$env:PasswordReset__SmtpHost='smtp.example.com'
+$env:PasswordReset__SmtpUsername='<smtp-user>'
+$env:PasswordReset__SmtpPassword='<smtp-secret>'
+$env:PasswordReset__FromAddress='accounts@example.com'
 dotnet restore backend/PokeFolio.Backend.slnx
 dotnet build backend/PokeFolio.Backend.slnx -c Release --no-restore
 dotnet test backend/PokeFolio.Backend.slnx -c Release --no-build
@@ -24,6 +29,8 @@ The `BoundHoldingQuantity` migration preserves legacy rows above the current one
 `CanonicalizeChangeActions` maps the known legacy `created`/`updated`/`deleted` values to `upsert`/`delete`. It fails closed without altering unknown values if an installation contains an unrecognized action; inspect and explicitly map that data before retrying so a later sync feed cannot emit events outside the API contract.
 
 `Auth:SigningKey` is mandatory and intentionally empty in `appsettings.json`. Supply it through environment or deployment secret configuration. Access tokens are short-lived JWTs with validated signature, issuer, audience and expiry. Refresh tokens are random opaque values; only SHA-256 hashes are stored. Every access token is also checked against its active server-side device session, so logout and replay revocation take effect immediately.
+
+Password reset delivery is disabled unless the public HTTPS reset URL and SMTP host/from address are configured. SMTP credentials are optional only for an authenticated network relay and otherwise must be supplied together through secret configuration. A disabled service returns the same `503 password_reset_unavailable` response before looking up an address. An enabled service returns a neutral `202` for every syntactically valid address. Reset tokens contain 256 bits of randomness, are stored only as SHA-256 hashes, expire after 30 minutes by default and are consumed once; the mail link carries the token in its URL fragment so it is not sent in an HTTP request or referrer. A successful reset revokes every existing device session. Delivery failures invalidate the generated token and are logged without email addresses or token material.
 
 The PostgreSQL integration tests create and remove uniquely named temporary databases. They include an API-level end-to-end scenario in which Android uploads 20 scans, Windows hydrates and edits the same account, Android receives the changes, and a second account remains empty and cannot address the first account's holding. Point `POKEFOLIO_TEST_POSTGRES` at an administrative test server to enable them; without that variable, they are reported as skipped. Never point it at a production server.
 
@@ -49,6 +56,7 @@ dotnet test backend/PokeFolio.Backend.slnx -c Release
 - registration and login use ASP.NET Core Identity password hashing and lockout;
 - device listing and revocation are scoped to the authenticated account, and cross-user device IDs remain undisclosed;
 - password changes require the current password and atomically revoke every other device session;
+- password-reset requests do not disclose account existence, persist only short-lived hashes and revoke every device after one successful confirmation;
 - collection reads use bounded keyset pagination, expose optimistic-concurrency ETags and return no cross-user object signal beyond `404`;
 - collection creation and quantity deltas require stable idempotency UUIDs, emit durable user changes and serialize same-operation retries with PostgreSQL transaction advisory locks;
 - quantity deltas are committed as bounded SQL increments, so concurrent devices accumulate instead of overwriting each other;

@@ -55,7 +55,13 @@ test('API v1 is a parseable OpenAPI 3.1 contract with unique operations', () => 
 });
 
 test('all private operations inherit bearer authentication and never select a user id', () => {
-  const publicOperations = new Set(['registerAccount', 'login', 'refreshSession']);
+  const publicOperations = new Set([
+    'registerAccount',
+    'login',
+    'refreshSession',
+    'requestPasswordReset',
+    'confirmPasswordReset'
+  ]);
   assert.deepEqual(contract.security, [{bearerAuth: []}]);
 
   for (const {route, operation} of operations()) {
@@ -202,4 +208,27 @@ test('auth response exposes stable account identity only as server output', () =
   for (const [name, schema] of requestSchemas) {
     assert.ok(!collectPropertyNames(schema).includes('userId'), name);
   }
+});
+
+test('password reset is public, neutral and never returns credentials', () => {
+  const request = contract.paths['/auth/password/reset/request'].post;
+  const confirm = contract.paths['/auth/password/reset/confirm'].post;
+  assert.deepEqual(request.security, []);
+  assert.deepEqual(confirm.security, []);
+  assert.ok(request.responses['202']);
+  assert.ok(request.responses['503']);
+  assert.ok(confirm.responses['204']);
+  assert.match(request.description, /never exposes whether an account exists/i);
+  assert.match(confirm.description, /revokes every existing device session/i);
+
+  assert.deepEqual(
+    contract.components.schemas.PasswordResetRequestCommand.required,
+    ['email']
+  );
+  assert.deepEqual(
+    contract.components.schemas.PasswordResetConfirmCommand.required,
+    ['email', 'token', 'newPassword']
+  );
+  assert.ok(!request.responses['202'].content);
+  assert.ok(!confirm.responses['204'].content);
 });

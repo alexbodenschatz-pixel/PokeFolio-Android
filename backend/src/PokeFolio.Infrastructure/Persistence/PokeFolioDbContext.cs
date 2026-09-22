@@ -20,6 +20,7 @@ public sealed class PokeFolioDbContext(
     public DbSet<CollectionHolding> CollectionHoldings => Set<CollectionHolding>();
     public DbSet<ConsumedRefreshToken> ConsumedRefreshTokens => Set<ConsumedRefreshToken>();
     public DbSet<DeviceSession> DeviceSessions => Set<DeviceSession>();
+    public DbSet<PasswordResetToken> PasswordResetTokens => Set<PasswordResetToken>();
     public DbSet<ProcessedSyncOperation> ProcessedSyncOperations => Set<ProcessedSyncOperation>();
     public DbSet<UserChange> UserChanges => Set<UserChange>();
 
@@ -96,6 +97,27 @@ public sealed class PokeFolioDbContext(
                 .WithMany()
                 .HasForeignKey(token => new { token.UserId, token.DeviceSessionId })
                 .HasPrincipalKey(device => new { device.UserId, device.Id })
+                .OnDelete(DeleteBehavior.Cascade);
+            entity.HasQueryFilter(token =>
+                CurrentUserId.HasValue && (Guid?)token.UserId == CurrentUserId);
+        });
+
+        builder.Entity<PasswordResetToken>(entity =>
+        {
+            entity.ToTable("password_reset_tokens", "identity");
+            entity.HasKey(token => token.TokenHash);
+            entity.Property(token => token.TokenHash)
+                .HasColumnName("token_hash")
+                .HasMaxLength(64);
+            entity.Property(token => token.UserId).HasColumnName("user_id");
+            entity.Property(token => token.CreatedAt).HasColumnName("created_at");
+            entity.Property(token => token.ExpiresAt).HasColumnName("expires_at");
+            entity.Property(token => token.ConsumedAt).HasColumnName("consumed_at");
+            entity.HasIndex(token => token.ExpiresAt);
+            entity.HasIndex(token => new { token.UserId, token.ConsumedAt });
+            entity.HasOne(token => token.User)
+                .WithMany()
+                .HasForeignKey(token => token.UserId)
                 .OnDelete(DeleteBehavior.Cascade);
             entity.HasQueryFilter(token =>
                 CurrentUserId.HasValue && (Guid?)token.UserId == CurrentUserId);

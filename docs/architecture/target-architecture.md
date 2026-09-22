@@ -67,6 +67,7 @@ Use the framework identity/password-hashing implementation, not a custom passwor
 
 - short-lived access tokens are kept in native protected process/storage boundaries;
 - refresh tokens are high-entropy, rotated on use, stored hashed on the server and grouped in revocable token families;
+- password-reset tokens are high-entropy, short-lived, stored only as hashes, delivered through a configured notifier and atomically consumed before every existing device session is revoked;
 - a device record identifies a user-visible session and stores only necessary metadata;
 - logout revokes the current token family; “logout other devices” revokes all other families;
 - browser `localStorage` never contains bearer or refresh tokens.

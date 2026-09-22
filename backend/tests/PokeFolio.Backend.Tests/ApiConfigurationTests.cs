@@ -48,6 +48,11 @@ public sealed class ApiConfigurationTests
                 number = "141/191"
             });
         Assert.AreEqual(HttpStatusCode.Unauthorized, anonymousCatalogWrite.StatusCode);
+
+        using HttpResponseMessage unavailableReset = await client.PostAsJsonAsync(
+            "/api/v1/auth/password/reset/request",
+            new { email = "collector@example.test" });
+        Assert.AreEqual(HttpStatusCode.ServiceUnavailable, unavailableReset.StatusCode);
     }
 
     private sealed class TestApiFactory : WebApplicationFactory<global::Program>

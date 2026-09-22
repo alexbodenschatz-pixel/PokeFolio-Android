@@ -10,6 +10,8 @@ public sealed class AuthCommandValidatorTests
         ["email", "password", "deviceName", "platform"];
     private static readonly string[] PasswordChangeFields =
         ["currentPassword", "newPassword"];
+    private static readonly string[] PasswordResetConfirmFields =
+        ["email", "token", "newPassword"];
 
     [TestMethod]
     public void RegistrationRejectsInvalidIdentityAndDeviceFieldsTogether()
@@ -62,5 +64,26 @@ public sealed class AuthCommandValidatorTests
 
         Assert.HasCount(0, AuthCommandValidator.Validate(
             new ChangePasswordCommand(unchanged, "A newer PokeFolio password 2!")));
+    }
+
+    [TestMethod]
+    public void PasswordResetCommandsBoundEveryAnonymousInput()
+    {
+        Assert.IsTrue(AuthCommandValidator.Validate(
+            new PasswordResetRequestCommand("not-an-email")).ContainsKey("email"));
+        Assert.HasCount(0, AuthCommandValidator.Validate(
+            new PasswordResetRequestCommand(" collector@example.test ")));
+
+        IReadOnlyDictionary<string, string[]> missing = AuthCommandValidator.Validate(
+            new PasswordResetConfirmCommand(null, null, null));
+        CollectionAssert.AreEquivalent(
+            PasswordResetConfirmFields,
+            missing.Keys.ToArray());
+
+        Assert.HasCount(0, AuthCommandValidator.Validate(
+            new PasswordResetConfirmCommand(
+                "collector@example.test",
+                new string('a', 43),
+                "A recovered PokeFolio password 2!")));
     }
 }

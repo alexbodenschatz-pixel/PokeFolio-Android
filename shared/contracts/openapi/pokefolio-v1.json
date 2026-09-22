@@ -160,6 +160,65 @@
         }
       }
     },
+    "/auth/password/reset/request": {
+      "post": {
+        "operationId": "requestPasswordReset",
+        "description": "Returns the same accepted response for every syntactically valid email address. Delivery must be configured by the service and never exposes whether an account exists.",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PasswordResetRequestCommand"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Reset request accepted without disclosing account existence"
+          },
+          "400": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "429": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "503": {
+            "$ref": "#/components/responses/Problem"
+          }
+        }
+      }
+    },
+    "/auth/password/reset/confirm": {
+      "post": {
+        "operationId": "confirmPasswordReset",
+        "description": "Consumes one opaque reset token, replaces the password and revokes every existing device session for the account.",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PasswordResetConfirmCommand"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Password replaced, reset token consumed and existing sessions revoked"
+          },
+          "400": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "429": {
+            "$ref": "#/components/responses/Problem"
+          }
+        }
+      }
+    },
     "/devices": {
       "get": {
         "operationId": "listDevices",
@@ -748,6 +807,40 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 128
+          },
+          "newPassword": {
+            "type": "string",
+            "minLength": 12,
+            "maxLength": 128
+          }
+        }
+      },
+      "PasswordResetRequestCommand": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["email"],
+        "properties": {
+          "email": {
+            "type": "string",
+            "format": "email",
+            "maxLength": 254
+          }
+        }
+      },
+      "PasswordResetConfirmCommand": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["email", "token", "newPassword"],
+        "properties": {
+          "email": {
+            "type": "string",
+            "format": "email",
+            "maxLength": 254
+          },
+          "token": {
+            "type": "string",
+            "minLength": 32,
+            "maxLength": 512
           },
           "newPassword": {
             "type": "string",

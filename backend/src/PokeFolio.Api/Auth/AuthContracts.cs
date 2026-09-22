@@ -18,6 +18,13 @@ public sealed record ChangePasswordCommand(
     string? CurrentPassword,
     string? NewPassword);
 
+public sealed record PasswordResetRequestCommand(string? Email);
+
+public sealed record PasswordResetConfirmCommand(
+    string? Email,
+    string? Token,
+    string? NewPassword);
+
 public sealed record AuthSessionResponse(
     Guid UserId,
     string AccessToken,

@@ -59,6 +59,32 @@ public static class AuthCommandValidator
         return errors;
     }
 
+    public static IReadOnlyDictionary<string, string[]> Validate(
+        PasswordResetRequestCommand command)
+    {
+        var errors = new Dictionary<string, string[]>(StringComparer.Ordinal);
+        ValidateEmail(command.Email, errors);
+        return errors;
+    }
+
+    public static IReadOnlyDictionary<string, string[]> Validate(
+        PasswordResetConfirmCommand command)
+    {
+        var errors = new Dictionary<string, string[]>(StringComparer.Ordinal);
+        ValidateEmail(command.Email, errors);
+        int tokenLength = command.Token?.Length ?? 0;
+        if (tokenLength is < 32 or > 512)
+        {
+            errors["token"] = ["Password reset token must contain 32 to 512 characters."];
+        }
+        int newPasswordLength = command.NewPassword?.Length ?? 0;
+        if (newPasswordLength is < 12 or > 128)
+        {
+            errors["newPassword"] = ["New password must contain 12 to 128 characters."];
+        }
+        return errors;
+    }
+
     public static string NormalizeEmail(string email) => email.Trim();
     public static string NormalizeDeviceName(string deviceName) => deviceName.Trim();
     public static string NormalizePlatform(string platform) => platform.Trim().ToLowerInvariant();
@@ -69,12 +95,7 @@ public static class AuthCommandValidator
         int minimumPasswordLength)
     {
         var errors = new Dictionary<string, string[]>(StringComparer.Ordinal);
-        string normalizedEmail = email?.Trim() ?? string.Empty;
-        if (normalizedEmail.Length is < 3 or > 254 ||
-            !new EmailAddressAttribute().IsValid(normalizedEmail))
-        {
-            errors["email"] = ["A valid email address with at most 254 characters is required."];
-        }
+        ValidateEmail(email, errors);
 
         int passwordLength = password?.Length ?? 0;
         if (passwordLength < minimumPasswordLength || passwordLength > 128)
@@ -83,6 +104,18 @@ public static class AuthCommandValidator
                 [$"Password must contain {minimumPasswordLength} to 128 characters."];
         }
         return errors;
+    }
+
+    private static void ValidateEmail(
+        string? email,
+        Dictionary<string, string[]> errors)
+    {
+        string normalizedEmail = email?.Trim() ?? string.Empty;
+        if (normalizedEmail.Length is < 3 or > 254 ||
+            !new EmailAddressAttribute().IsValid(normalizedEmail))
+        {
+            errors["email"] = ["A valid email address with at most 254 characters is required."];
+        }
     }
 
     private static void ValidateDevice(

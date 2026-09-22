@@ -25,6 +25,7 @@ public sealed class PersistenceModelTests
             typeof(CollectionHolding),
             typeof(ConsumedRefreshToken),
             typeof(DeviceSession),
+            typeof(PasswordResetToken),
             typeof(ProcessedSyncOperation),
             typeof(UserChange)
         ];
@@ -104,6 +105,22 @@ public sealed class PersistenceModelTests
         CollectionAssert.AreEqual(
             UserDevicePrincipalKey,
             deviceOwnershipForeignKey.PrincipalKey.Properties.Select(property => property.Name).ToArray());
+    }
+
+    [TestMethod]
+    public void PasswordResetTokensPersistOnlyAUserScopedFixedLengthHash()
+    {
+        using var database = CreateContext(Guid.NewGuid());
+        IModel designTimeModel = database.GetService<IDesignTimeModel>().Model;
+        IEntityType token = designTimeModel.FindEntityType(typeof(PasswordResetToken))!;
+
+        Assert.AreEqual(
+            nameof(PasswordResetToken.TokenHash),
+            token.FindPrimaryKey()!.Properties.Single().Name);
+        Assert.AreEqual(64, token.FindProperty(nameof(PasswordResetToken.TokenHash))!.GetMaxLength());
+        Assert.IsNull(token.FindProperty("Token"));
+        Assert.IsNull(token.FindProperty("Plaintext"));
+        Assert.IsTrue(token.GetDeclaredQueryFilters().Count > 0);
     }
 
     [TestMethod]

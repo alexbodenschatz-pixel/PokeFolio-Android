@@ -36,7 +36,19 @@ builder.Services.AddSingleton(_ =>
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<AuthTokenService>();
 builder.Services.AddSingleton<LoginTimingProtector>();
+builder.Services.AddSingleton(_ =>
+{
+    PasswordResetOptions options = builder.Configuration
+        .GetSection(PasswordResetOptions.SectionName)
+        .Get<PasswordResetOptions>()
+        ?? new PasswordResetOptions();
+    options.Validate();
+    return options;
+});
+builder.Services.AddSingleton<PasswordResetTokenService>();
+builder.Services.AddSingleton<IPasswordResetNotifier, SmtpPasswordResetNotifier>();
 builder.Services.AddScoped<AuthSessionService>();
+builder.Services.AddScoped<PasswordResetService>();
 builder.Services.AddScoped<CatalogCardService>();
 builder.Services.AddScoped<CollectionMutationService>();
 builder.Services.AddScoped<CollectionReadService>();

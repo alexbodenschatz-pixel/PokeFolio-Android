@@ -10,6 +10,8 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using Npgsql;
 using PokeFolio.Api.Auth;
@@ -1763,7 +1765,9 @@ public sealed partial class PostgreSqlIsolationTests
 
     private sealed record StubUserContext(Guid? UserId) : IUserContext;
 
-    private sealed class PokeFolioApiFactory(string connectionString)
+    private sealed class PokeFolioApiFactory(
+        string connectionString,
+        IPasswordResetNotifier? passwordResetNotifier = null)
         : WebApplicationFactory<global::Program>
     {
         protected override void ConfigureWebHost(IWebHostBuilder builder)
@@ -1779,9 +1783,18 @@ public sealed partial class PostgreSqlIsolationTests
                     ["Auth:SigningKey"] = Convert.ToBase64String(ApiSigningKey),
                     ["Auth:SigningKeyId"] = "integration-test-key",
                     ["Auth:AccessTokenMinutes"] = "10",
-                    ["Auth:RefreshTokenDays"] = "30"
+                    ["Auth:RefreshTokenDays"] = "30",
+                    ["PasswordReset:MinimumResponseMilliseconds"] = "0"
                 });
             });
+            if (passwordResetNotifier is not null)
+            {
+                builder.ConfigureServices(services =>
+                {
+                    services.RemoveAll<IPasswordResetNotifier>();
+                    services.AddSingleton(passwordResetNotifier);
+                });
+            }
         }
     }
 }

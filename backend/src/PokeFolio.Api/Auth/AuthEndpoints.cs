@@ -21,6 +21,12 @@ public static class AuthEndpoints
         auth.MapPost("/logout", LogoutAsync);
         auth.MapPost("/password/change", ChangePasswordAsync)
             .RequireRateLimiting("auth-sensitive");
+        auth.MapPost("/password/reset/request", RequestPasswordResetAsync)
+            .AllowAnonymous()
+            .RequireRateLimiting("auth-sensitive");
+        auth.MapPost("/password/reset/confirm", ConfirmPasswordResetAsync)
+            .AllowAnonymous()
+            .RequireRateLimiting("auth-sensitive");
         return endpoints;
     }
 
@@ -87,6 +93,24 @@ public static class AuthEndpoints
             deviceSessionId.Value,
             command,
             cancellationToken);
+        return result.Succeeded ? Results.NoContent() : ToProblem(result.Failure!);
+    }
+
+    private static async Task<IResult> RequestPasswordResetAsync(
+        PasswordResetRequestCommand command,
+        PasswordResetService resets,
+        CancellationToken cancellationToken)
+    {
+        AuthCommandResult result = await resets.RequestAsync(command, cancellationToken);
+        return result.Succeeded ? Results.Accepted() : ToProblem(result.Failure!);
+    }
+
+    private static async Task<IResult> ConfirmPasswordResetAsync(
+        PasswordResetConfirmCommand command,
+        PasswordResetService resets,
+        CancellationToken cancellationToken)
+    {
+        AuthCommandResult result = await resets.ConfirmAsync(command, cancellationToken);
         return result.Succeeded ? Results.NoContent() : ToProblem(result.Failure!);
     }
 
