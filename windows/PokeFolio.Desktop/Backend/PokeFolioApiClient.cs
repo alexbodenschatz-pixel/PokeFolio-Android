@@ -64,6 +64,53 @@ public sealed class PokeFolioApiClient : IDisposable
             deviceName,
             cancellationToken);
 
+    public async Task<PokeFolioApiResponse> RequestPasswordResetAsync(
+        string email,
+        CancellationToken cancellationToken = default)
+    {
+        byte[] body = PokeFolioApiPayloads.SerializePasswordResetRequest(email);
+        try
+        {
+            return await SendAnonymousCommandAsync(
+                "/api/v1/auth/password/reset/request",
+                body,
+                cancellationToken);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(body);
+        }
+    }
+
+    public async Task<PokeFolioApiResponse> ConfirmPasswordResetAsync(
+        string email,
+        string token,
+        string newPassword,
+        CancellationToken cancellationToken = default)
+    {
+        byte[] body = PokeFolioApiPayloads.SerializePasswordResetConfirm(
+            email,
+            token,
+            newPassword);
+        bool gateEntered = false;
+        try
+        {
+            await sessionGate.WaitAsync(cancellationToken);
+            gateEntered = true;
+            PokeFolioApiResponse result = await SendAnonymousCommandAsync(
+                "/api/v1/auth/password/reset/confirm",
+                body,
+                cancellationToken);
+            if (result.Succeeded) InvalidateLocalSession();
+            return result;
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(body);
+            if (gateEntered) sessionGate.Release();
+        }
+    }
+
     public async Task<PokeFolioAuthenticationResult> RestoreSessionAsync(
         CancellationToken cancellationToken = default)
     {
@@ -289,6 +336,35 @@ public sealed class PokeFolioApiClient : IDisposable
             if (response is not null) CryptographicOperations.ZeroMemory(response.Body);
             CryptographicOperations.ZeroMemory(body);
             sessionGate.Release();
+        }
+    }
+
+    private async Task<PokeFolioApiResponse> SendAnonymousCommandAsync(
+        string path,
+        byte[] body,
+        CancellationToken cancellationToken)
+    {
+        ThrowIfDisposed();
+        PokeFolioRawResponse response = await transport.SendAsync(
+            HttpMethod.Post,
+            path,
+            body,
+            accessToken: null,
+            MaximumAuthResponseBytes,
+            cancellationToken);
+        try
+        {
+            string responseBody = PokeFolioApiPayloads.DecodeBody(response.Body);
+            return response.IsSuccess
+                ? new PokeFolioApiResponse(response.Status, responseBody)
+                : new PokeFolioApiResponse(
+                    response.Status,
+                    responseBody,
+                    PokeFolioApiPayloads.ParseProblem(response));
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(response.Body);
         }
     }
 

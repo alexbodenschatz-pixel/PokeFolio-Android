@@ -124,6 +124,52 @@ public final class PokeFolioAccountBridgeTest {
     }
 
     @Test
+    public void passwordResetCallbackNeverEchoesEmailTokenOrPassword() throws Exception {
+        String email = "private-owner@example.test";
+        String token = "reset-" + repeat('r', 48);
+        String password = "replacement password";
+        PokeFolioApiTransport transport = new PokeFolioApiTransport() {
+            @Override
+            public PokeFolioRawResponse send(
+                    String method,
+                    String path,
+                    byte[] body,
+                    String accessToken,
+                    int maximumResponseBytes
+            ) {
+                assertEquals("POST", method);
+                assertEquals("/api/v1/auth/password/reset/confirm", path);
+                assertNull(accessToken);
+                return new PokeFolioRawResponse(204, new byte[0]);
+            }
+
+            @Override
+            public void close() {
+            }
+        };
+        PokeFolioCloudService cloud = new PokeFolioCloudService(
+                PokeFolioBackendConfiguration.parse("https://api.example.test/"),
+                new PokeFolioApiClient(new MemoryRefreshTokenStore(), transport));
+        CapturingCallback callbacks = new CapturingCallback();
+        PokeFolioAccountBridge bridge = new PokeFolioAccountBridge(cloud, callbacks);
+        try {
+            bridge.confirmPasswordReset(email, token, password, "account-reset-1");
+
+            CallbackRecord callback = callbacks.results.poll(2, TimeUnit.SECONDS);
+            assertNotNull(callback);
+            assertEquals("password-reset-confirm", callback.payload.getString("operation"));
+            assertTrue(callback.payload.getBoolean("ok"));
+            String serialized = callback.payload.toString();
+            assertFalse(serialized.contains(email));
+            assertFalse(serialized.contains(token));
+            assertFalse(serialized.contains(password));
+        } finally {
+            bridge.close();
+            cloud.close();
+        }
+    }
+
+    @Test
     public void bridgeRejectsUntrustedIdsAndDoesNotOwnTheProcessCloudService() throws Exception {
         PokeFolioCloudService cloud = new PokeFolioCloudService(
                 PokeFolioBackendConfiguration.parse(""),

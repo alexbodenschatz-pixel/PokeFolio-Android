@@ -43,10 +43,45 @@ internal static class PokeFolioApiPayloads
         ValidateLoginInput(email, password, deviceName);
         return JsonSerializer.SerializeToUtf8Bytes(new
         {
-            email,
+            email = email.Trim(),
             password,
-            deviceName,
+            deviceName = deviceName.Trim(),
             platform = "windows"
+        }, JsonOptions);
+    }
+
+    public static byte[] SerializePasswordResetRequest(string email)
+    {
+        ValidateEmail(email);
+        return JsonSerializer.SerializeToUtf8Bytes(new
+        {
+            email = email.Trim()
+        }, JsonOptions);
+    }
+
+    public static byte[] SerializePasswordResetConfirm(
+        string email,
+        string token,
+        string newPassword)
+    {
+        ValidateEmail(email);
+        if (token is null || token.Length is < 32 or > 512)
+        {
+            throw new ArgumentException(
+                "Password reset token must contain 32 to 512 characters.",
+                nameof(token));
+        }
+        if (newPassword is null || newPassword.Length is < 12 or > 128)
+        {
+            throw new ArgumentException(
+                "New password must contain 12 to 128 characters.",
+                nameof(newPassword));
+        }
+        return JsonSerializer.SerializeToUtf8Bytes(new
+        {
+            email = email.Trim(),
+            token,
+            newPassword
         }, JsonOptions);
     }
 
@@ -322,10 +357,7 @@ internal static class PokeFolioApiPayloads
 
     private static void ValidateLoginInput(string email, string password, string deviceName)
     {
-        if (string.IsNullOrWhiteSpace(email) || email.Length > 254)
-        {
-            throw new ArgumentException("Email must contain 1 to 254 characters.", nameof(email));
-        }
+        ValidateEmail(email);
         if (string.IsNullOrEmpty(password) || password.Length > 128)
         {
             throw new ArgumentException("Password must contain 1 to 128 characters.", nameof(password));
@@ -333,6 +365,14 @@ internal static class PokeFolioApiPayloads
         if (string.IsNullOrWhiteSpace(deviceName) || deviceName.Trim().Length > 120)
         {
             throw new ArgumentException("Device name must contain 1 to 120 characters.", nameof(deviceName));
+        }
+    }
+
+    private static void ValidateEmail(string email)
+    {
+        if (string.IsNullOrWhiteSpace(email) || email.Trim().Length > 254)
+        {
+            throw new ArgumentException("Email must contain 1 to 254 characters.", nameof(email));
         }
     }
 }

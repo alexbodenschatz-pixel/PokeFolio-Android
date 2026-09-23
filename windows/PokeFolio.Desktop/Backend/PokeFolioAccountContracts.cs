@@ -23,6 +23,16 @@ public interface IPokeFolioAccountService : IDisposable
         string deviceName,
         CancellationToken cancellationToken = default);
 
+    Task<PokeFolioApiResponse> RequestPasswordResetAsync(
+        string email,
+        CancellationToken cancellationToken = default);
+
+    Task<PokeFolioApiResponse> ConfirmPasswordResetAsync(
+        string email,
+        string token,
+        string newPassword,
+        CancellationToken cancellationToken = default);
+
     Task<PokeFolioAuthenticationResult> RestoreSessionAsync(
         CancellationToken cancellationToken = default);
 

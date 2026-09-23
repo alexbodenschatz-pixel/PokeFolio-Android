@@ -38,10 +38,15 @@ class FakeElement {
   }
 }
 
-function createRuntime() {
+function createRuntime({authenticated = true, recoveryHash = ''} = {}) {
   const ids = [
     'accountSettings', 'accountStatusBadge', 'accountSignedOut', 'accountSignedIn',
     'accountConfigurationMessage', 'accountDeviceName', 'accountLogin', 'accountRegister',
+    'accountForgotPassword', 'accountRecovery', 'accountRecoveryRequestForm',
+    'accountRecoveryEmail', 'accountRecoveryRequest', 'accountRecoveryHaveToken',
+    'accountRecoveryCancel', 'accountRecoveryConfirmForm', 'accountRecoveryConfirmEmail',
+    'accountRecoveryToken', 'accountRecoveryPassword', 'accountRecoveryPasswordConfirm',
+    'accountRecoveryConfirm', 'accountRecoveryConfirmCancel',
     'accountSyncNow', 'accountLogout', 'accountUserId', 'accountDevice', 'accountBackend',
     'accountMessage', 'legacyMigration', 'legacyMigrationStatus', 'legacyMigrationStart',
     'legacyMigrationSummary', 'legacyMigrationProgress', 'legacyMigrationIssues',
@@ -55,6 +60,9 @@ function createRuntime() {
   const events = [];
   let claimed = '';
   let syncRuns = 0;
+  let resetRequestEmail = '';
+  let resetConfirm = null;
+  let replacedUrl = '';
   const collection = [{
     id: 1,
     collectionKey: 'pokemon|sv03|025|de|reverse-holo',
@@ -71,13 +79,13 @@ function createRuntime() {
   }];
   const status = {
     configured: true,
-    authenticated: true,
+    authenticated,
     backendOrigin: 'https://api.example.test',
     configurationError: null,
-    session: {
+    session: authenticated ? {
       userId,
       device: {name: 'Testgerät', platform: 'windows'}
-    }
+    } : null
   };
   const windowListeners = new Map();
   const window = {
@@ -87,6 +95,14 @@ function createRuntime() {
       status: () => status,
       register: async () => ({ok: true, status}),
       login: async () => ({ok: true, status}),
+      requestPasswordReset: async email => {
+        resetRequestEmail = email;
+        return {ok: true, status: {...status, authenticated: false, session: null}};
+      },
+      confirmPasswordReset: async (email, token, password) => {
+        resetConfirm = {email, token, password};
+        return {ok: true, status: {...status, authenticated: false, session: null}};
+      },
       logout: async () => ({ok: true, status: {...status, authenticated: false, session: null}})
     },
     PokeCatalog: {
@@ -119,6 +135,13 @@ function createRuntime() {
       return true;
     },
     confirm: () => true,
+    location: {hash: recoveryHash, pathname: '/index.html', search: ''},
+    history: {
+      replaceState(_state, _title, url) {
+        replacedUrl = url;
+        window.location.hash = '';
+      }
+    },
     addEventListener(type, listener) {
       const values = windowListeners.get(type) || [];
       values.push(listener);
@@ -156,9 +179,21 @@ function createRuntime() {
     Promise,
     String,
     Number,
-    Error
+    Error,
+    URLSearchParams
   }, {filename: 'account-ui.js'});
-  return {window, elements, storage, queued, events, get claimed() { return claimed; }, get syncRuns() { return syncRuns; }};
+  return {
+    window,
+    elements,
+    storage,
+    queued,
+    events,
+    get claimed() { return claimed; },
+    get syncRuns() { return syncRuns; },
+    get resetRequestEmail() { return resetRequestEmail; },
+    get resetConfirm() { return resetConfirm; },
+    get replacedUrl() { return replacedUrl; }
+  };
 }
 
 test('sichtbare Kontoseite übernimmt Legacy-Bestand bestätigt, idempotent und ohne Löschung', async () => {
@@ -182,4 +217,66 @@ test('sichtbare Kontoseite übernimmt Legacy-Bestand bestätigt, idempotent und 
   assert.match(runtime.elements.get('accountMessage').textContent, /lokale Kopie bleibt erhalten/);
   assert.equal(runtime.storage.has('pf_collection'), false, 'migration UI never deletes or rewrites legacy data');
   assert.ok(runtime.events.includes('pokefolio:collection-scope'));
+});
+
+test('Kontowiederherstellung nutzt native Einmalaufrufe und verwirft alle Geheimnisse', async () => {
+  const runtime = createRuntime({authenticated: false});
+  runtime.elements.get('accountForgotPassword').emit('click');
+  assert.equal(runtime.elements.get('accountSignedOut').hidden, true);
+  assert.equal(runtime.elements.get('accountRecovery').hidden, false);
+
+  runtime.elements.get('accountRecoveryEmail').value = 'owner@example.test';
+  runtime.elements.get('accountRecoveryRequestForm').emit('submit');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(runtime.resetRequestEmail, 'owner@example.test');
+  assert.equal(runtime.elements.get('accountRecoveryConfirmForm').hidden, false);
+  assert.match(runtime.elements.get('accountMessage').textContent, /Falls ein Konto existiert/);
+
+  runtime.elements.get('accountRecoveryToken').value = 'reset-' + 'r'.repeat(48);
+  runtime.elements.get('accountRecoveryPassword').value = 'replacement password';
+  runtime.elements.get('accountRecoveryPasswordConfirm').value = 'replacement password';
+  runtime.elements.get('accountRecoveryConfirmForm').emit('submit');
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.deepEqual(runtime.resetConfirm, {
+    email: 'owner@example.test',
+    token: 'reset-' + 'r'.repeat(48),
+    password: 'replacement password'
+  });
+  assert.equal(runtime.elements.get('accountRecoveryToken').value, '');
+  assert.equal(runtime.elements.get('accountRecoveryPassword').value, '');
+  assert.equal(runtime.elements.get('accountRecoveryPasswordConfirm').value, '');
+  assert.equal(runtime.elements.get('accountSignedOut').hidden, false);
+  assert.match(runtime.elements.get('accountMessage').textContent, /Alle Geräte wurden abgemeldet/);
+  assert.equal(runtime.storage.size, 0);
+});
+
+test('Reset-Link wird aus dem Fragment übernommen und sofort aus der Adresse entfernt', () => {
+  const token = 'reset-' + 't'.repeat(48);
+  const runtime = createRuntime({
+    authenticated: false,
+    recoveryHash: `#email=owner%40example.test&token=${token}`
+  });
+
+  assert.equal(runtime.elements.get('accountRecovery').hidden, false);
+  assert.equal(runtime.elements.get('accountRecoveryConfirmForm').hidden, false);
+  assert.equal(runtime.elements.get('accountRecoveryConfirmEmail').value, 'owner@example.test');
+  assert.equal(runtime.elements.get('accountRecoveryToken').value, token);
+  assert.equal(runtime.window.location.hash, '');
+  assert.equal(runtime.replacedUrl, '/index.html');
+  assert.equal(runtime.storage.size, 0);
+});
+
+test('angemeldete Sitzung verwirft einen eingehenden Reset-Code statt ihn verborgen zu halten', () => {
+  const token = 'reset-' + 's'.repeat(48);
+  const runtime = createRuntime({
+    authenticated: true,
+    recoveryHash: `#email=owner%40example.test&token=${token}`
+  });
+
+  assert.equal(runtime.elements.get('accountSignedIn').hidden, false);
+  assert.equal(runtime.elements.get('accountRecovery').hidden, true);
+  assert.equal(runtime.elements.get('accountRecoveryToken').value, '');
+  assert.equal(runtime.window.location.hash, '');
+  assert.equal(runtime.storage.size, 0);
 });

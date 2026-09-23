@@ -36,6 +36,8 @@ test('Android account facade correlates native callbacks without browser token s
       loginCall = {email, password, deviceName, requestId};
     },
     registerAccount() {},
+    requestPasswordReset() {},
+    confirmPasswordReset() {},
     restoreAccountSession() {},
     logoutAccount() {}
   };
@@ -78,11 +80,56 @@ test('Android account facade correlates native callbacks without browser token s
   assert.doesNotMatch(source, /localStorage|sessionStorage|Authorization|refreshToken/);
 });
 
+test('Android account facade forwards reset secrets only to the native one-shot call', async () => {
+  const calls = [];
+  const nativeHost = {
+    registerAccount() {},
+    loginAccount() {},
+    requestPasswordReset: (email, requestId) => calls.push({email, requestId}),
+    confirmPasswordReset: (email, token, password, requestId) =>
+      calls.push({email, token, password, requestId}),
+    restoreAccountSession() {},
+    logoutAccount() {}
+  };
+  const status = {
+    configured: false,
+    authenticated: false,
+    backendOrigin: null,
+    configurationError: null,
+    session: null
+  };
+  const {window} = createContext(nativeHost, status);
+
+  const request = window.PokeAccount.requestPasswordReset('owner@example.test');
+  window.onAndroidAccountResult(JSON.stringify({
+    requestId: calls[0].requestId,
+    operation: 'password-reset-request',
+    ok: true,
+    status
+  }));
+  assert.equal((await request).ok, true);
+
+  const confirm = window.PokeAccount.confirmPasswordReset(
+    'owner@example.test', 'reset-secret', 'replacement-password');
+  window.onAndroidAccountResult(JSON.stringify({
+    requestId: calls[1].requestId,
+    operation: 'password-reset-confirm',
+    ok: true,
+    status
+  }));
+  assert.equal((await confirm).ok, true);
+  assert.equal(calls[1].token, 'reset-secret');
+  assert.equal(calls[1].password, 'replacement-password');
+  assert.doesNotMatch(source, /localStorage|sessionStorage|Authorization|refreshToken/);
+});
+
 test('Android bootstrap restores a configured session once and stays isolated on Windows', async () => {
   let restoreRequestId = '';
   const nativeHost = {
     registerAccount() {},
     loginAccount() {},
+    requestPasswordReset() {},
+    confirmPasswordReset() {},
     restoreAccountSession: requestId => { restoreRequestId = requestId; },
     logoutAccount() {}
   };

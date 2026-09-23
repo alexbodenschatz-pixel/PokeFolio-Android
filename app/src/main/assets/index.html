@@ -343,14 +343,41 @@
       </div>
       <p id="accountConfigurationMessage" class="muted">Die native Kontokonfiguration wird geprüft.</p>
       <form id="accountSignedOut" class="account-form" hidden>
-        <label>E-Mail<input id="accountEmail" type="email" inputmode="email" autocomplete="username" maxlength="320" required></label>
-        <label>Passwort<input id="accountPassword" type="password" autocomplete="current-password" minlength="12" maxlength="200" required></label>
+        <label>E-Mail<input id="accountEmail" type="email" inputmode="email" autocomplete="username" maxlength="254" required></label>
+        <label>Passwort<input id="accountPassword" type="password" autocomplete="current-password" minlength="12" maxlength="128" required></label>
         <label>Gerätename<input id="accountDeviceName" type="text" autocomplete="off" maxlength="120" required></label>
         <div class="account-actions">
           <button id="accountLogin" type="submit" class="primary">Anmelden</button>
           <button id="accountRegister" type="button" class="secondary">Konto erstellen</button>
+          <button id="accountForgotPassword" type="button" class="secondary">Passwort vergessen</button>
         </div>
       </form>
+      <section id="accountRecovery" class="account-recovery" hidden aria-labelledby="accountRecoveryTitle">
+        <div>
+          <span class="section-kicker">Kontowiederherstellung</span>
+          <h3 id="accountRecoveryTitle">Passwort sicher zurücksetzen</h3>
+        </div>
+        <form id="accountRecoveryRequestForm" class="account-form">
+          <label>E-Mail<input id="accountRecoveryEmail" type="email" inputmode="email" autocomplete="username" maxlength="254" required></label>
+          <p class="muted">Falls ein Konto existiert, senden wir einen einmalig nutzbaren, zeitlich begrenzten Link. Die Antwort verrät nicht, ob die Adresse registriert ist.</p>
+          <div class="account-actions">
+            <button id="accountRecoveryRequest" type="submit" class="primary">Reset-Link anfordern</button>
+            <button id="accountRecoveryHaveToken" type="button" class="secondary">Code eingeben</button>
+            <button id="accountRecoveryCancel" type="button" class="secondary">Zurück</button>
+          </div>
+        </form>
+        <form id="accountRecoveryConfirmForm" class="account-form" hidden>
+          <label>E-Mail<input id="accountRecoveryConfirmEmail" type="email" inputmode="email" autocomplete="username" maxlength="254" required></label>
+          <label>Reset-Code<input id="accountRecoveryToken" type="password" autocomplete="off" minlength="32" maxlength="512" required></label>
+          <label>Neues Passwort<input id="accountRecoveryPassword" type="password" autocomplete="new-password" minlength="12" maxlength="128" required></label>
+          <label>Passwort wiederholen<input id="accountRecoveryPasswordConfirm" type="password" autocomplete="new-password" minlength="12" maxlength="128" required></label>
+          <p class="muted">Code und neues Passwort bleiben nur für diese Aktion im Arbeitsspeicher und werden nicht im WebView gespeichert.</p>
+          <div class="account-actions">
+            <button id="accountRecoveryConfirm" type="submit" class="primary">Passwort ändern</button>
+            <button id="accountRecoveryConfirmCancel" type="button" class="secondary">Zurück zur Anmeldung</button>
+          </div>
+        </form>
+      </section>
       <div id="accountSignedIn" class="account-session" hidden>
         <dl>
           <div><dt>Konto-ID</dt><dd id="accountUserId">–</dd></div>

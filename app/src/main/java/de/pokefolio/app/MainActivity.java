@@ -337,6 +337,21 @@ public final class MainActivity extends Activity {
         }
 
         @JavascriptInterface
+        public void requestPasswordReset(String email, String requestId) {
+            accountBridge.requestPasswordReset(email, requestId);
+        }
+
+        @JavascriptInterface
+        public void confirmPasswordReset(
+                String email,
+                String token,
+                String newPassword,
+                String requestId
+        ) {
+            accountBridge.confirmPasswordReset(email, token, newPassword, requestId);
+        }
+
+        @JavascriptInterface
         public void restoreAccountSession(String requestId) {
             accountBridge.restore(requestId);
         }

@@ -14,11 +14,11 @@ import static org.junit.Assert.assertTrue;
 
 public final class PokeFolioApiPayloadsTest {
     @Test
-    public void loginPayloadUsesAndroidPlatformAndExactInput() throws Exception {
+    public void loginPayloadUsesAndroidPlatformAndNormalizedIdentityInput() throws Exception {
         byte[] body = PokeFolioApiPayloads.serializeLogin(
-                "owner@example.com",
+                " owner@example.com ",
                 "correct horse battery staple",
-                "Pixel 9");
+                " Pixel 9 ");
         JSONObject json = new JSONObject(new String(body, StandardCharsets.UTF_8));
 
         assertEquals(4, json.length());
@@ -26,6 +26,33 @@ public final class PokeFolioApiPayloadsTest {
         assertEquals("correct horse battery staple", json.getString("password"));
         assertEquals("Pixel 9", json.getString("deviceName"));
         assertEquals("android", json.getString("platform"));
+    }
+
+    @Test
+    public void passwordResetPayloadsContainOnlyTheValidatedContractFields() throws Exception {
+        byte[] requestBody = PokeFolioApiPayloads.serializePasswordResetRequest(
+                " owner@example.com ");
+        JSONObject request = new JSONObject(new String(requestBody, StandardCharsets.UTF_8));
+        assertEquals(1, request.length());
+        assertEquals("owner@example.com", request.getString("email"));
+
+        String token = "reset-" + "a".repeat(40);
+        byte[] confirmBody = PokeFolioApiPayloads.serializePasswordResetConfirm(
+                " owner@example.com ", token, "new secure password");
+        JSONObject confirm = new JSONObject(new String(confirmBody, StandardCharsets.UTF_8));
+        assertEquals(3, confirm.length());
+        assertEquals("owner@example.com", confirm.getString("email"));
+        assertEquals(token, confirm.getString("token"));
+        assertEquals("new secure password", confirm.getString("newPassword"));
+
+        assertThrows(IllegalArgumentException.class, () ->
+                PokeFolioApiPayloads.serializePasswordResetRequest("   "));
+        assertThrows(IllegalArgumentException.class, () ->
+                PokeFolioApiPayloads.serializePasswordResetConfirm(
+                        "owner@example.com", "short", "new secure password"));
+        assertThrows(IllegalArgumentException.class, () ->
+                PokeFolioApiPayloads.serializePasswordResetConfirm(
+                        "owner@example.com", token, "too-short"));
     }
 
     @Test

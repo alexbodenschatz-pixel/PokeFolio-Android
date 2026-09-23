@@ -74,6 +74,32 @@ public sealed class PokeFolioAccountService : IPokeFolioCloudService
             : client.LoginAsync(email, password, deviceName, cancellationToken);
     }
 
+    public Task<PokeFolioApiResponse> RequestPasswordResetAsync(
+        string email,
+        CancellationToken cancellationToken = default)
+    {
+        ThrowIfDisposed();
+        return client is null
+            ? Task.FromResult(UnavailableApiResponse())
+            : client.RequestPasswordResetAsync(email, cancellationToken);
+    }
+
+    public Task<PokeFolioApiResponse> ConfirmPasswordResetAsync(
+        string email,
+        string token,
+        string newPassword,
+        CancellationToken cancellationToken = default)
+    {
+        ThrowIfDisposed();
+        return client is null
+            ? Task.FromResult(UnavailableApiResponse())
+            : client.ConfirmPasswordResetAsync(
+                email,
+                token,
+                newPassword,
+                cancellationToken);
+    }
+
     public Task<PokeFolioAuthenticationResult> RestoreSessionAsync(
         CancellationToken cancellationToken = default)
     {

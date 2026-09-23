@@ -13,6 +13,9 @@
   const enqueueBatchSize = 100;
   let activeStatus = account ? safeStatus() : unavailableStatus();
   let migrationRunning = false;
+  let recoveryMode = false;
+  let recoveryConfirmMode = false;
+  let recoveryRunning = false;
   let message = {kind: '', text: ''};
   let cloudCollectionState = {phase: ''};
 
@@ -40,6 +43,52 @@
   function accountUserId(status = activeStatus) {
     return status && status.authenticated === true && status.session
       && typeof status.session.userId === 'string' ? status.session.userId.toLowerCase() : '';
+  }
+
+  function recoveryAvailable() {
+    return account && typeof account.requestPasswordReset === 'function'
+      && typeof account.confirmPasswordReset === 'function';
+  }
+
+  function clearRecoverySecrets() {
+    element('accountRecoveryToken').value = '';
+    element('accountRecoveryPassword').value = '';
+    element('accountRecoveryPasswordConfirm').value = '';
+  }
+
+  function clearRecoveryFragment() {
+    try {
+      const location = window.location;
+      if (!location || !location.hash || !window.history
+        || typeof window.history.replaceState !== 'function') return;
+      window.history.replaceState(null, '', `${location.pathname || ''}${location.search || ''}`);
+    } catch (_) {
+      // A locked-down WebView can reject history changes; no recovery data is persisted.
+    }
+  }
+
+  function initializeRecoveryFragment() {
+    const hash = window.location && typeof window.location.hash === 'string'
+      ? window.location.hash.replace(/^#/, '') : '';
+    if (!hash) return;
+    let values;
+    try {
+      values = new URLSearchParams(hash);
+    } catch (_) {
+      return;
+    }
+    const token = values.get('token') || '';
+    const email = values.get('email') || '';
+    if (!token) return;
+    clearRecoveryFragment();
+    if (!recoveryAvailable()) return;
+    element('accountRecoveryToken').value = token;
+    if (email) {
+      element('accountRecoveryConfirmEmail').value = email;
+      element('accountRecoveryEmail').value = email;
+    }
+    recoveryMode = true;
+    recoveryConfirmMode = true;
   }
 
   function setMessage(kind, text) {
@@ -205,10 +254,19 @@
     const configured = account && activeStatus.configured === true;
     const authenticated = configured && activeStatus.authenticated === true
       && Boolean(accountUserId());
+    if (authenticated && recoveryMode) {
+      recoveryMode = false;
+      recoveryConfirmMode = false;
+      clearRecoverySecrets();
+    }
     const badge = element('accountStatusBadge');
     badge.className = 'status ' + (authenticated ? 'good' : configured ? 'neutral' : 'bad');
     badge.textContent = authenticated ? 'Angemeldet' : configured ? 'Abgemeldet' : 'Nicht konfiguriert';
-    element('accountSignedOut').hidden = !configured || authenticated;
+    const recovering = configured && !authenticated && recoveryMode && recoveryAvailable();
+    element('accountSignedOut').hidden = !configured || authenticated || recovering;
+    element('accountRecovery').hidden = !recovering;
+    element('accountRecoveryRequestForm').hidden = !recovering || recoveryConfirmMode;
+    element('accountRecoveryConfirmForm').hidden = !recovering || !recoveryConfirmMode;
     element('accountSignedIn').hidden = !authenticated;
     element('accountConfigurationMessage').textContent = configured
       ? authenticated
@@ -220,6 +278,13 @@
     }
     element('accountLogin').disabled = !configured || migrationRunning;
     element('accountRegister').disabled = !configured || migrationRunning;
+    element('accountForgotPassword').disabled = !configured || !recoveryAvailable()
+      || migrationRunning || recoveryRunning;
+    element('accountRecoveryRequest').disabled = !recovering || recoveryRunning;
+    element('accountRecoveryHaveToken').disabled = !recovering || recoveryRunning;
+    element('accountRecoveryCancel').disabled = recoveryRunning;
+    element('accountRecoveryConfirm').disabled = !recovering || recoveryRunning;
+    element('accountRecoveryConfirmCancel').disabled = recoveryRunning;
     element('accountSyncNow').disabled = !authenticated || !sync || migrationRunning;
     element('accountLogout').disabled = !authenticated || migrationRunning;
     if (authenticated) {
@@ -261,6 +326,93 @@
       setMessage('bad', error.message || 'Kontoaktion fehlgeschlagen.');
     } finally {
       passwordInput.value = '';
+      renderAccount();
+    }
+  }
+
+  function showRecovery(confirmMode) {
+    if (!recoveryAvailable() || migrationRunning || recoveryRunning) return;
+    recoveryMode = true;
+    recoveryConfirmMode = confirmMode === true;
+    const loginEmail = element('accountEmail').value.trim();
+    if (loginEmail && !element('accountRecoveryEmail').value) {
+      element('accountRecoveryEmail').value = loginEmail;
+    }
+    if (loginEmail && !element('accountRecoveryConfirmEmail').value) {
+      element('accountRecoveryConfirmEmail').value = loginEmail;
+    }
+    element('accountPassword').value = '';
+    setMessage('', recoveryConfirmMode
+      ? 'E-Mail, Reset-Code und neues Passwort eingeben.'
+      : 'Reset-Link für dein Konto anfordern.');
+    renderAccount();
+  }
+
+  function cancelRecovery() {
+    if (recoveryRunning) return;
+    recoveryMode = false;
+    recoveryConfirmMode = false;
+    clearRecoverySecrets();
+    setMessage('', 'Kontowiederherstellung geschlossen.');
+    renderAccount();
+  }
+
+  async function requestPasswordReset() {
+    if (!recoveryAvailable() || recoveryRunning) return;
+    const form = element('accountRecoveryRequestForm');
+    if (!form.reportValidity()) return;
+    const email = element('accountRecoveryEmail').value.trim();
+    recoveryRunning = true;
+    setMessage('', 'Reset-Link wird angefordert …');
+    renderAccount();
+    try {
+      const response = await account.requestPasswordReset(email);
+      if (!response || response.ok !== true) {
+        throw new Error(problemMessage(response, 'Reset-Link konnte nicht angefordert werden.'));
+      }
+      activeStatus = response.status || safeStatus();
+      element('accountRecoveryConfirmEmail').value = email;
+      recoveryConfirmMode = true;
+      setMessage('good', 'Falls ein Konto existiert, wurde ein Reset-Link versendet. Der Code kann jetzt eingegeben werden.');
+    } catch (error) {
+      setMessage('bad', error.message || 'Reset-Link konnte nicht angefordert werden.');
+    } finally {
+      recoveryRunning = false;
+      renderAccount();
+    }
+  }
+
+  async function confirmPasswordReset() {
+    if (!recoveryAvailable() || recoveryRunning) return;
+    const form = element('accountRecoveryConfirmForm');
+    if (!form.reportValidity()) return;
+    const email = element('accountRecoveryConfirmEmail').value.trim();
+    const token = element('accountRecoveryToken').value.trim();
+    const password = element('accountRecoveryPassword').value;
+    const repeated = element('accountRecoveryPasswordConfirm').value;
+    if (password !== repeated) {
+      clearRecoverySecrets();
+      setMessage('bad', 'Die beiden neuen Passwörter stimmen nicht überein. Code und Passwörter wurden verworfen.');
+      return renderAccount();
+    }
+    recoveryRunning = true;
+    setMessage('', 'Passwort wird sicher geändert …');
+    renderAccount();
+    try {
+      const response = await account.confirmPasswordReset(email, token, password);
+      if (!response || response.ok !== true) {
+        throw new Error(problemMessage(response, 'Passwort konnte nicht geändert werden.'));
+      }
+      activeStatus = response.status || safeStatus();
+      element('accountEmail').value = email;
+      recoveryMode = false;
+      recoveryConfirmMode = false;
+      setMessage('good', 'Passwort geändert. Alle Geräte wurden abgemeldet; bitte mit dem neuen Passwort anmelden.');
+    } catch (error) {
+      setMessage('bad', error.message || 'Passwort konnte nicht geändert werden.');
+    } finally {
+      clearRecoverySecrets();
+      recoveryRunning = false;
       renderAccount();
     }
   }
@@ -449,6 +601,18 @@
     authenticate('login');
   });
   element('accountRegister').addEventListener('click', () => authenticate('register'));
+  element('accountForgotPassword').addEventListener('click', () => showRecovery(false));
+  element('accountRecoveryRequestForm').addEventListener('submit', event => {
+    event.preventDefault();
+    requestPasswordReset();
+  });
+  element('accountRecoveryHaveToken').addEventListener('click', () => showRecovery(true));
+  element('accountRecoveryCancel').addEventListener('click', cancelRecovery);
+  element('accountRecoveryConfirmForm').addEventListener('submit', event => {
+    event.preventDefault();
+    confirmPasswordReset();
+  });
+  element('accountRecoveryConfirmCancel').addEventListener('click', cancelRecovery);
   element('accountLogout').addEventListener('click', logout);
   element('accountSyncNow').addEventListener('click', syncNow);
   element('legacyMigrationStart').addEventListener('click', startMigration);
@@ -464,5 +628,6 @@
   });
   window.addEventListener('pokefolio:collection-changed', renderAccount);
 
+  initializeRecoveryFragment();
   renderAccount();
 })();

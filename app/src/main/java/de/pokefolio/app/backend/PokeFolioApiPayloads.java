@@ -55,9 +55,9 @@ final class PokeFolioApiPayloads {
         validateLoginInput(email, password, deviceName);
         try {
             JSONObject json = new JSONObject();
-            json.put("email", email);
+            json.put("email", email.trim());
             json.put("password", password);
-            json.put("deviceName", deviceName);
+            json.put("deviceName", deviceName.trim());
             json.put("platform", "android");
             return json.toString().getBytes(StandardCharsets.UTF_8);
         } catch (JSONException error) {
@@ -76,6 +76,46 @@ final class PokeFolioApiPayloads {
                     .getBytes(StandardCharsets.UTF_8);
         } catch (JSONException error) {
             throw new IllegalArgumentException("Refresh request cannot be serialized.", error);
+        }
+    }
+
+    static byte[] serializePasswordResetRequest(String email) {
+        validateEmail(email);
+        try {
+            return new JSONObject()
+                    .put("email", email.trim())
+                    .toString()
+                    .getBytes(StandardCharsets.UTF_8);
+        } catch (JSONException error) {
+            throw new IllegalArgumentException(
+                    "Password reset request cannot be serialized.", error);
+        }
+    }
+
+    static byte[] serializePasswordResetConfirm(
+            String email,
+            String token,
+            String newPassword
+    ) {
+        validateEmail(email);
+        if (token == null || token.length() < 32 || token.length() > 512) {
+            throw new IllegalArgumentException(
+                    "Password reset token must contain 32 to 512 characters.");
+        }
+        if (newPassword == null || newPassword.length() < 12 || newPassword.length() > 128) {
+            throw new IllegalArgumentException(
+                    "New password must contain 12 to 128 characters.");
+        }
+        try {
+            return new JSONObject()
+                    .put("email", email.trim())
+                    .put("token", token)
+                    .put("newPassword", newPassword)
+                    .toString()
+                    .getBytes(StandardCharsets.UTF_8);
+        } catch (JSONException error) {
+            throw new IllegalArgumentException(
+                    "Password reset confirmation cannot be serialized.", error);
         }
     }
 
@@ -354,14 +394,18 @@ final class PokeFolioApiPayloads {
     }
 
     private static void validateLoginInput(String email, String password, String deviceName) {
-        if (email == null || email.trim().isEmpty() || email.length() > 254) {
-            throw new IllegalArgumentException("Email must contain 1 to 254 characters.");
-        }
+        validateEmail(email);
         if (password == null || password.isEmpty() || password.length() > 128) {
             throw new IllegalArgumentException("Password must contain 1 to 128 characters.");
         }
         if (deviceName == null || deviceName.trim().isEmpty() || deviceName.trim().length() > 120) {
             throw new IllegalArgumentException("Device name must contain 1 to 120 characters.");
+        }
+    }
+
+    private static void validateEmail(String email) {
+        if (email == null || email.trim().isEmpty() || email.trim().length() > 254) {
+            throw new IllegalArgumentException("Email must contain 1 to 254 characters.");
         }
     }
 

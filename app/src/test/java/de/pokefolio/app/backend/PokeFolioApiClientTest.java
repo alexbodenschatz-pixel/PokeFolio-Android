@@ -69,6 +69,50 @@ public final class PokeFolioApiClientTest {
     }
 
     @Test
+    public void passwordResetUsesAnonymousRoutesAndConfirmationRevokesLocalSession()
+            throws Exception {
+        MemoryRefreshTokenStore store = new MemoryRefreshTokenStore();
+        String resetToken = "reset-" + repeat('r', 48);
+        RecordingTransport transport = new RecordingTransport(request -> {
+            if ("/api/v1/auth/login".equals(request.path)) {
+                return jsonResponse(200, sessionBody(
+                        DEVICE_ID, FIRST_ACCESS_TOKEN, FIRST_REFRESH_TOKEN));
+            }
+            assertNull(request.accessToken);
+            JSONObject body = new JSONObject(new String(request.body, StandardCharsets.UTF_8));
+            if ("/api/v1/auth/password/reset/request".equals(request.path)) {
+                assertEquals("owner@example.test", body.getString("email"));
+                assertEquals(1, body.length());
+                return jsonResponse(202, "");
+            }
+            if ("/api/v1/auth/password/reset/confirm".equals(request.path)) {
+                assertEquals("owner@example.test", body.getString("email"));
+                assertEquals(resetToken, body.getString("token"));
+                assertEquals("replacement password", body.getString("newPassword"));
+                assertEquals(3, body.length());
+                return jsonResponse(204, "");
+            }
+            throw new IOException("Unexpected request: " + request.path);
+        });
+        PokeFolioApiClient client = new PokeFolioApiClient(store, transport);
+        client.login("owner@example.test", "valid-password", "Pixel test");
+
+        PokeFolioApiResponse requested = client.requestPasswordReset("owner@example.test");
+        PokeFolioApiResponse confirmed = client.confirmPasswordReset(
+                "owner@example.test", resetToken, "replacement password");
+
+        assertTrue(requested.isSucceeded());
+        assertEquals(202, requested.getStatus());
+        assertTrue(confirmed.isSucceeded());
+        assertEquals(204, confirmed.getStatus());
+        assertNull(client.getCurrentSession());
+        assertNull(store.credential);
+        assertEquals(1, store.deleteCount);
+        assertEquals(3, transport.requests.size());
+        assertTrue(allZero(transport.lastResponseBody));
+    }
+
+    @Test
     public void invalidAuthenticationEnvelopeNeverActivatesOrPersistsSession() {
         MemoryRefreshTokenStore store = new MemoryRefreshTokenStore();
         String valid = sessionBody(DEVICE_ID, FIRST_ACCESS_TOKEN, FIRST_REFRESH_TOKEN);

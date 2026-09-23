@@ -99,6 +99,44 @@ public sealed class PokeNativeBridgeTests
     }
 
     [TestMethod]
+    public async Task PasswordResetCallbacksNeverReturnEmailTokenOrPassword()
+    {
+        string email = "private-owner@example.test";
+        string token = "reset-" + new string('r', 48);
+        string password = "replacement password";
+        var account = new FakeCloudService(Guid.NewGuid());
+        await account.LoginAsync(email, "old-password", "Desktop test");
+        var context = CreateContext(account);
+        await using var disposable = context;
+
+        context.Bridge.requestPasswordReset(email, "account-reset-request");
+        Callback requested = await context.Callbacks.NextAsync();
+        Assert.AreEqual("onDesktopAccountResult", requested.Name);
+        using (var json = JsonDocument.Parse(requested.Json))
+        {
+            Assert.IsTrue(json.RootElement.GetProperty("ok").GetBoolean());
+            Assert.AreEqual(
+                "password-reset-request",
+                json.RootElement.GetProperty("operation").GetString());
+        }
+        Assert.IsFalse(requested.Json.Contains(email, StringComparison.Ordinal));
+
+        context.Bridge.confirmPasswordReset(email, token, password, "account-reset-confirm");
+        Callback confirmed = await context.Callbacks.NextAsync();
+        Assert.AreEqual("onDesktopAccountResult", confirmed.Name);
+        Assert.IsFalse(confirmed.Json.Contains(email, StringComparison.Ordinal));
+        Assert.IsFalse(confirmed.Json.Contains(token, StringComparison.Ordinal));
+        Assert.IsFalse(confirmed.Json.Contains(password, StringComparison.Ordinal));
+        using var confirmJson = JsonDocument.Parse(confirmed.Json);
+        Assert.IsTrue(confirmJson.RootElement.GetProperty("ok").GetBoolean());
+        Assert.IsFalse(confirmJson.RootElement.GetProperty("status")
+            .GetProperty("authenticated").GetBoolean());
+        Assert.AreEqual(email, account.ResetEmail);
+        Assert.AreEqual(token, account.ResetToken);
+        Assert.AreEqual(password, account.ResetPassword);
+    }
+
+    [TestMethod]
     public async Task AccountStatusIsTokenFreeWhenBackendIsNotConfigured()
     {
         var context = CreateContext();
@@ -401,6 +439,9 @@ public sealed class PokeNativeBridgeTests
             DateTimeOffset.Parse("2030-01-01T00:00:00Z"));
 
         public string? LoginEmail { get; private set; }
+        public string? ResetEmail { get; private set; }
+        public string? ResetToken { get; private set; }
+        public string? ResetPassword { get; private set; }
         public string? LastPushJson { get; private set; }
         public string? LastCursor { get; private set; }
         public string? LastCatalogReferenceJson { get; private set; }
@@ -442,6 +483,27 @@ public sealed class PokeNativeBridgeTests
         {
             LoginEmail = email;
             return Task.FromResult(PokeFolioAuthenticationResult.Success(session));
+        }
+
+        public Task<PokeFolioApiResponse> RequestPasswordResetAsync(
+            string email,
+            CancellationToken cancellationToken = default)
+        {
+            ResetEmail = email;
+            return Task.FromResult(new PokeFolioApiResponse(202, ""));
+        }
+
+        public Task<PokeFolioApiResponse> ConfirmPasswordResetAsync(
+            string email,
+            string token,
+            string newPassword,
+            CancellationToken cancellationToken = default)
+        {
+            ResetEmail = email;
+            ResetToken = token;
+            ResetPassword = newPassword;
+            LoginEmail = null;
+            return Task.FromResult(new PokeFolioApiResponse(204, ""));
         }
 
         public Task<PokeFolioAuthenticationResult> RestoreSessionAsync(

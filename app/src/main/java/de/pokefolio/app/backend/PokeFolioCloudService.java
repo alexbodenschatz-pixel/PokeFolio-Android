@@ -68,6 +68,24 @@ public final class PokeFolioCloudService implements Closeable {
                 : client.login(email, password, deviceName);
     }
 
+    public PokeFolioApiResponse requestPasswordReset(String email) throws IOException {
+        throwIfClosed();
+        return client == null
+                ? unavailableResponse()
+                : client.requestPasswordReset(email);
+    }
+
+    public PokeFolioApiResponse confirmPasswordReset(
+            String email,
+            String token,
+            String newPassword
+    ) throws IOException {
+        throwIfClosed();
+        return client == null
+                ? unavailableResponse()
+                : client.confirmPasswordReset(email, token, newPassword);
+    }
+
     public PokeFolioAuthenticationResult restoreSession() throws IOException {
         throwIfClosed();
         return client == null

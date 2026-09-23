@@ -26,6 +26,10 @@ public final class PokeFolioAccountBridge implements Closeable {
         PokeFolioAuthenticationResult run() throws IOException;
     }
 
+    private interface ApiAction {
+        PokeFolioApiResponse run() throws IOException;
+    }
+
     private static final String CALLBACK_FUNCTION = "onAndroidAccountResult";
     private static final Pattern REQUEST_ID = Pattern.compile("[A-Za-z0-9._:-]{1,128}");
     private static final int MAXIMUM_PENDING_ACTIONS = 8;
@@ -96,6 +100,25 @@ public final class PokeFolioAccountBridge implements Closeable {
         queueAuthentication("restore", requestId, cloud::restoreSession);
     }
 
+    public void requestPasswordReset(String email, String requestId) {
+        queueApi(
+                "password-reset-request",
+                requestId,
+                () -> cloud.requestPasswordReset(email));
+    }
+
+    public void confirmPasswordReset(
+            String email,
+            String token,
+            String newPassword,
+            String requestId
+    ) {
+        queueApi(
+                "password-reset-confirm",
+                requestId,
+                () -> cloud.confirmPasswordReset(email, token, newPassword));
+    }
+
     public void logout(String requestId) {
         String safeRequestId = requireRequestId(requestId);
         queue(safeRequestId, "logout", () -> runLogout(safeRequestId));
@@ -109,6 +132,11 @@ public final class PokeFolioAccountBridge implements Closeable {
         String safeRequestId = requireRequestId(requestId);
         queue(safeRequestId, operation, () ->
                 runAuthentication(operation, safeRequestId, action));
+    }
+
+    private void queueApi(String operation, String requestId, ApiAction action) {
+        String safeRequestId = requireRequestId(requestId);
+        queue(safeRequestId, operation, () -> runApi(operation, safeRequestId, action));
     }
 
     private void queue(String requestId, String operation, Runnable action) {
@@ -131,6 +159,18 @@ public final class PokeFolioAccountBridge implements Closeable {
     ) {
         try {
             PokeFolioAuthenticationResult result = action.run();
+            JSONObject payload = baseResult(requestId, operation, result.isSucceeded());
+            payload.put("status", statusPayload(cloud.getAccountStatus()));
+            payload.put("problem", problemPayload(result.getProblem()));
+            send(payload);
+        } catch (Exception error) {
+            sendException(requestId, operation, error);
+        }
+    }
+
+    private void runApi(String operation, String requestId, ApiAction action) {
+        try {
+            PokeFolioApiResponse result = action.run();
             JSONObject payload = baseResult(requestId, operation, result.isSucceeded());
             payload.put("status", statusPayload(cloud.getAccountStatus()));
             payload.put("problem", problemPayload(result.getProblem()));

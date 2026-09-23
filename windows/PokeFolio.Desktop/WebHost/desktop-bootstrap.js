@@ -51,6 +51,10 @@
       nativeHost.registerAccount(email, password, deviceName, requestId)),
     login: (email, password, deviceName) => accountRequest(requestId =>
       nativeHost.loginAccount(email, password, deviceName, requestId)),
+    requestPasswordReset: email => accountRequest(requestId =>
+      nativeHost.requestPasswordReset(email, requestId)),
+    confirmPasswordReset: (email, token, newPassword) => accountRequest(requestId =>
+      nativeHost.confirmPasswordReset(email, token, newPassword, requestId)),
     restore: () => accountRequest(requestId => nativeHost.restoreAccountSession(requestId)),
     logout: () => accountRequest(requestId => nativeHost.logoutAccount(requestId))
   });

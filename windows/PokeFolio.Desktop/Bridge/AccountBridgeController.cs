@@ -50,6 +50,26 @@ internal sealed class AccountBridgeController : IDisposable
                 deviceName,
                 cancellationToken));
 
+    public void RequestPasswordReset(string email, string requestId) =>
+        _ = RunApiAsync(
+            "password-reset-request",
+            requestId,
+            cancellationToken => account.RequestPasswordResetAsync(email, cancellationToken));
+
+    public void ConfirmPasswordReset(
+        string email,
+        string token,
+        string newPassword,
+        string requestId) =>
+        _ = RunApiAsync(
+            "password-reset-confirm",
+            requestId,
+            cancellationToken => account.ConfirmPasswordResetAsync(
+                email,
+                token,
+                newPassword,
+                cancellationToken));
+
     public void Restore(string requestId) =>
         _ = RunAuthenticationAsync(
             "restore",
@@ -147,6 +167,55 @@ internal sealed class AccountBridgeController : IDisposable
                 operation = "logout",
                 ok = false,
                 serverSessionRevoked = false,
+                status = AccountStatusPayload(account.GetStatus()),
+                problem = (object?)null,
+                errorType = AccountErrorType(error),
+                error = AccountErrorMessage(error)
+            });
+        }
+    }
+
+    private async Task RunApiAsync(
+        string operation,
+        string requestId,
+        Func<CancellationToken, Task<PokeFolioApiResponse>> action)
+    {
+        string safeRequestId = SafeRequestId(requestId);
+        try
+        {
+            PokeFolioApiResponse result = await action(lifetime.Token);
+            DesktopLog.Info(
+                "ACCOUNT_OPERATION",
+                ("operation", operation),
+                ("success", result.Succeeded));
+            await callbacks.SendAsync("onDesktopAccountResult", new
+            {
+                requestId = safeRequestId,
+                operation,
+                ok = result.Succeeded,
+                status = AccountStatusPayload(account.GetStatus()),
+                problem = ProblemPayload(result.Problem)
+            });
+        }
+        catch (OperationCanceledException) when (IsDisposed)
+        {
+            // Application shutdown cancels outstanding account work.
+        }
+        catch (Exception) when (IsDisposed)
+        {
+            // The native transport may finish disposal with a non-cancellation exception.
+        }
+        catch (Exception error)
+        {
+            DesktopLog.Warning(
+                "ACCOUNT_OPERATION_FAILED",
+                ("operation", operation),
+                ("type", error.GetType().Name));
+            await callbacks.SendAsync("onDesktopAccountResult", new
+            {
+                requestId = safeRequestId,
+                operation,
+                ok = false,
                 status = AccountStatusPayload(account.GetStatus()),
                 problem = (object?)null,
                 errorType = AccountErrorType(error),

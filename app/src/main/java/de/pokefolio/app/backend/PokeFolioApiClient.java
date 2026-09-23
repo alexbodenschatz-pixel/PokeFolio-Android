@@ -72,6 +72,37 @@ public final class PokeFolioApiClient implements Closeable {
         return startSession("/api/v1/auth/login", email, password, deviceName);
     }
 
+    public PokeFolioApiResponse requestPasswordReset(String email) throws IOException {
+        byte[] body = PokeFolioApiPayloads.serializePasswordResetRequest(email);
+        try {
+            return executeAnonymousCommand(
+                    "/api/v1/auth/password/reset/request",
+                    body);
+        } finally {
+            clear(body);
+        }
+    }
+
+    public PokeFolioApiResponse confirmPasswordReset(
+            String email,
+            String token,
+            String newPassword
+    ) throws IOException {
+        byte[] body = PokeFolioApiPayloads.serializePasswordResetConfirm(
+                email, token, newPassword);
+        synchronized (sessionGate) {
+            try {
+                PokeFolioApiResponse result = executeAnonymousCommand(
+                        "/api/v1/auth/password/reset/confirm",
+                        body);
+                if (result.isSucceeded()) invalidateLocalSession();
+                return result;
+            } finally {
+                clear(body);
+            }
+        }
+    }
+
     public PokeFolioAuthenticationResult restoreSession() throws IOException {
         throwIfClosed();
         synchronized (sessionGate) {
@@ -329,6 +360,30 @@ public final class PokeFolioApiClient implements Closeable {
                 if (response != null) clear(response.body);
                 clear(body);
             }
+        }
+    }
+
+    private PokeFolioApiResponse executeAnonymousCommand(
+            String path,
+            byte[] body
+    ) throws IOException {
+        throwIfClosed();
+        PokeFolioRawResponse response = transport.send(
+                "POST",
+                path,
+                body,
+                null,
+                MAXIMUM_AUTH_RESPONSE_BYTES);
+        try {
+            String responseBody = PokeFolioApiPayloads.decodeUtf8(response.body);
+            return response.isSuccess()
+                    ? new PokeFolioApiResponse(response.status, responseBody, null)
+                    : new PokeFolioApiResponse(
+                            response.status,
+                            responseBody,
+                            PokeFolioApiPayloads.parseProblem(response.status, response.body));
+        } finally {
+            clear(response.body);
         }
     }
 

@@ -55,6 +55,8 @@ public sealed class SharedAssetsTests
         StringAssert.Contains(bootstrap, "Object.defineProperty(window, 'PokeAccount'");
         StringAssert.Contains(bootstrap, "pendingAccountRequests.size >= 8");
         StringAssert.Contains(bootstrap, "nativeHost.restoreAccountSession");
+        StringAssert.Contains(bootstrap, "nativeHost.requestPasswordReset");
+        StringAssert.Contains(bootstrap, "nativeHost.confirmPasswordReset");
         StringAssert.Contains(bootstrap, "pokefolio:account-state");
         Assert.IsFalse(bootstrap.Contains("accessToken", StringComparison.Ordinal));
         Assert.IsFalse(bootstrap.Contains("refreshToken", StringComparison.Ordinal));

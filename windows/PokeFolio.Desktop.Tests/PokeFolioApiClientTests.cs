@@ -52,6 +52,7 @@ public sealed class PokeFolioApiClientTests
             Assert.IsNull(request.AuthorizationParameter);
             using JsonDocument body = JsonDocument.Parse(request.Body);
             Assert.AreEqual("windows", body.RootElement.GetProperty("platform").GetString());
+            Assert.AreEqual("owner@example.test", body.RootElement.GetProperty("email").GetString());
             Assert.AreEqual("Desktop test", body.RootElement.GetProperty("deviceName").GetString());
             return Task.FromResult(JsonResponse(
                 HttpStatusCode.OK,
@@ -60,9 +61,9 @@ public sealed class PokeFolioApiClientTests
         using var client = CreateClient(store, handler);
 
         PokeFolioAuthenticationResult result = await client.LoginAsync(
-            "owner@example.test",
+            " owner@example.test ",
             "correct horse battery staple",
-            "Desktop test");
+            " Desktop test ");
 
         Assert.IsTrue(result.Succeeded);
         Assert.AreEqual(UserId, result.Session?.UserId);
@@ -71,6 +72,86 @@ public sealed class PokeFolioApiClientTests
         Assert.AreEqual(new RefreshTokenCredential(deviceId, FirstRefreshToken), store.Credential);
         Assert.IsFalse(client.CurrentSession!.ToString().Contains(FirstAccessToken, StringComparison.Ordinal));
         Assert.AreEqual(1, store.SaveCount);
+    }
+
+    [TestMethod]
+    public async Task PasswordResetUsesAnonymousRoutesAndConfirmationClearsLocalSession()
+    {
+        Guid deviceId = Guid.NewGuid();
+        string resetToken = "reset-" + new string('r', 48);
+        var store = new MemoryRefreshTokenStore();
+        var handler = new RecordingHandler((request, call, _) => Task.FromResult(call switch
+        {
+            0 => JsonResponse(
+                HttpStatusCode.OK,
+                SessionBody(deviceId, FirstAccessToken, FirstRefreshToken)),
+            1 => AssertResetRequest(request),
+            2 => AssertResetConfirm(request),
+            _ => throw new AssertFailedException("Unexpected password-reset request.")
+        }));
+        using var client = CreateClient(store, handler);
+        await client.LoginAsync("owner@example.test", "valid-password", "Desktop test");
+
+        PokeFolioApiResponse requested = await client.RequestPasswordResetAsync(
+            " owner@example.test ");
+        PokeFolioApiResponse confirmed = await client.ConfirmPasswordResetAsync(
+            " owner@example.test ",
+            resetToken,
+            "replacement password");
+
+        Assert.IsTrue(requested.Succeeded);
+        Assert.AreEqual((int)HttpStatusCode.Accepted, requested.Status);
+        Assert.IsTrue(confirmed.Succeeded);
+        Assert.AreEqual((int)HttpStatusCode.NoContent, confirmed.Status);
+        Assert.IsNull(client.CurrentSession);
+        Assert.IsNull(store.Credential);
+        Assert.AreEqual(1, store.DeleteCount);
+        Assert.HasCount(3, handler.Requests);
+
+        static HttpResponseMessage AssertResetRequest(RecordedRequest request)
+        {
+            Assert.AreEqual(HttpMethod.Post, request.Method);
+            Assert.AreEqual("/api/v1/auth/password/reset/request", request.Uri.AbsolutePath);
+            Assert.IsNull(request.AuthorizationParameter);
+            using JsonDocument body = JsonDocument.Parse(request.Body);
+            Assert.AreEqual(1, body.RootElement.EnumerateObject().Count());
+            Assert.AreEqual("owner@example.test", body.RootElement.GetProperty("email").GetString());
+            return new HttpResponseMessage(HttpStatusCode.Accepted);
+        }
+
+        HttpResponseMessage AssertResetConfirm(RecordedRequest request)
+        {
+            Assert.AreEqual(HttpMethod.Post, request.Method);
+            Assert.AreEqual("/api/v1/auth/password/reset/confirm", request.Uri.AbsolutePath);
+            Assert.IsNull(request.AuthorizationParameter);
+            using JsonDocument body = JsonDocument.Parse(request.Body);
+            Assert.AreEqual(3, body.RootElement.EnumerateObject().Count());
+            Assert.AreEqual("owner@example.test", body.RootElement.GetProperty("email").GetString());
+            Assert.AreEqual(resetToken, body.RootElement.GetProperty("token").GetString());
+            Assert.AreEqual(
+                "replacement password",
+                body.RootElement.GetProperty("newPassword").GetString());
+            return new HttpResponseMessage(HttpStatusCode.NoContent);
+        }
+    }
+
+    [TestMethod]
+    public async Task InvalidPasswordResetPayloadsAreRejectedBeforeNetworkAccess()
+    {
+        var store = new MemoryRefreshTokenStore();
+        var handler = new RecordingHandler((_, _, _) =>
+            throw new AssertFailedException("Invalid password-reset payload reached the network."));
+        using var client = CreateClient(store, handler);
+
+        await Assert.ThrowsExactlyAsync<ArgumentException>(async () =>
+            await client.RequestPasswordResetAsync("   "));
+        await Assert.ThrowsExactlyAsync<ArgumentException>(async () =>
+            await client.ConfirmPasswordResetAsync(
+                "owner@example.test", "short", "replacement password"));
+        await Assert.ThrowsExactlyAsync<ArgumentException>(async () =>
+            await client.ConfirmPasswordResetAsync(
+                "owner@example.test", "reset-" + new string('r', 48), "too-short"));
+        Assert.HasCount(0, handler.Requests);
     }
 
     [TestMethod]

@@ -25,6 +25,8 @@ function createRuntime(nativeOverrides = {}) {
     getAccountStatus: () => JSON.stringify({configured: false, authenticated: false}),
     registerAccount: () => {},
     loginAccount: () => {},
+    requestPasswordReset: () => {},
+    confirmPasswordReset: () => {},
     restoreAccountSession: () => {},
     logoutAccount: () => {},
     resolveCatalogCard: () => {},
@@ -63,6 +65,41 @@ function createRuntime(nativeOverrides = {}) {
   vm.runInNewContext(cloudBootstrap, context, {filename: cloudBootstrapPath});
   return {window, nativeHost, events};
 }
+
+test('Windows Konto-Fassade korreliert Reset-Aufrufe ohne Browser-Persistenz', async () => {
+  const calls = [];
+  const runtime = createRuntime({
+    requestPasswordReset(email, requestId) {
+      calls.push({email, requestId});
+    },
+    confirmPasswordReset(email, token, password, requestId) {
+      calls.push({email, token, password, requestId});
+    }
+  });
+  const status = {configured: true, authenticated: false, session: null};
+
+  const request = runtime.window.PokeAccount.requestPasswordReset('owner@example.test');
+  runtime.window.onDesktopAccountResult(JSON.stringify({
+    requestId: calls[0].requestId,
+    operation: 'password-reset-request',
+    ok: true,
+    status
+  }));
+  assert.equal((await request).ok, true);
+
+  const confirm = runtime.window.PokeAccount.confirmPasswordReset(
+    'owner@example.test', 'one-shot-reset-token', 'replacement-password');
+  runtime.window.onDesktopAccountResult(JSON.stringify({
+    requestId: calls[1].requestId,
+    operation: 'password-reset-confirm',
+    ok: true,
+    status
+  }));
+  assert.equal((await confirm).ok, true);
+  assert.equal(calls[1].token, 'one-shot-reset-token');
+  assert.equal(calls[1].password, 'replacement-password');
+  assert.doesNotMatch(bootstrap, /localStorage|sessionStorage|Authorization|refreshToken/);
+});
 
 test('Windows Katalog-Fassade normalisiert Kartenreferenz und ordnet Callback zu', async () => {
   let nativeCall;

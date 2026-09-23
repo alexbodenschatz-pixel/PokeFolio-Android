@@ -13,15 +13,25 @@ const ui = fs.readFileSync(path.join(assets, 'account-ui.js'), 'utf8');
 test('Kontoseite bietet Registrierung, Login, Sync und ausdrückliche lokale Migration', () => {
   for (const id of ['accountSettings', 'accountSignedOut', 'accountEmail', 'accountPassword',
     'accountDeviceName', 'accountLogin', 'accountRegister', 'accountSignedIn', 'accountSyncNow',
-    'accountLogout', 'legacyMigration', 'legacyMigrationStart', 'cloudCollectionStatus']) {
+    'accountLogout', 'accountForgotPassword', 'accountRecovery', 'accountRecoveryRequestForm',
+    'accountRecoveryEmail', 'accountRecoveryRequest', 'accountRecoveryConfirmForm',
+    'accountRecoveryConfirmEmail', 'accountRecoveryToken', 'accountRecoveryPassword',
+    'accountRecoveryPasswordConfirm', 'accountRecoveryConfirm', 'legacyMigration',
+    'legacyMigrationStart', 'cloudCollectionStatus']) {
     assert.match(index, new RegExp(`id="${id}"`));
   }
   assert.match(index, /Die lokale Sammlung bleibt als wiederherstellbare Kopie erhalten/);
   assert.match(ui, /account\.register\(/);
   assert.match(ui, /account\.login\(/);
   assert.match(ui, /account\.logout\(/);
+  assert.match(ui, /account\.requestPasswordReset\(/);
+  assert.match(ui, /account\.confirmPasswordReset\(/);
+  assert.match(ui, /new URLSearchParams\(hash\)/);
+  assert.match(ui, /history\.replaceState\(/);
   assert.match(ui, /sync\.syncNow\(/);
   assert.match(ui, /window\.confirm\(/);
+  assert.doesNotMatch(ui, /sessionStorage/);
+  assert.doesNotMatch(ui, /localStorage\.(?:getItem|setItem)\([^)]*(?:password|token|Recovery)/i);
 });
 
 test('Migration nutzt stabile Catalog-Referenzen und atomare Queue-Batches ohne lokale Löschung', () => {
