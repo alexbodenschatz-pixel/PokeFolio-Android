@@ -120,6 +120,17 @@ public final class PokeFolioAccountBridge implements Closeable {
                 () -> cloud.confirmPasswordReset(email, token, newPassword));
     }
 
+    public void changePassword(
+            String currentPassword,
+            String newPassword,
+            String requestId
+    ) {
+        queueApi(
+                "password-change",
+                requestId,
+                () -> cloud.changePassword(currentPassword, newPassword));
+    }
+
     public void logout(String requestId) {
         String safeRequestId = requireRequestId(requestId);
         queue(safeRequestId, "logout", () -> runLogout(safeRequestId));

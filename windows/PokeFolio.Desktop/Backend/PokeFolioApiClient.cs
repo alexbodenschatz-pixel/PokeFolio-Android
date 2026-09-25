@@ -111,6 +111,31 @@ public sealed class PokeFolioApiClient : IDisposable
         }
     }
 
+    public async Task<PokeFolioApiResponse> ChangePasswordAsync(
+        string currentPassword,
+        string newPassword,
+        CancellationToken cancellationToken = default)
+    {
+        byte[] body = PokeFolioApiPayloads.SerializePasswordChange(
+            currentPassword,
+            newPassword);
+        Guid? expectedUserId = CurrentSession?.UserId;
+        try
+        {
+            return await SendAuthenticatedAsync(
+                HttpMethod.Post,
+                "/api/v1/auth/password/change",
+                body,
+                cancellationToken,
+                MaximumAuthResponseBytes,
+                expectedUserId);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(body);
+        }
+    }
+
     public async Task<PokeFolioAuthenticationResult> RestoreSessionAsync(
         CancellationToken cancellationToken = default)
     {

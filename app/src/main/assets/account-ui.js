@@ -16,6 +16,7 @@
   let recoveryMode = false;
   let recoveryConfirmMode = false;
   let recoveryRunning = false;
+  let passwordChangeRunning = false;
   let message = {kind: '', text: ''};
   let cloudCollectionState = {phase: ''};
   let managedDevices = [];
@@ -54,6 +55,10 @@
       && typeof account.confirmPasswordReset === 'function';
   }
 
+  function passwordChangeAvailable() {
+    return account && typeof account.changePassword === 'function';
+  }
+
   function deviceManagementAvailable() {
     return account && typeof account.listDevices === 'function'
       && typeof account.revokeDevice === 'function'
@@ -64,6 +69,12 @@
     element('accountRecoveryToken').value = '';
     element('accountRecoveryPassword').value = '';
     element('accountRecoveryPasswordConfirm').value = '';
+  }
+
+  function clearPasswordChangeSecrets() {
+    element('accountCurrentPassword').value = '';
+    element('accountNewPassword').value = '';
+    element('accountNewPasswordConfirm').value = '';
   }
 
   function clearRecoveryFragment() {
@@ -181,8 +192,10 @@
     list.replaceChildren();
     if (!authenticated) return;
     const available = deviceManagementAvailable();
-    element('accountDevicesRefresh').disabled = !available || devicesRunning;
+    element('accountDevicesRefresh').disabled = !available || devicesRunning
+      || passwordChangeRunning;
     element('accountDevicesRevokeOthers').disabled = !available || devicesRunning
+      || passwordChangeRunning
       || managedDevices.filter(device => !device.current).length === 0;
     element('accountDevicesStatus').textContent = available
       ? devicesRunning ? 'Gerätesitzungen werden aktualisiert …' : devicesStatus
@@ -206,7 +219,7 @@
         revoke.type = 'button';
         revoke.className = 'secondary compact';
         revoke.textContent = 'Abmelden';
-        revoke.disabled = devicesRunning;
+        revoke.disabled = devicesRunning || passwordChangeRunning;
         revoke.addEventListener('click', () => revokeDevice(device));
         item.append(revoke);
       }
@@ -216,7 +229,8 @@
 
   async function loadDevices(announce) {
     const owner = accountUserId();
-    if (!owner || !deviceManagementAvailable() || devicesRunning) return;
+    if (!owner || !deviceManagementAvailable() || devicesRunning
+      || passwordChangeRunning) return;
     devicesOwner = owner;
     devicesRunning = true;
     renderDevices(true);
@@ -242,7 +256,8 @@
   }
 
   async function revokeDevice(device) {
-    if (!device || device.current || devicesRunning || !deviceManagementAvailable()) return;
+    if (!device || device.current || devicesRunning || passwordChangeRunning
+      || !deviceManagementAvailable()) return;
     if (!window.confirm(`${device.name} wirklich abmelden?`)) return;
     devicesRunning = true;
     renderDevices(true);
@@ -263,7 +278,7 @@
   }
 
   async function revokeOtherDevices() {
-    if (devicesRunning || !deviceManagementAvailable()) return;
+    if (devicesRunning || passwordChangeRunning || !deviceManagementAvailable()) return;
     const others = managedDevices.filter(device => !device.current);
     if (!others.length || !window.confirm('Alle anderen Geräte wirklich abmelden?')) return;
     devicesRunning = true;
@@ -454,6 +469,8 @@
     element('accountRecoveryRequestForm').hidden = !recovering || recoveryConfirmMode;
     element('accountRecoveryConfirmForm').hidden = !recovering || !recoveryConfirmMode;
     element('accountSignedIn').hidden = !authenticated;
+    element('accountPasswordChange').hidden = !authenticated;
+    if (!authenticated) clearPasswordChangeSecrets();
     element('accountConfigurationMessage').textContent = configured
       ? authenticated
         ? 'Deine private Sammlung wird über die native, tokenfreie Cloud-Grenze synchronisiert.'
@@ -471,8 +488,13 @@
     element('accountRecoveryCancel').disabled = recoveryRunning;
     element('accountRecoveryConfirm').disabled = !recovering || recoveryRunning;
     element('accountRecoveryConfirmCancel').disabled = recoveryRunning;
-    element('accountSyncNow').disabled = !authenticated || !sync || migrationRunning;
-    element('accountLogout').disabled = !authenticated || migrationRunning;
+    element('accountSyncNow').disabled = !authenticated || !sync || migrationRunning
+      || passwordChangeRunning;
+    element('accountLogout').disabled = !authenticated || migrationRunning
+      || passwordChangeRunning;
+    element('accountPasswordChangeSubmit').disabled = !authenticated
+      || !passwordChangeAvailable() || migrationRunning || devicesRunning
+      || passwordChangeRunning;
     if (authenticated) {
       const session = activeStatus.session;
       const device = session.device || {};
@@ -600,6 +622,49 @@
     } finally {
       clearRecoverySecrets();
       recoveryRunning = false;
+      renderAccount();
+    }
+  }
+
+  async function changePassword() {
+    if (!passwordChangeAvailable() || passwordChangeRunning || migrationRunning) return;
+    const form = element('accountPasswordChangeForm');
+    if (!form.reportValidity()) return;
+    const owner = accountUserId();
+    if (!owner) return;
+    const currentPassword = element('accountCurrentPassword').value;
+    const newPassword = element('accountNewPassword').value;
+    const repeated = element('accountNewPasswordConfirm').value;
+    if (newPassword !== repeated) {
+      clearPasswordChangeSecrets();
+      setMessage('bad', 'Die beiden neuen Passwörter stimmen nicht überein. Alle Passwortfelder wurden verworfen.');
+      return renderAccount();
+    }
+    if (newPassword === currentPassword) {
+      clearPasswordChangeSecrets();
+      setMessage('bad', 'Das neue Passwort muss sich vom aktuellen Passwort unterscheiden.');
+      return renderAccount();
+    }
+    passwordChangeRunning = true;
+    setMessage('', 'Passwort wird sicher geändert …');
+    renderAccount();
+    try {
+      const response = await account.changePassword(currentPassword, newPassword);
+      if (owner !== accountUserId()) return;
+      if (!response || response.ok !== true) {
+        throw new Error(problemMessage(response, 'Passwort konnte nicht geändert werden.'));
+      }
+      activeStatus = response.status || safeStatus();
+      managedDevices = managedDevices.filter(device => device.current);
+      devicesStatus = '1 aktive Gerätesitzung.';
+      setMessage('good', 'Passwort geändert. Andere Geräte wurden abgemeldet; dieses Gerät bleibt angemeldet.');
+    } catch (error) {
+      if (owner === accountUserId()) {
+        setMessage('bad', error.message || 'Passwort konnte nicht geändert werden.');
+      }
+    } finally {
+      clearPasswordChangeSecrets();
+      passwordChangeRunning = false;
       renderAccount();
     }
   }
@@ -800,6 +865,10 @@
     confirmPasswordReset();
   });
   element('accountRecoveryConfirmCancel').addEventListener('click', cancelRecovery);
+  element('accountPasswordChangeForm').addEventListener('submit', event => {
+    event.preventDefault();
+    changePassword();
+  });
   element('accountLogout').addEventListener('click', logout);
   element('accountSyncNow').addEventListener('click', syncNow);
   element('accountDevicesRefresh').addEventListener('click', () => loadDevices(true));

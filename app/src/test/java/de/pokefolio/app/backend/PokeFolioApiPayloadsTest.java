@@ -57,6 +57,24 @@ public final class PokeFolioApiPayloadsTest {
     }
 
     @Test
+    public void passwordChangePayloadContainsOnlyDistinctValidatedSecrets() throws Exception {
+        byte[] body = PokeFolioApiPayloads.serializePasswordChange(
+                "legacy",
+                "replacement secure password");
+        JSONObject json = new JSONObject(new String(body, StandardCharsets.UTF_8));
+
+        assertEquals(2, json.length());
+        assertEquals("legacy", json.getString("currentPassword"));
+        assertEquals("replacement secure password", json.getString("newPassword"));
+        assertThrows(IllegalArgumentException.class, () ->
+                PokeFolioApiPayloads.serializePasswordChange(
+                        "", "replacement secure password"));
+        assertThrows(IllegalArgumentException.class, () ->
+                PokeFolioApiPayloads.serializePasswordChange(
+                        "same secure password", "same secure password"));
+    }
+
+    @Test
     public void parsesOnlyExactCurrentAndroidSessionEnvelope() throws Exception {
         PokeFolioApiPayloads.AuthEnvelope envelope = PokeFolioApiPayloads.parseSession(
                 sessionJson("android", DEVICE_ID, "access-token-0123456789abcdefghijklmnop",

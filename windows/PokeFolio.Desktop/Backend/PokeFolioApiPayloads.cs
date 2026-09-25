@@ -69,6 +69,25 @@ internal static class PokeFolioApiPayloads
         }, JsonOptions);
     }
 
+    public static byte[] SerializePasswordChange(
+        string currentPassword,
+        string newPassword)
+    {
+        ValidatePassword(currentPassword, 1, nameof(currentPassword), "Current password");
+        ValidatePassword(newPassword, 12, nameof(newPassword), "New password");
+        if (string.Equals(currentPassword, newPassword, StringComparison.Ordinal))
+        {
+            throw new ArgumentException(
+                "New password must differ from the current password.",
+                nameof(newPassword));
+        }
+        return JsonSerializer.SerializeToUtf8Bytes(new
+        {
+            currentPassword,
+            newPassword
+        }, JsonOptions);
+    }
+
     public static byte[] SerializePasswordResetConfirm(
         string email,
         string token,
@@ -483,6 +502,20 @@ internal static class PokeFolioApiPayloads
         if (string.IsNullOrWhiteSpace(email) || email.Trim().Length > 254)
         {
             throw new ArgumentException("Email must contain 1 to 254 characters.", nameof(email));
+        }
+    }
+
+    private static void ValidatePassword(
+        string password,
+        int minimumLength,
+        string parameterName,
+        string fieldName)
+    {
+        if (password is null || password.Length < minimumLength || password.Length > 128)
+        {
+            throw new ArgumentException(
+                $"{fieldName} must contain {minimumLength} to 128 characters.",
+                parameterName);
         }
     }
 }

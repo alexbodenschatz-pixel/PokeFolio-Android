@@ -126,6 +126,12 @@ public sealed class PokeNativeBridge : IDisposable
         string requestId) =>
         accountBridge.ConfirmPasswordReset(email, token, newPassword, requestId);
 
+    public void changeAccountPassword(
+        string currentPassword,
+        string newPassword,
+        string requestId) =>
+        accountBridge.ChangePassword(currentPassword, newPassword, requestId);
+
     public void restoreAccountSession(string requestId) =>
         accountBridge.Restore(requestId);
 

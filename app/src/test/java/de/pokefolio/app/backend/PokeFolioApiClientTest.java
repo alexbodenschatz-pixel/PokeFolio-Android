@@ -147,6 +147,36 @@ public final class PokeFolioApiClientTest {
     }
 
     @Test
+    public void passwordChangeUsesCurrentSessionAndKeepsItActive() throws Exception {
+        MemoryRefreshTokenStore store = new MemoryRefreshTokenStore();
+        RecordingTransport transport = new RecordingTransport(request -> {
+            if ("/api/v1/auth/login".equals(request.path)) {
+                return jsonResponse(200, sessionBody(
+                        DEVICE_ID, FIRST_ACCESS_TOKEN, FIRST_REFRESH_TOKEN));
+            }
+            assertEquals("POST", request.method);
+            assertEquals("/api/v1/auth/password/change", request.path);
+            assertEquals(FIRST_ACCESS_TOKEN, request.accessToken);
+            JSONObject body = new JSONObject(new String(request.body, StandardCharsets.UTF_8));
+            assertEquals(2, body.length());
+            assertEquals("current secure password", body.getString("currentPassword"));
+            assertEquals("replacement secure password", body.getString("newPassword"));
+            return jsonResponse(204, "");
+        });
+        PokeFolioApiClient client = new PokeFolioApiClient(store, transport);
+        client.login("owner@example.test", "valid-password", "Pixel test");
+
+        PokeFolioApiResponse result = client.changePassword(
+                "current secure password", "replacement secure password");
+
+        assertTrue(result.isSucceeded());
+        assertEquals(204, result.getStatus());
+        assertEquals(PokeFolioApiPayloadsTest.USER_ID, client.getCurrentSession().getUserId());
+        assertEquals(FIRST_REFRESH_TOKEN, store.credential.getRefreshToken());
+        assertEquals(2, transport.requests.size());
+    }
+
+    @Test
     public void invalidAuthenticationEnvelopeNeverActivatesOrPersistsSession() {
         MemoryRefreshTokenStore store = new MemoryRefreshTokenStore();
         String valid = sessionBody(DEVICE_ID, FIRST_ACCESS_TOKEN, FIRST_REFRESH_TOKEN);

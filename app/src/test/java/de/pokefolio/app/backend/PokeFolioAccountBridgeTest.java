@@ -172,6 +172,60 @@ public final class PokeFolioAccountBridgeTest {
     }
 
     @Test
+    public void passwordChangeCallbackNeverEchoesEitherPassword() throws Exception {
+        String currentPassword = "current secure password";
+        String newPassword = "replacement secure password";
+        AtomicInteger calls = new AtomicInteger();
+        PokeFolioApiTransport transport = new PokeFolioApiTransport() {
+            @Override
+            public PokeFolioRawResponse send(
+                    String method,
+                    String path,
+                    byte[] body,
+                    String accessToken,
+                    int maximumResponseBytes
+            ) throws IOException {
+                if (calls.getAndIncrement() == 0) {
+                    return new PokeFolioRawResponse(200, PokeFolioApiPayloadsTest.sessionJson(
+                            "android", DEVICE_ID, ACCESS_TOKEN, REFRESH_TOKEN));
+                }
+                assertEquals("POST", method);
+                assertEquals("/api/v1/auth/password/change", path);
+                assertEquals(ACCESS_TOKEN, accessToken);
+                return new PokeFolioRawResponse(204, new byte[0]);
+            }
+
+            @Override
+            public void close() {
+            }
+        };
+        PokeFolioCloudService cloud = new PokeFolioCloudService(
+                PokeFolioBackendConfiguration.parse("https://api.example.test/"),
+                new PokeFolioApiClient(new MemoryRefreshTokenStore(), transport));
+        CapturingCallback callbacks = new CapturingCallback();
+        PokeFolioAccountBridge bridge = new PokeFolioAccountBridge(cloud, callbacks);
+        try {
+            bridge.login(
+                    "owner@example.test", "valid-password", "Pixel test", "password-login");
+            assertNotNull(callbacks.results.poll(2, TimeUnit.SECONDS));
+
+            bridge.changePassword(currentPassword, newPassword, "password-change-1");
+            CallbackRecord callback = callbacks.results.poll(2, TimeUnit.SECONDS);
+
+            assertNotNull(callback);
+            assertEquals("password-change", callback.payload.getString("operation"));
+            assertTrue(callback.payload.getBoolean("ok"));
+            assertTrue(callback.payload.getJSONObject("status").getBoolean("authenticated"));
+            String serialized = callback.payload.toString();
+            assertFalse(serialized.contains(currentPassword));
+            assertFalse(serialized.contains(newPassword));
+        } finally {
+            bridge.close();
+            cloud.close();
+        }
+    }
+
+    @Test
     public void deviceCallbacksExposeValidatedMetadataAndNeverCredentials() throws Exception {
         UUID otherDeviceId = UUID.fromString("dddddddd-dddd-dddd-dddd-dddddddddddd");
         AtomicInteger calls = new AtomicInteger();

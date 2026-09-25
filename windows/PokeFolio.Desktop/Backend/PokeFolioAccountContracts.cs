@@ -33,6 +33,11 @@ public interface IPokeFolioAccountService : IDisposable
         string newPassword,
         CancellationToken cancellationToken = default);
 
+    Task<PokeFolioApiResponse> ChangePasswordAsync(
+        string currentPassword,
+        string newPassword,
+        CancellationToken cancellationToken = default);
+
     Task<PokeFolioAuthenticationResult> RestoreSessionAsync(
         CancellationToken cancellationToken = default);
 

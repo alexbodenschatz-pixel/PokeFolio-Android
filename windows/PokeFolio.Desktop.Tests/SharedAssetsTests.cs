@@ -57,6 +57,7 @@ public sealed class SharedAssetsTests
         StringAssert.Contains(bootstrap, "nativeHost.restoreAccountSession");
         StringAssert.Contains(bootstrap, "nativeHost.requestPasswordReset");
         StringAssert.Contains(bootstrap, "nativeHost.confirmPasswordReset");
+        StringAssert.Contains(bootstrap, "nativeHost.changeAccountPassword");
         StringAssert.Contains(bootstrap, "nativeHost.listAccountDevices");
         StringAssert.Contains(bootstrap, "nativeHost.revokeAccountDevice");
         StringAssert.Contains(bootstrap, "nativeHost.revokeOtherAccountDevices");
@@ -149,6 +150,7 @@ public sealed class SharedAssetsTests
         StringAssert.Contains(accountUi, "account.listDevices");
         StringAssert.Contains(accountUi, "account.revokeDevice");
         StringAssert.Contains(accountUi, "account.revokeOtherDevices");
+        StringAssert.Contains(accountUi, "account.changePassword");
         StringAssert.Contains(accountUi, "window.confirm");
         StringAssert.Contains(accountUi, "claimLegacyCollection");
         StringAssert.Contains(migration, "deterministicUuid");

@@ -68,6 +68,8 @@ Use the framework identity/password-hashing implementation, not a custom passwor
 - short-lived access tokens are kept in native protected process/storage boundaries;
 - refresh tokens are high-entropy, rotated on use, stored hashed on the server and grouped in revocable token families;
 - password-reset tokens are high-entropy, short-lived, stored only as hashes, delivered through a configured notifier and atomically consumed before every existing device session is revoked;
+- authenticated password changes require the current password, keep only the requesting session active and revoke every other device session in the same database transaction;
+- Android and Windows send current/new password values only through the bounded native bridge request, never echo them in callbacks or browser storage and clear every password-change field after success or failure;
 - Android and Windows pass reset credentials through one-shot native anonymous requests, never return them in bridge payloads, clear sensitive form fields after every confirmation attempt and remove consumed reset fragments from the WebView URL;
 - a device record identifies a user-visible session and stores only necessary metadata;
 - Android and Windows expose the same token-free, strictly validated active-device list; the server derives its owner from the principal and never accepts a user selector;

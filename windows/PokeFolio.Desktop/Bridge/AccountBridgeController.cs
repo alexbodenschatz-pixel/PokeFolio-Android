@@ -70,6 +70,18 @@ internal sealed class AccountBridgeController : IDisposable
                 newPassword,
                 cancellationToken));
 
+    public void ChangePassword(
+        string currentPassword,
+        string newPassword,
+        string requestId) =>
+        _ = RunApiAsync(
+            "password-change",
+            requestId,
+            cancellationToken => account.ChangePasswordAsync(
+                currentPassword,
+                newPassword,
+                cancellationToken));
+
     public void Restore(string requestId) =>
         _ = RunAuthenticationAsync(
             "restore",

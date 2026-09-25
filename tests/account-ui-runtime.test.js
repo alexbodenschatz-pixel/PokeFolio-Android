@@ -63,6 +63,8 @@ function createRuntime({authenticated = true, recoveryHash = ''} = {}) {
     'accountRecoveryToken', 'accountRecoveryPassword', 'accountRecoveryPasswordConfirm',
     'accountRecoveryConfirm', 'accountRecoveryConfirmCancel',
     'accountSyncNow', 'accountLogout', 'accountUserId', 'accountDevice', 'accountBackend',
+    'accountPasswordChange', 'accountPasswordChangeForm', 'accountCurrentPassword',
+    'accountNewPassword', 'accountNewPasswordConfirm', 'accountPasswordChangeSubmit',
     'accountDevices', 'accountDevicesRefresh', 'accountDevicesRevokeOthers',
     'accountDevicesStatus', 'accountDevicesList',
     'accountMessage', 'legacyMigration', 'legacyMigrationStatus', 'legacyMigrationStart',
@@ -79,6 +81,7 @@ function createRuntime({authenticated = true, recoveryHash = ''} = {}) {
   let syncRuns = 0;
   let resetRequestEmail = '';
   let resetConfirm = null;
+  let passwordChange = null;
   let replacedUrl = '';
   let revokedDeviceId = '';
   let revokeOthersCount = 0;
@@ -123,6 +126,10 @@ function createRuntime({authenticated = true, recoveryHash = ''} = {}) {
       confirmPasswordReset: async (email, token, password) => {
         resetConfirm = {email, token, password};
         return {ok: true, status: {...status, authenticated: false, session: null}};
+      },
+      changePassword: async (currentPassword, newPassword) => {
+        passwordChange = {currentPassword, newPassword};
+        return {ok: true, status};
       },
       listDevices: async () => ({
         ok: true,
@@ -246,6 +253,7 @@ function createRuntime({authenticated = true, recoveryHash = ''} = {}) {
     get syncRuns() { return syncRuns; },
     get resetRequestEmail() { return resetRequestEmail; },
     get resetConfirm() { return resetConfirm; },
+    get passwordChange() { return passwordChange; },
     get replacedUrl() { return replacedUrl; },
     get revokedDeviceId() { return revokedDeviceId; },
     get revokeOthersCount() { return revokeOthersCount; },
@@ -336,6 +344,29 @@ test('angemeldete Sitzung verwirft einen eingehenden Reset-Code statt ihn verbor
   assert.equal(runtime.elements.get('accountRecovery').hidden, true);
   assert.equal(runtime.elements.get('accountRecoveryToken').value, '');
   assert.equal(runtime.window.location.hash, '');
+  assert.equal(runtime.storage.size, 0);
+});
+
+test('Passwortwechsel bleibt nativ, verwirft Geheimnisse und widerruft andere Geräte', async () => {
+  const runtime = createRuntime();
+  await new Promise(resolve => setImmediate(resolve));
+  runtime.elements.get('accountCurrentPassword').value = 'current secure password';
+  runtime.elements.get('accountNewPassword').value = 'replacement secure password';
+  runtime.elements.get('accountNewPasswordConfirm').value = 'replacement secure password';
+
+  runtime.elements.get('accountPasswordChangeForm').emit('submit');
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.deepEqual(runtime.passwordChange, {
+    currentPassword: 'current secure password',
+    newPassword: 'replacement secure password'
+  });
+  assert.equal(runtime.elements.get('accountCurrentPassword').value, '');
+  assert.equal(runtime.elements.get('accountNewPassword').value, '');
+  assert.equal(runtime.elements.get('accountNewPasswordConfirm').value, '');
+  assert.equal(runtime.elements.get('accountSignedIn').hidden, false);
+  assert.equal(runtime.elements.get('accountDevicesList').children.length, 1);
+  assert.match(runtime.elements.get('accountMessage').textContent, /Andere Geräte wurden abgemeldet/);
   assert.equal(runtime.storage.size, 0);
 });
 

@@ -388,6 +388,20 @@
           <button id="accountSyncNow" type="button" class="primary compact">Jetzt synchronisieren</button>
           <button id="accountLogout" type="button" class="secondary compact">Abmelden</button>
         </div>
+        <section id="accountPasswordChange" class="account-password-change" aria-labelledby="accountPasswordChangeTitle">
+          <div class="account-password-change-heading">
+            <div><span class="section-kicker">Sicherheit</span><h3 id="accountPasswordChangeTitle">Passwort ändern</h3></div>
+          </div>
+          <form id="accountPasswordChangeForm" class="account-form">
+            <label>Aktuelles Passwort<input id="accountCurrentPassword" type="password" autocomplete="current-password" minlength="1" maxlength="128" required></label>
+            <label>Neues Passwort<input id="accountNewPassword" type="password" autocomplete="new-password" minlength="12" maxlength="128" required></label>
+            <label>Neues Passwort wiederholen<input id="accountNewPasswordConfirm" type="password" autocomplete="new-password" minlength="12" maxlength="128" required></label>
+            <p class="muted">Nach erfolgreicher Änderung werden alle anderen Gerätesitzungen automatisch widerrufen.</p>
+            <div class="account-actions">
+              <button id="accountPasswordChangeSubmit" type="submit" class="secondary compact">Passwort ändern</button>
+            </div>
+          </form>
+        </section>
         <section id="accountDevices" class="account-devices" aria-labelledby="accountDevicesTitle">
           <div class="account-devices-heading">
             <div><span class="section-kicker">Sitzungen</span><h3 id="accountDevicesTitle">Meine Geräte</h3></div>

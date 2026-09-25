@@ -352,6 +352,15 @@ public final class MainActivity extends Activity {
         }
 
         @JavascriptInterface
+        public void changeAccountPassword(
+                String currentPassword,
+                String newPassword,
+                String requestId
+        ) {
+            accountBridge.changePassword(currentPassword, newPassword, requestId);
+        }
+
+        @JavascriptInterface
         public void restoreAccountSession(String requestId) {
             accountBridge.restore(requestId);
         }

@@ -137,6 +137,36 @@ public sealed class PokeNativeBridgeTests
     }
 
     [TestMethod]
+    public async Task PasswordChangeCallbackNeverReturnsEitherPassword()
+    {
+        string currentPassword = "current secure password";
+        string newPassword = "replacement secure password";
+        var account = new FakeCloudService(Guid.NewGuid());
+        await account.LoginAsync("owner@example.test", "old-password", "Desktop test");
+        var context = CreateContext(account);
+        await using var disposable = context;
+
+        context.Bridge.changeAccountPassword(
+            currentPassword,
+            newPassword,
+            "account-password-change");
+        Callback callback = await context.Callbacks.NextAsync();
+
+        Assert.AreEqual("onDesktopAccountResult", callback.Name);
+        Assert.IsFalse(callback.Json.Contains(currentPassword, StringComparison.Ordinal));
+        Assert.IsFalse(callback.Json.Contains(newPassword, StringComparison.Ordinal));
+        using var json = JsonDocument.Parse(callback.Json);
+        Assert.IsTrue(json.RootElement.GetProperty("ok").GetBoolean());
+        Assert.AreEqual(
+            "password-change",
+            json.RootElement.GetProperty("operation").GetString());
+        Assert.IsTrue(json.RootElement.GetProperty("status")
+            .GetProperty("authenticated").GetBoolean());
+        Assert.AreEqual(currentPassword, account.CurrentPassword);
+        Assert.AreEqual(newPassword, account.NewPassword);
+    }
+
+    [TestMethod]
     public async Task DeviceManagementReturnsOnlyValidatedMetadataAndRevokesSelectedSessions()
     {
         Guid currentDeviceId = Guid.NewGuid();
@@ -490,6 +520,8 @@ public sealed class PokeNativeBridgeTests
         public string? ResetEmail { get; private set; }
         public string? ResetToken { get; private set; }
         public string? ResetPassword { get; private set; }
+        public string? CurrentPassword { get; private set; }
+        public string? NewPassword { get; private set; }
         public string? LastPushJson { get; private set; }
         public string? LastCursor { get; private set; }
         public string? LastCatalogReferenceJson { get; private set; }
@@ -553,6 +585,16 @@ public sealed class PokeNativeBridgeTests
             ResetToken = token;
             ResetPassword = newPassword;
             LoginEmail = null;
+            return Task.FromResult(new PokeFolioApiResponse(204, ""));
+        }
+
+        public Task<PokeFolioApiResponse> ChangePasswordAsync(
+            string currentPassword,
+            string newPassword,
+            CancellationToken cancellationToken = default)
+        {
+            CurrentPassword = currentPassword;
+            NewPassword = newPassword;
             return Task.FromResult(new PokeFolioApiResponse(204, ""));
         }
 

@@ -103,6 +103,26 @@ public final class PokeFolioApiClient implements Closeable {
         }
     }
 
+    public PokeFolioApiResponse changePassword(
+            String currentPassword,
+            String newPassword
+    ) throws IOException {
+        byte[] body = PokeFolioApiPayloads.serializePasswordChange(
+                currentPassword, newPassword);
+        PokeFolioSession current = getCurrentSession();
+        UUID expectedUserId = current == null ? null : current.getUserId();
+        try {
+            return executeAuthenticated(
+                    "POST",
+                    "/api/v1/auth/password/change",
+                    body,
+                    MAXIMUM_AUTH_RESPONSE_BYTES,
+                    expectedUserId);
+        } finally {
+            clear(body);
+        }
+    }
+
     public PokeFolioAuthenticationResult restoreSession() throws IOException {
         throwIfClosed();
         synchronized (sessionGate) {

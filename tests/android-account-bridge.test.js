@@ -88,6 +88,8 @@ test('Android account facade forwards reset secrets only to the native one-shot 
     requestPasswordReset: (email, requestId) => calls.push({email, requestId}),
     confirmPasswordReset: (email, token, password, requestId) =>
       calls.push({email, token, password, requestId}),
+    changeAccountPassword: (currentPassword, newPassword, requestId) =>
+      calls.push({currentPassword, newPassword, requestId}),
     restoreAccountSession() {},
     logoutAccount() {}
   };
@@ -120,6 +122,18 @@ test('Android account facade forwards reset secrets only to the native one-shot 
   assert.equal((await confirm).ok, true);
   assert.equal(calls[1].token, 'reset-secret');
   assert.equal(calls[1].password, 'replacement-password');
+
+  const changed = window.PokeAccount.changePassword(
+    'current-password', 'replacement-password');
+  window.onAndroidAccountResult(JSON.stringify({
+    requestId: calls[2].requestId,
+    operation: 'password-change',
+    ok: true,
+    status
+  }));
+  assert.equal((await changed).ok, true);
+  assert.equal(calls[2].currentPassword, 'current-password');
+  assert.equal(calls[2].newPassword, 'replacement-password');
   assert.doesNotMatch(source, /localStorage|sessionStorage|Authorization|refreshToken/);
 });
 

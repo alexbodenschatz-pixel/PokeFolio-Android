@@ -202,6 +202,63 @@ public sealed class PokeFolioApiClientTests
     }
 
     [TestMethod]
+    public async Task PasswordChangeUsesAuthenticatedContractAndKeepsCurrentSession()
+    {
+        Guid deviceId = Guid.NewGuid();
+        var store = new MemoryRefreshTokenStore();
+        var handler = new RecordingHandler((request, call, _) => Task.FromResult(call switch
+        {
+            0 => JsonResponse(
+                HttpStatusCode.OK,
+                SessionBody(deviceId, FirstAccessToken, FirstRefreshToken)),
+            1 => AssertPasswordChange(request),
+            _ => throw new AssertFailedException("Unexpected password-change request.")
+        }));
+        using var client = CreateClient(store, handler);
+        await client.LoginAsync("owner@example.test", "valid-password", "Desktop test");
+
+        PokeFolioApiResponse result = await client.ChangePasswordAsync(
+            "legacy",
+            "replacement secure password");
+
+        Assert.IsTrue(result.Succeeded);
+        Assert.AreEqual((int)HttpStatusCode.NoContent, result.Status);
+        Assert.IsNotNull(client.CurrentSession);
+        Assert.AreEqual(FirstRefreshToken, store.Credential?.RefreshToken);
+        Assert.HasCount(2, handler.Requests);
+
+        static HttpResponseMessage AssertPasswordChange(RecordedRequest request)
+        {
+            Assert.AreEqual(HttpMethod.Post, request.Method);
+            Assert.AreEqual("/api/v1/auth/password/change", request.Uri.AbsolutePath);
+            Assert.AreEqual(FirstAccessToken, request.AuthorizationParameter);
+            using JsonDocument body = JsonDocument.Parse(request.Body);
+            Assert.AreEqual(2, body.RootElement.EnumerateObject().Count());
+            Assert.AreEqual(
+                "legacy",
+                body.RootElement.GetProperty("currentPassword").GetString());
+            Assert.AreEqual(
+                "replacement secure password",
+                body.RootElement.GetProperty("newPassword").GetString());
+            return new HttpResponseMessage(HttpStatusCode.NoContent);
+        }
+    }
+
+    [TestMethod]
+    public async Task InvalidPasswordChangePayloadsAreRejectedBeforeNetworkAccess()
+    {
+        var handler = new RecordingHandler((_, _, _) =>
+            throw new AssertFailedException("Invalid password-change payload reached the network."));
+        using var client = CreateClient(new MemoryRefreshTokenStore(), handler);
+
+        await Assert.ThrowsExactlyAsync<ArgumentException>(async () =>
+            await client.ChangePasswordAsync("", "replacement secure password"));
+        await Assert.ThrowsExactlyAsync<ArgumentException>(async () =>
+            await client.ChangePasswordAsync("same secure password", "same secure password"));
+        Assert.HasCount(0, handler.Requests);
+    }
+
+    [TestMethod]
     public void DeviceListParserRejectsDuplicateOrContradictorySessionMetadata()
     {
         Guid currentDeviceId = Guid.NewGuid();

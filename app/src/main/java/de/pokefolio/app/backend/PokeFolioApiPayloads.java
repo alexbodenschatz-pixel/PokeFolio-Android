@@ -92,6 +92,25 @@ final class PokeFolioApiPayloads {
         }
     }
 
+    static byte[] serializePasswordChange(String currentPassword, String newPassword) {
+        validatePassword(currentPassword, 1, "Current password");
+        validatePassword(newPassword, 12, "New password");
+        if (currentPassword.equals(newPassword)) {
+            throw new IllegalArgumentException(
+                    "New password must differ from the current password.");
+        }
+        try {
+            return new JSONObject()
+                    .put("currentPassword", currentPassword)
+                    .put("newPassword", newPassword)
+                    .toString()
+                    .getBytes(StandardCharsets.UTF_8);
+        } catch (JSONException error) {
+            throw new IllegalArgumentException(
+                    "Password change request cannot be serialized.", error);
+        }
+    }
+
     static byte[] serializePasswordResetConfirm(
             String email,
             String token,
@@ -461,6 +480,19 @@ final class PokeFolioApiPayloads {
     private static void validateEmail(String email) {
         if (email == null || email.trim().isEmpty() || email.trim().length() > 254) {
             throw new IllegalArgumentException("Email must contain 1 to 254 characters.");
+        }
+    }
+
+    private static void validatePassword(
+            String password,
+            int minimumLength,
+            String fieldName
+    ) {
+        if (password == null
+                || password.length() < minimumLength
+                || password.length() > 128) {
+            throw new IllegalArgumentException(
+                    fieldName + " must contain " + minimumLength + " to 128 characters.");
         }
     }
 

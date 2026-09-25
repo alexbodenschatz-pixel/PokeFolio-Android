@@ -100,6 +100,17 @@ public sealed class PokeFolioAccountService : IPokeFolioCloudService
                 cancellationToken);
     }
 
+    public Task<PokeFolioApiResponse> ChangePasswordAsync(
+        string currentPassword,
+        string newPassword,
+        CancellationToken cancellationToken = default)
+    {
+        ThrowIfDisposed();
+        return client is null
+            ? Task.FromResult(UnavailableApiResponse())
+            : client.ChangePasswordAsync(currentPassword, newPassword, cancellationToken);
+    }
+
     public Task<PokeFolioAuthenticationResult> RestoreSessionAsync(
         CancellationToken cancellationToken = default)
     {
