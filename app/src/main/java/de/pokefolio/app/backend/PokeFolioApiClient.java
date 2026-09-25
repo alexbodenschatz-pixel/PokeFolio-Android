@@ -175,6 +175,27 @@ public final class PokeFolioApiClient implements Closeable {
         }
     }
 
+    public PokeFolioApiResponse listDevices() throws IOException {
+        return executeAuthenticated(
+                "GET", "/api/v1/devices", null, MAXIMUM_AUTH_RESPONSE_BYTES);
+    }
+
+    public PokeFolioApiResponse revokeOtherDevices() throws IOException {
+        return executeAuthenticated(
+                "DELETE", "/api/v1/devices", null, MAXIMUM_AUTH_RESPONSE_BYTES);
+    }
+
+    public PokeFolioApiResponse revokeDevice(UUID deviceId) throws IOException {
+        if (deviceId == null || EMPTY_UUID.equals(deviceId)) {
+            throw new IllegalArgumentException("Device id must not be empty.");
+        }
+        return executeAuthenticated(
+                "DELETE",
+                "/api/v1/devices/" + deviceId.toString(),
+                null,
+                MAXIMUM_AUTH_RESPONSE_BYTES);
+    }
+
     public PokeFolioApiResponse pushSyncOperations(String operationBatchJson)
             throws IOException {
         return pushSyncOperations(operationBatchJson, null);

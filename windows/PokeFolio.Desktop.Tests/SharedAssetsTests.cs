@@ -57,6 +57,9 @@ public sealed class SharedAssetsTests
         StringAssert.Contains(bootstrap, "nativeHost.restoreAccountSession");
         StringAssert.Contains(bootstrap, "nativeHost.requestPasswordReset");
         StringAssert.Contains(bootstrap, "nativeHost.confirmPasswordReset");
+        StringAssert.Contains(bootstrap, "nativeHost.listAccountDevices");
+        StringAssert.Contains(bootstrap, "nativeHost.revokeAccountDevice");
+        StringAssert.Contains(bootstrap, "nativeHost.revokeOtherAccountDevices");
         StringAssert.Contains(bootstrap, "pokefolio:account-state");
         Assert.IsFalse(bootstrap.Contains("accessToken", StringComparison.Ordinal));
         Assert.IsFalse(bootstrap.Contains("refreshToken", StringComparison.Ordinal));
@@ -143,6 +146,9 @@ public sealed class SharedAssetsTests
         StringAssert.Contains(accountUi, "window.PokeAccount");
         StringAssert.Contains(accountUi, "window.PokeCatalog");
         StringAssert.Contains(accountUi, "window.PokeSyncClient");
+        StringAssert.Contains(accountUi, "account.listDevices");
+        StringAssert.Contains(accountUi, "account.revokeDevice");
+        StringAssert.Contains(accountUi, "account.revokeOtherDevices");
         StringAssert.Contains(accountUi, "window.confirm");
         StringAssert.Contains(accountUi, "claimLegacyCollection");
         StringAssert.Contains(migration, "deterministicUuid");

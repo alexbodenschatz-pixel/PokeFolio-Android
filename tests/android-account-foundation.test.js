@@ -98,6 +98,9 @@ test('Android process owns cloud state while Activity owns token-free bridges', 
   assert.match(activity, /public void loginAccount\(/);
   assert.match(activity, /public void requestPasswordReset\(/);
   assert.match(activity, /public void confirmPasswordReset\(/);
+  assert.match(activity, /public void listAccountDevices\(/);
+  assert.match(activity, /public void revokeAccountDevice\(/);
+  assert.match(activity, /public void revokeOtherAccountDevices\(/);
   assert.match(activity, /public void restoreAccountSession\(/);
   assert.match(activity, /accountBridge\.close\(\)/);
   assert.match(activity, /cloudBridge\.close\(\)/);

@@ -118,6 +118,34 @@ public sealed class PokeFolioAccountService : IPokeFolioCloudService
             : client.LogoutAsync(cancellationToken);
     }
 
+    public Task<PokeFolioApiResponse> ListDevicesAsync(
+        CancellationToken cancellationToken = default)
+    {
+        ThrowIfDisposed();
+        return client is null
+            ? Task.FromResult(UnavailableApiResponse())
+            : client.ListDevicesAsync(cancellationToken);
+    }
+
+    public Task<PokeFolioApiResponse> RevokeOtherDevicesAsync(
+        CancellationToken cancellationToken = default)
+    {
+        ThrowIfDisposed();
+        return client is null
+            ? Task.FromResult(UnavailableApiResponse())
+            : client.RevokeOtherDevicesAsync(cancellationToken);
+    }
+
+    public Task<PokeFolioApiResponse> RevokeDeviceAsync(
+        Guid deviceId,
+        CancellationToken cancellationToken = default)
+    {
+        ThrowIfDisposed();
+        return client is null
+            ? Task.FromResult(UnavailableApiResponse())
+            : client.RevokeDeviceAsync(deviceId, cancellationToken);
+    }
+
     public Task<PokeFolioApiResponse> PushSyncOperationsAsync(
         string operationBatchJson,
         CancellationToken cancellationToken = default,

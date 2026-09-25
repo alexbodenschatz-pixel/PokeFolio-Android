@@ -44,6 +44,9 @@ public sealed class PokeFolioAccountServiceTests
             "owner@example.test",
             "reset-" + new string('r', 48),
             "replacement password");
+        PokeFolioApiResponse devices = await service.ListDevicesAsync();
+        PokeFolioApiResponse revokeOthers = await service.RevokeOtherDevicesAsync();
+        PokeFolioApiResponse revokeDevice = await service.RevokeDeviceAsync(Guid.NewGuid());
         PokeFolioApiResponse push = await service.PushSyncOperationsAsync(
             "{\"operations\":[]}");
         PokeFolioApiResponse pull = await service.PullSyncChangesAsync();
@@ -59,6 +62,12 @@ public sealed class PokeFolioAccountServiceTests
         Assert.AreEqual(503, resetRequest.Status);
         Assert.AreEqual("backend_not_configured", resetConfirm.Problem?.Code);
         Assert.AreEqual(503, resetConfirm.Status);
+        Assert.AreEqual("backend_not_configured", devices.Problem?.Code);
+        Assert.AreEqual(503, devices.Status);
+        Assert.AreEqual("backend_not_configured", revokeOthers.Problem?.Code);
+        Assert.AreEqual(503, revokeOthers.Status);
+        Assert.AreEqual("backend_not_configured", revokeDevice.Problem?.Code);
+        Assert.AreEqual(503, revokeDevice.Status);
         Assert.AreEqual("backend_not_configured", push.Problem?.Code);
         Assert.AreEqual(503, push.Status);
         Assert.AreEqual("backend_not_configured", pull.Problem?.Code);

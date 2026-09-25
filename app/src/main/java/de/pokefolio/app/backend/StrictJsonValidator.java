@@ -12,13 +12,23 @@ public final class StrictJsonValidator {
     }
 
     public static void validateObject(String json) throws IOException {
+        validateRoot(json, '{', "object");
+    }
+
+    public static void validateArray(String json) throws IOException {
+        validateRoot(json, '[', "array");
+    }
+
+    private static void validateRoot(String json, char rootToken, String rootName)
+            throws IOException {
         if (json == null) throw new IOException("JSON is missing.");
         Parser parser = new Parser(json);
         parser.skipWhitespace();
-        if (!parser.hasNext() || parser.peek() != '{') {
-            throw new IOException("JSON root must be an object.");
+        if (!parser.hasNext() || parser.peek() != rootToken) {
+            throw new IOException("JSON root must be an " + rootName + ".");
         }
-        parser.readObject(0);
+        if (rootToken == '{') parser.readObject(0);
+        else parser.readArray(0);
         parser.skipWhitespace();
         if (parser.hasNext()) throw new IOException("JSON contains trailing data.");
     }

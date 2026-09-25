@@ -137,6 +137,52 @@ public sealed class PokeNativeBridgeTests
     }
 
     [TestMethod]
+    public async Task DeviceManagementReturnsOnlyValidatedMetadataAndRevokesSelectedSessions()
+    {
+        Guid currentDeviceId = Guid.NewGuid();
+        var account = new FakeCloudService(currentDeviceId);
+        await account.LoginAsync("owner@example.test", "valid-password", "Desktop test");
+        var context = CreateContext(account);
+        await using var disposable = context;
+
+        context.Bridge.listAccountDevices("devices-list-1");
+        Callback listed = await context.Callbacks.NextAsync();
+
+        Assert.AreEqual("onDesktopAccountResult", listed.Name);
+        Assert.IsFalse(listed.Json.Contains("access-token", StringComparison.Ordinal));
+        Assert.IsFalse(listed.Json.Contains("refresh-token", StringComparison.Ordinal));
+        using (var json = JsonDocument.Parse(listed.Json))
+        {
+            Assert.IsTrue(json.RootElement.GetProperty("ok").GetBoolean());
+            JsonElement devices = json.RootElement.GetProperty("devices");
+            Assert.AreEqual(2, devices.GetArrayLength());
+            Assert.AreEqual(currentDeviceId, devices[0].GetProperty("id").GetGuid());
+            Assert.IsTrue(devices[0].GetProperty("current").GetBoolean());
+            Assert.AreEqual(FakeCloudService.OtherDeviceId,
+                devices[1].GetProperty("id").GetGuid());
+            Assert.IsFalse(devices[1].GetProperty("current").GetBoolean());
+        }
+
+        context.Bridge.revokeAccountDevice(
+            FakeCloudService.OtherDeviceId.ToString("D"),
+            "device-revoke-1");
+        Callback revoked = await context.Callbacks.NextAsync();
+        using (var json = JsonDocument.Parse(revoked.Json))
+        {
+            Assert.IsTrue(json.RootElement.GetProperty("ok").GetBoolean());
+            Assert.AreEqual("device-revoke",
+                json.RootElement.GetProperty("operation").GetString());
+        }
+        Assert.AreEqual(FakeCloudService.OtherDeviceId, account.LastRevokedDeviceId);
+
+        context.Bridge.revokeOtherAccountDevices("devices-revoke-others-1");
+        Callback others = await context.Callbacks.NextAsync();
+        using var othersJson = JsonDocument.Parse(others.Json);
+        Assert.IsTrue(othersJson.RootElement.GetProperty("ok").GetBoolean());
+        Assert.AreEqual(1, account.RevokeOthersCount);
+    }
+
+    [TestMethod]
     public async Task AccountStatusIsTokenFreeWhenBackendIsNotConfigured()
     {
         var context = CreateContext();
@@ -428,6 +474,8 @@ public sealed class PokeNativeBridgeTests
             Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
         public static readonly Guid CatalogCardId =
             Guid.Parse("cccccccc-cccc-cccc-cccc-cccccccccccc");
+        public static readonly Guid OtherDeviceId =
+            Guid.Parse("dddddddd-dddd-4ddd-8ddd-dddddddddddd");
         private readonly PokeFolioSession session = new(
             UserId,
             new PokeFolioDevice(
@@ -448,6 +496,8 @@ public sealed class PokeNativeBridgeTests
         public Guid? LastCatalogCardId { get; private set; }
         public int LastLimit { get; private set; }
         public int DisposeCount { get; private set; }
+        public Guid? LastRevokedDeviceId { get; private set; }
+        public int RevokeOthersCount { get; private set; }
         public PokeFolioApiResponse PushResponse { get; set; } = new(
             200,
             "{\"results\":[{\"operationId\":\"10000000-0000-0000-0000-000000000001\",\"status\":\"applied\",\"entity\":null,\"problem\":null}]}");
@@ -515,6 +565,47 @@ public sealed class PokeNativeBridgeTests
         {
             LoginEmail = null;
             return Task.FromResult(new PokeFolioLogoutResult(true));
+        }
+
+        public Task<PokeFolioApiResponse> ListDevicesAsync(
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(new PokeFolioApiResponse(
+                200,
+                JsonSerializer.Serialize(new[]
+                {
+                    new
+                    {
+                        id = session.Device.Id,
+                        name = session.Device.Name,
+                        platform = session.Device.Platform,
+                        createdAt = session.Device.CreatedAt,
+                        lastSeenAt = session.Device.LastSeenAt,
+                        current = true
+                    },
+                    new
+                    {
+                        id = OtherDeviceId,
+                        name = "Pixel Test",
+                        platform = "android",
+                        createdAt = DateTimeOffset.Parse("2026-09-11T00:00:00Z"),
+                        lastSeenAt = DateTimeOffset.Parse("2026-09-12T00:00:00Z"),
+                        current = false
+                    }
+                }, new JsonSerializerOptions(JsonSerializerDefaults.Web))));
+
+        public Task<PokeFolioApiResponse> RevokeOtherDevicesAsync(
+            CancellationToken cancellationToken = default)
+        {
+            RevokeOthersCount++;
+            return Task.FromResult(new PokeFolioApiResponse(204, ""));
+        }
+
+        public Task<PokeFolioApiResponse> RevokeDeviceAsync(
+            Guid targetDeviceId,
+            CancellationToken cancellationToken = default)
+        {
+            LastRevokedDeviceId = targetDeviceId;
+            return Task.FromResult(new PokeFolioApiResponse(204, ""));
         }
 
         public Task<PokeFolioApiResponse> PushSyncOperationsAsync(

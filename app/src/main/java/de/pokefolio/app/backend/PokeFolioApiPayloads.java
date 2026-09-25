@@ -230,6 +230,61 @@ final class PokeFolioApiPayloads {
         }
     }
 
+    static JSONArray parseDeviceList(String json, UUID expectedCurrentDeviceId)
+            throws IOException {
+        if (expectedCurrentDeviceId == null || EMPTY_UUID.equals(expectedCurrentDeviceId)) {
+            throw new IOException("Current device id is missing.");
+        }
+        StrictJsonValidator.validateArray(json);
+        try {
+            JSONArray input = new JSONArray(json);
+            if (input.length() > 1000) {
+                throw new IOException("Device response contains too many entries.");
+            }
+            JSONArray normalized = new JSONArray();
+            int currentCount = 0;
+            for (int index = 0; index < input.length(); index++) {
+                Object raw = input.opt(index);
+                if (!(raw instanceof JSONObject)) {
+                    throw new IOException("Device response entries must be objects.");
+                }
+                JSONObject device = (JSONObject) raw;
+                requireExactProperties(device, DEVICE_PROPERTIES, "device response");
+                UUID id = requiredUuid(device, "id");
+                String name = requiredString(device, "name", 1, 120);
+                String platform = requiredString(device, "platform", 1, 32);
+                Instant createdAt = requiredInstant(device, "createdAt");
+                Instant lastSeenAt = requiredInstant(device, "lastSeenAt");
+                Object rawCurrent = device.opt("current");
+                if (!(rawCurrent instanceof Boolean)) {
+                    throw new IOException("current must be a boolean.");
+                }
+                boolean current = (Boolean) rawCurrent;
+                if (current) {
+                    currentCount++;
+                    if (!expectedCurrentDeviceId.equals(id)) {
+                        throw new IOException("Device response marks another session as current.");
+                    }
+                } else if (expectedCurrentDeviceId.equals(id)) {
+                    throw new IOException("Current device is not marked as current.");
+                }
+                normalized.put(new JSONObject()
+                        .put("id", id.toString())
+                        .put("name", name)
+                        .put("platform", platform)
+                        .put("createdAt", createdAt.toString())
+                        .put("lastSeenAt", lastSeenAt.toString())
+                        .put("current", current));
+            }
+            if (currentCount != 1) {
+                throw new IOException("Device response must contain the current session once.");
+            }
+            return normalized;
+        } catch (JSONException error) {
+            throw new IOException("Device response is invalid JSON.", error);
+        }
+    }
+
     static String decodeUtf8(byte[] body) throws IOException {
         if (body == null) return "";
         try {

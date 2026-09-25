@@ -3,6 +3,7 @@ package de.pokefolio.app.backend;
 import de.pokefolio.app.security.RefreshTokenCredential;
 import de.pokefolio.app.security.RefreshTokenStore;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 import org.junit.Test;
 
@@ -12,6 +13,7 @@ import java.util.Arrays;
 import java.util.UUID;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -163,6 +165,93 @@ public final class PokeFolioAccountBridgeTest {
             assertFalse(serialized.contains(email));
             assertFalse(serialized.contains(token));
             assertFalse(serialized.contains(password));
+        } finally {
+            bridge.close();
+            cloud.close();
+        }
+    }
+
+    @Test
+    public void deviceCallbacksExposeValidatedMetadataAndNeverCredentials() throws Exception {
+        UUID otherDeviceId = UUID.fromString("dddddddd-dddd-dddd-dddd-dddddddddddd");
+        AtomicInteger calls = new AtomicInteger();
+        PokeFolioApiTransport transport = new PokeFolioApiTransport() {
+            @Override
+            public PokeFolioRawResponse send(
+                    String method,
+                    String path,
+                    byte[] body,
+                    String accessToken,
+                    int maximumResponseBytes
+            ) throws IOException {
+                int call = calls.getAndIncrement();
+                if (call == 0) {
+                    assertEquals("POST", method);
+                    assertEquals("/api/v1/auth/login", path);
+                    return new PokeFolioRawResponse(200, PokeFolioApiPayloadsTest.sessionJson(
+                            "android", DEVICE_ID, ACCESS_TOKEN, REFRESH_TOKEN));
+                }
+                assertEquals(ACCESS_TOKEN, accessToken);
+                if (call == 1) {
+                    assertEquals("GET", method);
+                    assertEquals("/api/v1/devices", path);
+                    String devices = "[{\"id\":\"" + DEVICE_ID
+                            + "\",\"name\":\"Pixel test\",\"platform\":\"android\","
+                            + "\"createdAt\":\"2026-09-13T00:00:00Z\","
+                            + "\"lastSeenAt\":\"2026-09-14T00:00:00Z\",\"current\":true},"
+                            + "{\"id\":\"" + otherDeviceId
+                            + "\",\"name\":\"Desktop test\",\"platform\":\"windows\","
+                            + "\"createdAt\":\"2026-09-12T00:00:00Z\","
+                            + "\"lastSeenAt\":\"2026-09-14T00:00:00Z\",\"current\":false}]";
+                    return new PokeFolioRawResponse(
+                            200,
+                            devices.getBytes(StandardCharsets.UTF_8));
+                }
+                assertEquals("DELETE", method);
+                if (call == 2) {
+                    assertEquals("/api/v1/devices/" + otherDeviceId, path);
+                } else {
+                    assertEquals("/api/v1/devices", path);
+                }
+                return new PokeFolioRawResponse(204, new byte[0]);
+            }
+
+            @Override
+            public void close() {
+            }
+        };
+        PokeFolioCloudService cloud = new PokeFolioCloudService(
+                PokeFolioBackendConfiguration.parse("https://api.example.test/"),
+                new PokeFolioApiClient(new MemoryRefreshTokenStore(), transport));
+        CapturingCallback callbacks = new CapturingCallback();
+        PokeFolioAccountBridge bridge = new PokeFolioAccountBridge(cloud, callbacks);
+        try {
+            bridge.login(
+                    "owner@example.test", "valid-password", "Pixel test", "device-login");
+            assertNotNull(callbacks.results.poll(2, TimeUnit.SECONDS));
+
+            bridge.listDevices("devices-list");
+            CallbackRecord listed = callbacks.results.poll(2, TimeUnit.SECONDS);
+            assertNotNull(listed);
+            assertTrue(listed.payload.getBoolean("ok"));
+            JSONArray devices = listed.payload.getJSONArray("devices");
+            assertEquals(2, devices.length());
+            assertTrue(devices.getJSONObject(0).getBoolean("current"));
+            assertEquals(otherDeviceId.toString(), devices.getJSONObject(1).getString("id"));
+            assertFalse(listed.payload.toString().contains(ACCESS_TOKEN));
+            assertFalse(listed.payload.toString().contains(REFRESH_TOKEN));
+
+            bridge.revokeDevice(otherDeviceId.toString(), "device-revoke");
+            CallbackRecord revoked = callbacks.results.poll(2, TimeUnit.SECONDS);
+            assertNotNull(revoked);
+            assertTrue(revoked.payload.getBoolean("ok"));
+            assertEquals("device-revoke", revoked.payload.getString("operation"));
+
+            bridge.revokeOtherDevices("devices-revoke-others");
+            CallbackRecord others = callbacks.results.poll(2, TimeUnit.SECONDS);
+            assertNotNull(others);
+            assertTrue(others.payload.getBoolean("ok"));
+            assertEquals(4, calls.get());
         } finally {
             bridge.close();
             cloud.close();

@@ -123,6 +123,64 @@ test('Android account facade forwards reset secrets only to the native one-shot 
   assert.doesNotMatch(source, /localStorage|sessionStorage|Authorization|refreshToken/);
 });
 
+test('Android account facade forwards device management without browser credentials', async () => {
+  const calls = [];
+  const nativeHost = {
+    registerAccount() {},
+    loginAccount() {},
+    requestPasswordReset() {},
+    confirmPasswordReset() {},
+    listAccountDevices: requestId => calls.push({operation: 'list', requestId}),
+    revokeAccountDevice: (deviceId, requestId) =>
+      calls.push({operation: 'revoke', deviceId, requestId}),
+    revokeOtherAccountDevices: requestId => calls.push({operation: 'others', requestId}),
+    restoreAccountSession() {},
+    logoutAccount() {}
+  };
+  const status = {
+    configured: true,
+    authenticated: true,
+    backendOrigin: 'https://api.example.test/',
+    configurationError: null,
+    session: {
+      userId: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+      device: {id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'}
+    }
+  };
+  const {window} = createContext(nativeHost, status);
+
+  const listed = window.PokeAccount.listDevices();
+  window.onAndroidAccountResult(JSON.stringify({
+    requestId: calls[0].requestId,
+    operation: 'devices-list',
+    ok: true,
+    status,
+    devices: []
+  }));
+  assert.equal((await listed).ok, true);
+
+  const target = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+  const revoked = window.PokeAccount.revokeDevice(target);
+  window.onAndroidAccountResult(JSON.stringify({
+    requestId: calls[1].requestId,
+    operation: 'device-revoke',
+    ok: true,
+    status
+  }));
+  assert.equal((await revoked).ok, true);
+  assert.equal(calls[1].deviceId, target);
+
+  const others = window.PokeAccount.revokeOtherDevices();
+  window.onAndroidAccountResult(JSON.stringify({
+    requestId: calls[2].requestId,
+    operation: 'devices-revoke-others',
+    ok: true,
+    status
+  }));
+  assert.equal((await others).ok, true);
+  assert.doesNotMatch(source, /localStorage|sessionStorage|Authorization|refreshToken/);
+});
+
 test('Android bootstrap restores a configured session once and stays isolated on Windows', async () => {
   let restoreRequestId = '';
   const nativeHost = {

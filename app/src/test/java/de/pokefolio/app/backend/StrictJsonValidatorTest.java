@@ -14,6 +14,14 @@ public final class StrictJsonValidatorTest {
     }
 
     @Test
+    public void validatesArrayRootsAndRejectsDuplicateNestedProperties() throws Exception {
+        StrictJsonValidator.validateArray("[{\"id\":1},true,null]");
+        assertThrows(IOException.class, () ->
+                StrictJsonValidator.validateArray("[{\"id\":1,\"id\":2}]"));
+        assertThrows(IOException.class, () -> StrictJsonValidator.validateArray("{}"));
+    }
+
+    @Test
     public void rejectsDuplicateKeysIncludingEquivalentUnicodeEscapes() {
         assertThrows(IOException.class, () ->
                 StrictJsonValidator.validateObject("{\"userId\":1,\"userId\":2}"));

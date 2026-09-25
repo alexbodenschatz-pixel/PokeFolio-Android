@@ -9,8 +9,8 @@ This roadmap converts the product brief into testable increments. Status values 
 | 1. Repository analysis | Complete | Current-state audit and verified build/test baseline |
 | 2. Architecture stabilization | In progress | ADRs, host security, contract boundaries, supported runtime plan |
 | 3. Regression baseline | In progress | Test taxonomy, CI parity, real-image manifest, Android instrumented-test APK and PostgreSQL-backed API E2E harness |
-| 4-6. Backend, accounts, isolation | In progress | PostgreSQL integration, cross-user denial and hashed single-use password reset pass across backend, Android and Windows; deployment and remaining account lifecycle hardening remain |
-| 7-10. Sync, clients, shared core | In progress | Server push/pull, shared offline queue/driver, protected native credentials, token-free Android/Windows bridges, visible account UI, safe migration, second-device hydration, linked edits and idempotent create outbox are tested; the API E2E covers 20 scans, reverse edits and account isolation, while physical Android/Windows E2E remains |
+| 4-6. Backend, accounts, isolation | In progress | PostgreSQL integration, cross-user denial, hashed single-use password reset and owner-scoped active-device revocation pass across backend, Android and Windows; deployment and remaining account lifecycle hardening remain |
+| 7-10. Sync, clients, shared core | In progress | Server push/pull, shared offline queue/driver, protected native credentials, token-free Android/Windows bridges, visible account/device UI, safe migration, second-device hydration, linked edits and idempotent create outbox are tested; the API E2E covers 20 scans, reverse edits and account isolation, while physical Android/Windows E2E remains |
 | 11-21. Product and scanner slices | Not started | Slice-specific tests/builds/benchmarks |
 | 22-25. Audit through release | Not started | Security review, restore test, RC builds and release report |
 

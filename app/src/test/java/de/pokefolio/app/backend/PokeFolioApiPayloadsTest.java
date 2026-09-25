@@ -1,5 +1,6 @@
 package de.pokefolio.app.backend;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 import org.junit.Test;
 
@@ -112,6 +113,30 @@ public final class PokeFolioApiPayloadsTest {
     }
 
     @Test
+    public void deviceListRequiresExactlyOneMatchingCurrentSession() throws Exception {
+        UUID otherDeviceId = UUID.fromString("dddddddd-dddd-dddd-dddd-dddddddddddd");
+        String current = deviceJson(DEVICE_ID, "Pixel 9", "android", true);
+        String other = deviceJson(otherDeviceId, "Desktop", "windows", false);
+
+        JSONArray devices = PokeFolioApiPayloads.parseDeviceList(
+                "[" + current + "," + other + "]",
+                DEVICE_ID);
+
+        assertEquals(2, devices.length());
+        assertTrue(devices.getJSONObject(0).getBoolean("current"));
+        assertEquals("windows", devices.getJSONObject(1).getString("platform"));
+        assertThrows(IOException.class, () -> PokeFolioApiPayloads.parseDeviceList(
+                "[" + current.replace("\"current\":true", "\"current\":false") + "]",
+                DEVICE_ID));
+        assertThrows(IOException.class, () -> PokeFolioApiPayloads.parseDeviceList(
+                "[" + current.replaceFirst("\\{", "{\"id\":\"" + DEVICE_ID + "\",") + "]",
+                DEVICE_ID));
+        assertThrows(IOException.class, () -> PokeFolioApiPayloads.parseDeviceList(
+                "[" + current + "," + other.replace("\"current\":false", "\"current\":true") + "]",
+                DEVICE_ID));
+    }
+
+    @Test
     public void catalogReferenceIsNormalizedAndStrictlyBounded() throws Exception {
         byte[] body = PokeFolioApiPayloads.normalizeCatalogCardReference(
                 "{\"provider\":\" TCGDEX \",\"providerCardId\":\" SV8-141 \","
@@ -172,5 +197,20 @@ public final class PokeFolioApiPayloadsTest {
                 + "\"lastSeenAt\":\"2026-09-13T00:00:00Z\","
                 + "\"current\":true}}";
         return json.getBytes(StandardCharsets.UTF_8);
+    }
+
+    private static String deviceJson(
+            UUID deviceId,
+            String name,
+            String platform,
+            boolean current
+    ) {
+        return "{"
+                + "\"id\":\"" + deviceId + "\","
+                + "\"name\":\"" + name + "\","
+                + "\"platform\":\"" + platform + "\","
+                + "\"createdAt\":\"2026-09-13T00:00:00Z\","
+                + "\"lastSeenAt\":\"2026-09-14T00:00:00Z\","
+                + "\"current\":" + current + "}";
     }
 }

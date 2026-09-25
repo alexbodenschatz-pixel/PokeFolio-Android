@@ -100,6 +100,21 @@ public final class PokeFolioCloudService implements Closeable {
                 : client.logout();
     }
 
+    public PokeFolioApiResponse listDevices() throws IOException {
+        throwIfClosed();
+        return client == null ? unavailableResponse() : client.listDevices();
+    }
+
+    public PokeFolioApiResponse revokeOtherDevices() throws IOException {
+        throwIfClosed();
+        return client == null ? unavailableResponse() : client.revokeOtherDevices();
+    }
+
+    public PokeFolioApiResponse revokeDevice(UUID deviceId) throws IOException {
+        throwIfClosed();
+        return client == null ? unavailableResponse() : client.revokeDevice(deviceId);
+    }
+
     public PokeFolioApiResponse pushSyncOperations(String operationBatchJson) throws IOException {
         return pushSyncOperations(operationBatchJson, null);
     }

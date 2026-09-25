@@ -18,6 +18,10 @@
   let recoveryRunning = false;
   let message = {kind: '', text: ''};
   let cloudCollectionState = {phase: ''};
+  let managedDevices = [];
+  let devicesRunning = false;
+  let devicesOwner = '';
+  let devicesStatus = 'Geräte wurden noch nicht geladen.';
 
   const element = id => document.getElementById(id);
 
@@ -48,6 +52,12 @@
   function recoveryAvailable() {
     return account && typeof account.requestPasswordReset === 'function'
       && typeof account.confirmPasswordReset === 'function';
+  }
+
+  function deviceManagementAvailable() {
+    return account && typeof account.listDevices === 'function'
+      && typeof account.revokeDevice === 'function'
+      && typeof account.revokeOtherDevices === 'function';
   }
 
   function clearRecoverySecrets() {
@@ -113,6 +123,181 @@
   function platformDeviceName() {
     const platform = window.PokePlatform && window.PokePlatform.kind;
     return platform === 'windows' ? 'PokeFolio Windows-PC' : 'PokeFolio Android-Gerät';
+  }
+
+  function normalizeDeviceList(value) {
+    if (!Array.isArray(value) || value.length > 1000) {
+      throw new Error('Die Geräteliste ist ungültig.');
+    }
+    const currentId = activeStatus && activeStatus.session && activeStatus.session.device
+      && typeof activeStatus.session.device.id === 'string'
+      ? activeStatus.session.device.id.toLowerCase() : '';
+    const uuid = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
+    const devices = value.map(device => {
+      if (!device || typeof device !== 'object'
+        || typeof device.id !== 'string' || !uuid.test(device.id)
+        || /^0{8}(?:-0{4}){3}-0{12}$/i.test(device.id)
+        || typeof device.name !== 'string' || !device.name.trim() || device.name.length > 120
+        || typeof device.platform !== 'string' || !device.platform.trim()
+        || device.platform.length > 32
+        || typeof device.createdAt !== 'string' || !Number.isFinite(Date.parse(device.createdAt))
+        || typeof device.lastSeenAt !== 'string' || !Number.isFinite(Date.parse(device.lastSeenAt))
+        || typeof device.current !== 'boolean') {
+        throw new Error('Die Geräteliste verletzt den Clientvertrag.');
+      }
+      const id = device.id.toLowerCase();
+      if (device.current !== (id === currentId)) {
+        throw new Error('Die aktuelle Gerätesitzung ist widersprüchlich.');
+      }
+      return Object.freeze({
+        id,
+        name: device.name,
+        platform: device.platform,
+        createdAt: device.createdAt,
+        lastSeenAt: device.lastSeenAt,
+        current: device.current
+      });
+    });
+    if (devices.filter(device => device.current).length !== 1) {
+      throw new Error('Die aktuelle Gerätesitzung fehlt.');
+    }
+    return devices;
+  }
+
+  function deviceLastSeen(value) {
+    try {
+      return new Intl.DateTimeFormat('de-DE', {
+        dateStyle: 'medium', timeStyle: 'short'
+      }).format(new Date(value));
+    } catch (_) {
+      return value;
+    }
+  }
+
+  function renderDevices(authenticated) {
+    const section = element('accountDevices');
+    const list = element('accountDevicesList');
+    section.hidden = !authenticated;
+    list.replaceChildren();
+    if (!authenticated) return;
+    const available = deviceManagementAvailable();
+    element('accountDevicesRefresh').disabled = !available || devicesRunning;
+    element('accountDevicesRevokeOthers').disabled = !available || devicesRunning
+      || managedDevices.filter(device => !device.current).length === 0;
+    element('accountDevicesStatus').textContent = available
+      ? devicesRunning ? 'Gerätesitzungen werden aktualisiert …' : devicesStatus
+      : 'Die native App unterstützt die Geräteverwaltung noch nicht.';
+    managedDevices.forEach(device => {
+      const item = document.createElement('li');
+      const detail = document.createElement('div');
+      const name = document.createElement('b');
+      const metadata = document.createElement('small');
+      name.textContent = device.name;
+      metadata.textContent = `${device.platform} · zuletzt aktiv ${deviceLastSeen(device.lastSeenAt)}`;
+      detail.append(name, metadata);
+      item.append(detail);
+      if (device.current) {
+        const badge = document.createElement('span');
+        badge.className = 'status good';
+        badge.textContent = 'Dieses Gerät';
+        item.append(badge);
+      } else {
+        const revoke = document.createElement('button');
+        revoke.type = 'button';
+        revoke.className = 'secondary compact';
+        revoke.textContent = 'Abmelden';
+        revoke.disabled = devicesRunning;
+        revoke.addEventListener('click', () => revokeDevice(device));
+        item.append(revoke);
+      }
+      list.append(item);
+    });
+  }
+
+  async function loadDevices(announce) {
+    const owner = accountUserId();
+    if (!owner || !deviceManagementAvailable() || devicesRunning) return;
+    devicesOwner = owner;
+    devicesRunning = true;
+    renderDevices(true);
+    try {
+      const response = await account.listDevices();
+      if (owner !== accountUserId() || owner !== devicesOwner) return;
+      if (!response || response.ok !== true) {
+        throw new Error(problemMessage(response, 'Geräte konnten nicht geladen werden.'));
+      }
+      managedDevices = normalizeDeviceList(response.devices);
+      devicesStatus = `${managedDevices.length} aktive Gerätesitzung${managedDevices.length === 1 ? '' : 'en'}.`;
+      if (announce) setMessage('good', 'Gerätesitzungen wurden aktualisiert.');
+    } catch (error) {
+      if (owner !== accountUserId() || owner !== devicesOwner) return;
+      devicesStatus = error.message || 'Geräte konnten nicht geladen werden.';
+      if (announce) setMessage('bad', devicesStatus);
+    } finally {
+      if (owner === devicesOwner) {
+        devicesRunning = false;
+        renderDevices(Boolean(accountUserId()));
+      }
+    }
+  }
+
+  async function revokeDevice(device) {
+    if (!device || device.current || devicesRunning || !deviceManagementAvailable()) return;
+    if (!window.confirm(`${device.name} wirklich abmelden?`)) return;
+    devicesRunning = true;
+    renderDevices(true);
+    try {
+      const response = await account.revokeDevice(device.id);
+      if (!response || response.ok !== true) {
+        throw new Error(problemMessage(response, 'Gerät konnte nicht abgemeldet werden.'));
+      }
+      managedDevices = managedDevices.filter(entry => entry.id !== device.id);
+      devicesStatus = `${managedDevices.length} aktive Gerätesitzung${managedDevices.length === 1 ? '' : 'en'}.`;
+      setMessage('good', `${device.name} wurde abgemeldet.`);
+    } catch (error) {
+      setMessage('bad', error.message || 'Gerät konnte nicht abgemeldet werden.');
+    } finally {
+      devicesRunning = false;
+      renderAccount();
+    }
+  }
+
+  async function revokeOtherDevices() {
+    if (devicesRunning || !deviceManagementAvailable()) return;
+    const others = managedDevices.filter(device => !device.current);
+    if (!others.length || !window.confirm('Alle anderen Geräte wirklich abmelden?')) return;
+    devicesRunning = true;
+    renderDevices(true);
+    try {
+      const response = await account.revokeOtherDevices();
+      if (!response || response.ok !== true) {
+        throw new Error(problemMessage(response, 'Andere Geräte konnten nicht abgemeldet werden.'));
+      }
+      managedDevices = managedDevices.filter(device => device.current);
+      devicesStatus = '1 aktive Gerätesitzung.';
+      setMessage('good', `${others.length} andere Gerät${others.length === 1 ? '' : 'e'} abgemeldet.`);
+    } catch (error) {
+      setMessage('bad', error.message || 'Andere Geräte konnten nicht abgemeldet werden.');
+    } finally {
+      devicesRunning = false;
+      renderAccount();
+    }
+  }
+
+  function reconcileDeviceOwner() {
+    const owner = accountUserId();
+    if (!owner) {
+      managedDevices = [];
+      devicesRunning = false;
+      devicesOwner = '';
+      devicesStatus = 'Geräte wurden noch nicht geladen.';
+      return;
+    }
+    if (owner === devicesOwner) return;
+    managedDevices = [];
+    devicesRunning = false;
+    devicesOwner = '';
+    loadDevices(false);
   }
 
   function migrationKey(userId) {
@@ -251,6 +436,7 @@
   }
 
   function renderAccount() {
+    reconcileDeviceOwner();
     const configured = account && activeStatus.configured === true;
     const authenticated = configured && activeStatus.authenticated === true
       && Boolean(accountUserId());
@@ -294,6 +480,7 @@
       element('accountDevice').textContent = device.name || device.platform || 'Dieses Gerät';
       element('accountBackend').textContent = activeStatus.backendOrigin || 'Konfiguriert';
     }
+    renderDevices(authenticated);
     const output = element('accountMessage');
     output.className = 'account-message' + (message.kind ? ' ' + message.kind : '');
     output.textContent = message.text;
@@ -615,6 +802,8 @@
   element('accountRecoveryConfirmCancel').addEventListener('click', cancelRecovery);
   element('accountLogout').addEventListener('click', logout);
   element('accountSyncNow').addEventListener('click', syncNow);
+  element('accountDevicesRefresh').addEventListener('click', () => loadDevices(true));
+  element('accountDevicesRevokeOthers').addEventListener('click', revokeOtherDevices);
   element('legacyMigrationStart').addEventListener('click', startMigration);
   window.addEventListener('pokefolio:account-state', event => {
     const detail = event && event.detail;

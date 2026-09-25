@@ -113,6 +113,40 @@ public final class PokeFolioApiClientTest {
     }
 
     @Test
+    public void deviceManagementUsesAuthenticatedVersionedRoutes() throws Exception {
+        MemoryRefreshTokenStore store = new MemoryRefreshTokenStore();
+        UUID otherDeviceId = UUID.fromString("dddddddd-dddd-dddd-dddd-dddddddddddd");
+        RecordingTransport transport = new RecordingTransport(request -> {
+            if ("/api/v1/auth/login".equals(request.path)) {
+                return jsonResponse(200, sessionBody(
+                        DEVICE_ID, FIRST_ACCESS_TOKEN, FIRST_REFRESH_TOKEN));
+            }
+            assertEquals(FIRST_ACCESS_TOKEN, request.accessToken);
+            assertNull(request.body);
+            if ("/api/v1/devices".equals(request.path) && "GET".equals(request.method)) {
+                return jsonResponse(200, "[]");
+            }
+            if (("/api/v1/devices/" + otherDeviceId).equals(request.path)
+                    && "DELETE".equals(request.method)) {
+                return jsonResponse(204, "");
+            }
+            if ("/api/v1/devices".equals(request.path) && "DELETE".equals(request.method)) {
+                return jsonResponse(204, "");
+            }
+            throw new IOException("Unexpected request: " + request.method + " " + request.path);
+        });
+        PokeFolioApiClient client = new PokeFolioApiClient(store, transport);
+        client.login("owner@example.test", "valid-password", "Pixel test");
+
+        assertTrue(client.listDevices().isSucceeded());
+        assertTrue(client.revokeDevice(otherDeviceId).isSucceeded());
+        assertTrue(client.revokeOtherDevices().isSucceeded());
+        assertThrows(IllegalArgumentException.class, () ->
+                client.revokeDevice(new UUID(0L, 0L)));
+        assertEquals(4, transport.requests.size());
+    }
+
+    @Test
     public void invalidAuthenticationEnvelopeNeverActivatesOrPersistsSession() {
         MemoryRefreshTokenStore store = new MemoryRefreshTokenStore();
         String valid = sessionBody(DEVICE_ID, FIRST_ACCESS_TOKEN, FIRST_REFRESH_TOKEN);

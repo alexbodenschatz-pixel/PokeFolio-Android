@@ -38,6 +38,16 @@ public interface IPokeFolioAccountService : IDisposable
 
     Task<PokeFolioLogoutResult> LogoutAsync(
         CancellationToken cancellationToken = default);
+
+    Task<PokeFolioApiResponse> ListDevicesAsync(
+        CancellationToken cancellationToken = default);
+
+    Task<PokeFolioApiResponse> RevokeOtherDevicesAsync(
+        CancellationToken cancellationToken = default);
+
+    Task<PokeFolioApiResponse> RevokeDeviceAsync(
+        Guid deviceId,
+        CancellationToken cancellationToken = default);
 }
 
 public interface IPokeFolioSyncService

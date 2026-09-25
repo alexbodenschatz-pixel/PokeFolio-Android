@@ -131,6 +131,14 @@ public sealed class PokeNativeBridge : IDisposable
 
     public void logoutAccount(string requestId) => accountBridge.Logout(requestId);
 
+    public void listAccountDevices(string requestId) => accountBridge.ListDevices(requestId);
+
+    public void revokeOtherAccountDevices(string requestId) =>
+        accountBridge.RevokeOtherDevices(requestId);
+
+    public void revokeAccountDevice(string deviceId, string requestId) =>
+        accountBridge.RevokeDevice(deviceId, requestId);
+
     public void resolveCatalogCard(string cardReferenceJson, string requestId) =>
         catalogBridge.Resolve(cardReferenceJson, requestId);
 

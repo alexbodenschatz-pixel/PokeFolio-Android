@@ -54,6 +54,11 @@
       nativeHost.requestPasswordReset(email, requestId)),
     confirmPasswordReset: (email, token, newPassword) => request(requestId =>
       nativeHost.confirmPasswordReset(email, token, newPassword, requestId)),
+    listDevices: () => request(requestId => nativeHost.listAccountDevices(requestId)),
+    revokeDevice: deviceId => request(requestId =>
+      nativeHost.revokeAccountDevice(deviceId, requestId)),
+    revokeOtherDevices: () => request(requestId =>
+      nativeHost.revokeOtherAccountDevices(requestId)),
     restore: () => request(requestId => nativeHost.restoreAccountSession(requestId)),
     logout: () => request(requestId => nativeHost.logoutAccount(requestId))
   });

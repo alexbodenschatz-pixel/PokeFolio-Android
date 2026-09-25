@@ -17,7 +17,8 @@ test('Kontoseite bietet Registrierung, Login, Sync und ausdrückliche lokale Mig
     'accountRecoveryEmail', 'accountRecoveryRequest', 'accountRecoveryConfirmForm',
     'accountRecoveryConfirmEmail', 'accountRecoveryToken', 'accountRecoveryPassword',
     'accountRecoveryPasswordConfirm', 'accountRecoveryConfirm', 'legacyMigration',
-    'legacyMigrationStart', 'cloudCollectionStatus']) {
+    'legacyMigrationStart', 'cloudCollectionStatus', 'accountDevices',
+    'accountDevicesRefresh', 'accountDevicesRevokeOthers', 'accountDevicesList']) {
     assert.match(index, new RegExp(`id="${id}"`));
   }
   assert.match(index, /Die lokale Sammlung bleibt als wiederherstellbare Kopie erhalten/);
@@ -26,6 +27,9 @@ test('Kontoseite bietet Registrierung, Login, Sync und ausdrückliche lokale Mig
   assert.match(ui, /account\.logout\(/);
   assert.match(ui, /account\.requestPasswordReset\(/);
   assert.match(ui, /account\.confirmPasswordReset\(/);
+  assert.match(ui, /account\.listDevices\(/);
+  assert.match(ui, /account\.revokeDevice\(/);
+  assert.match(ui, /account\.revokeOtherDevices\(/);
   assert.match(ui, /new URLSearchParams\(hash\)/);
   assert.match(ui, /history\.replaceState\(/);
   assert.match(ui, /sync\.syncNow\(/);

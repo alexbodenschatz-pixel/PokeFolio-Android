@@ -8,6 +8,7 @@ import java.io.Closeable;
 import java.io.IOException;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadFactory;
@@ -124,6 +125,26 @@ public final class PokeFolioAccountBridge implements Closeable {
         queue(safeRequestId, "logout", () -> runLogout(safeRequestId));
     }
 
+    public void listDevices(String requestId) {
+        String safeRequestId = requireRequestId(requestId);
+        queue(safeRequestId, "devices-list", () -> runDeviceList(safeRequestId));
+    }
+
+    public void revokeOtherDevices(String requestId) {
+        queueApi(
+                "devices-revoke-others",
+                requestId,
+                cloud::revokeOtherDevices);
+    }
+
+    public void revokeDevice(String deviceId, String requestId) {
+        UUID safeDeviceId = requireDeviceId(deviceId);
+        queueApi(
+                "device-revoke",
+                requestId,
+                () -> cloud.revokeDevice(safeDeviceId));
+    }
+
     private void queueAuthentication(
             String operation,
             String requestId,
@@ -193,6 +214,31 @@ public final class PokeFolioAccountBridge implements Closeable {
         }
     }
 
+    private void runDeviceList(String requestId) {
+        try {
+            PokeFolioApiResponse result = cloud.listDevices();
+            PokeFolioAccountStatus status = cloud.getAccountStatus();
+            JSONObject payload = baseResult(
+                    requestId,
+                    "devices-list",
+                    result.isSucceeded());
+            payload.put("status", statusPayload(status));
+            payload.put("problem", problemPayload(result.getProblem()));
+            if (result.isSucceeded()) {
+                PokeFolioSession session = status.getSession();
+                if (session == null) throw new IOException("Account session changed.");
+                payload.put(
+                        "devices",
+                        PokeFolioApiPayloads.parseDeviceList(
+                                result.getBody(),
+                                session.getDevice().getId()));
+            }
+            send(payload);
+        } catch (Exception error) {
+            sendException(requestId, "devices-list", error);
+        }
+    }
+
     private void sendException(String requestId, String operation, Exception error) {
         String type;
         String message;
@@ -257,6 +303,20 @@ public final class PokeFolioAccountBridge implements Closeable {
                 .put("requestId", requestId)
                 .put("operation", operation)
                 .put("ok", succeeded);
+    }
+
+    private static UUID requireDeviceId(String value) {
+        if (value == null) throw new IllegalArgumentException("Device id is required.");
+        try {
+            UUID deviceId = UUID.fromString(value);
+            if (deviceId.equals(new UUID(0L, 0L))
+                    || !deviceId.toString().equalsIgnoreCase(value)) {
+                throw new IllegalArgumentException("Device id is invalid.");
+            }
+            return deviceId;
+        } catch (IllegalArgumentException error) {
+            throw new IllegalArgumentException("Device id is invalid.", error);
+        }
     }
 
     private static JSONObject statusPayload(PokeFolioAccountStatus status) throws JSONException {

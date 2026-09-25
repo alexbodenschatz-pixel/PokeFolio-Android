@@ -78,6 +78,26 @@ internal sealed class AccountBridgeController : IDisposable
 
     public void Logout(string requestId) => _ = RunLogoutAsync(requestId);
 
+    public void ListDevices(string requestId) => _ = RunDeviceListAsync(requestId);
+
+    public void RevokeOtherDevices(string requestId) =>
+        _ = RunApiAsync(
+            "devices-revoke-others",
+            requestId,
+            account.RevokeOtherDevicesAsync);
+
+    public void RevokeDevice(string deviceId, string requestId)
+    {
+        if (!Guid.TryParseExact(deviceId, "D", out Guid parsed) || parsed == Guid.Empty)
+        {
+            throw new ArgumentException("Device id is invalid.", nameof(deviceId));
+        }
+        _ = RunApiAsync(
+            "device-revoke",
+            requestId,
+            cancellationToken => account.RevokeDeviceAsync(parsed, cancellationToken));
+    }
+
     private async Task RunAuthenticationAsync(
         string operation,
         string requestId,
@@ -217,6 +237,71 @@ internal sealed class AccountBridgeController : IDisposable
                 operation,
                 ok = false,
                 status = AccountStatusPayload(account.GetStatus()),
+                problem = (object?)null,
+                errorType = AccountErrorType(error),
+                error = AccountErrorMessage(error)
+            });
+        }
+    }
+
+    private async Task RunDeviceListAsync(string requestId)
+    {
+        string safeRequestId = SafeRequestId(requestId);
+        try
+        {
+            PokeFolioApiResponse result = await account.ListDevicesAsync(lifetime.Token);
+            PokeFolioAccountStatus status = account.GetStatus();
+            object[]? devices = null;
+            if (result.Succeeded)
+            {
+                Guid currentDeviceId = status.Session?.Device.Id ?? Guid.Empty;
+                devices = PokeFolioApiPayloads.ParseDeviceList(result.Body, currentDeviceId)
+                    .Select(device => (object)new
+                    {
+                        id = device.Id,
+                        name = device.Name,
+                        platform = device.Platform,
+                        createdAt = device.CreatedAt,
+                        lastSeenAt = device.LastSeenAt,
+                        current = device.Current
+                    })
+                    .ToArray();
+            }
+            DesktopLog.Info(
+                "ACCOUNT_OPERATION",
+                ("operation", "devices-list"),
+                ("success", result.Succeeded));
+            await callbacks.SendAsync("onDesktopAccountResult", new
+            {
+                requestId = safeRequestId,
+                operation = "devices-list",
+                ok = result.Succeeded,
+                status = AccountStatusPayload(status),
+                devices,
+                problem = ProblemPayload(result.Problem)
+            });
+        }
+        catch (OperationCanceledException) when (IsDisposed)
+        {
+            // Application shutdown cancels outstanding account work.
+        }
+        catch (Exception) when (IsDisposed)
+        {
+            // The native transport may finish disposal with a non-cancellation exception.
+        }
+        catch (Exception error)
+        {
+            DesktopLog.Warning(
+                "ACCOUNT_OPERATION_FAILED",
+                ("operation", "devices-list"),
+                ("type", error.GetType().Name));
+            await callbacks.SendAsync("onDesktopAccountResult", new
+            {
+                requestId = safeRequestId,
+                operation = "devices-list",
+                ok = false,
+                status = AccountStatusPayload(account.GetStatus()),
+                devices = (object?)null,
                 problem = (object?)null,
                 errorType = AccountErrorType(error),
                 error = AccountErrorMessage(error)

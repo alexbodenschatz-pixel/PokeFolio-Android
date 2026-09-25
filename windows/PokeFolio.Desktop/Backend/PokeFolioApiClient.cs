@@ -299,6 +299,40 @@ public sealed class PokeFolioApiClient : IDisposable
         }
     }
 
+    public Task<PokeFolioApiResponse> ListDevicesAsync(
+        CancellationToken cancellationToken = default) =>
+        SendAuthenticatedAsync(
+            HttpMethod.Get,
+            "/api/v1/devices",
+            body: null,
+            cancellationToken,
+            MaximumAuthResponseBytes);
+
+    public Task<PokeFolioApiResponse> RevokeOtherDevicesAsync(
+        CancellationToken cancellationToken = default) =>
+        SendAuthenticatedAsync(
+            HttpMethod.Delete,
+            "/api/v1/devices",
+            body: null,
+            cancellationToken,
+            MaximumAuthResponseBytes);
+
+    public Task<PokeFolioApiResponse> RevokeDeviceAsync(
+        Guid deviceId,
+        CancellationToken cancellationToken = default)
+    {
+        if (deviceId == Guid.Empty)
+        {
+            throw new ArgumentException("Device id must not be empty.", nameof(deviceId));
+        }
+        return SendAuthenticatedAsync(
+            HttpMethod.Delete,
+            $"/api/v1/devices/{deviceId:D}",
+            body: null,
+            cancellationToken,
+            MaximumAuthResponseBytes);
+    }
+
     private async Task<PokeFolioAuthenticationResult> StartSessionAsync(
         string path,
         string email,

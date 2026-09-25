@@ -155,6 +155,99 @@ public sealed class PokeFolioApiClientTests
     }
 
     [TestMethod]
+    public async Task DeviceManagementUsesAuthenticatedVersionedRoutes()
+    {
+        Guid currentDeviceId = Guid.NewGuid();
+        Guid otherDeviceId = Guid.NewGuid();
+        var store = new MemoryRefreshTokenStore();
+        var handler = new RecordingHandler((request, call, _) => Task.FromResult(call switch
+        {
+            0 => JsonResponse(
+                HttpStatusCode.OK,
+                SessionBody(currentDeviceId, FirstAccessToken, FirstRefreshToken)),
+            1 => AssertDeviceRequest(request, HttpMethod.Get, "/api/v1/devices",
+                JsonResponse(HttpStatusCode.OK, "[]")),
+            2 => AssertDeviceRequest(request, HttpMethod.Delete,
+                $"/api/v1/devices/{otherDeviceId:D}",
+                new HttpResponseMessage(HttpStatusCode.NoContent)),
+            3 => AssertDeviceRequest(request, HttpMethod.Delete, "/api/v1/devices",
+                new HttpResponseMessage(HttpStatusCode.NoContent)),
+            _ => throw new AssertFailedException("Unexpected device-management request.")
+        }));
+        using var client = CreateClient(store, handler);
+        await client.LoginAsync("owner@example.test", "valid-password", "Desktop test");
+
+        PokeFolioApiResponse listed = await client.ListDevicesAsync();
+        PokeFolioApiResponse revoked = await client.RevokeDeviceAsync(otherDeviceId);
+        PokeFolioApiResponse others = await client.RevokeOtherDevicesAsync();
+
+        Assert.IsTrue(listed.Succeeded);
+        Assert.IsTrue(revoked.Succeeded);
+        Assert.IsTrue(others.Succeeded);
+        Assert.HasCount(4, handler.Requests);
+        Assert.ThrowsExactly<ArgumentException>(() => client.RevokeDeviceAsync(Guid.Empty));
+
+        static HttpResponseMessage AssertDeviceRequest(
+            RecordedRequest request,
+            HttpMethod method,
+            string path,
+            HttpResponseMessage response)
+        {
+            Assert.AreEqual(method, request.Method);
+            Assert.AreEqual(path, request.Uri.AbsolutePath);
+            Assert.AreEqual(FirstAccessToken, request.AuthorizationParameter);
+            Assert.HasCount(0, request.Body);
+            return response;
+        }
+    }
+
+    [TestMethod]
+    public void DeviceListParserRejectsDuplicateOrContradictorySessionMetadata()
+    {
+        Guid currentDeviceId = Guid.NewGuid();
+        Guid otherDeviceId = Guid.NewGuid();
+        string valid = JsonSerializer.Serialize(new[]
+        {
+            new
+            {
+                id = currentDeviceId,
+                name = "Desktop test",
+                platform = "windows",
+                createdAt = DateTimeOffset.Parse("2026-09-20T00:00:00Z"),
+                lastSeenAt = DateTimeOffset.Parse("2026-09-24T00:00:00Z"),
+                current = true
+            },
+            new
+            {
+                id = otherDeviceId,
+                name = "Pixel test",
+                platform = "android",
+                createdAt = DateTimeOffset.Parse("2026-09-21T00:00:00Z"),
+                lastSeenAt = DateTimeOffset.Parse("2026-09-23T00:00:00Z"),
+                current = false
+            }
+        }, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+
+        IReadOnlyList<PokeFolioManagedDevice> parsed =
+            PokeFolioApiPayloads.ParseDeviceList(valid, currentDeviceId);
+
+        Assert.HasCount(2, parsed);
+        Assert.IsTrue(parsed[0].Current);
+        Assert.AreEqual(otherDeviceId, parsed[1].Id);
+        Assert.ThrowsExactly<InvalidDataException>(() =>
+            PokeFolioApiPayloads.ParseDeviceList(
+                valid.Replace("\"current\":false", "\"current\":true", StringComparison.Ordinal),
+                currentDeviceId));
+        Assert.ThrowsExactly<InvalidDataException>(() =>
+            PokeFolioApiPayloads.ParseDeviceList(
+                valid.Replace(
+                    $"\"id\":\"{currentDeviceId:D}\"",
+                    $"\"id\":\"{currentDeviceId:D}\",\"id\":\"{currentDeviceId:D}\"",
+                    StringComparison.Ordinal),
+                currentDeviceId));
+    }
+
+    [TestMethod]
     public async Task RestoreRotatesStoredRefreshTokenForTheSameDevice()
     {
         Guid deviceId = Guid.NewGuid();

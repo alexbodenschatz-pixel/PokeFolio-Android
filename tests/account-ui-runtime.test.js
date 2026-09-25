@@ -22,6 +22,8 @@ class FakeElement {
     this.textContent = '';
     this.className = '';
     this.listeners = new Map();
+    this.children = [];
+    this.type = '';
   }
 
   addEventListener(type, listener) {
@@ -36,6 +38,19 @@ class FakeElement {
     const listener = this.listeners.get(type);
     return listener && listener({preventDefault() {}, ...event});
   }
+
+  append(...children) {
+    this.children.push(...children);
+  }
+
+  appendChild(child) {
+    this.append(child);
+    return child;
+  }
+
+  replaceChildren(...children) {
+    this.children = [...children];
+  }
 }
 
 function createRuntime({authenticated = true, recoveryHash = ''} = {}) {
@@ -48,6 +63,8 @@ function createRuntime({authenticated = true, recoveryHash = ''} = {}) {
     'accountRecoveryToken', 'accountRecoveryPassword', 'accountRecoveryPasswordConfirm',
     'accountRecoveryConfirm', 'accountRecoveryConfirmCancel',
     'accountSyncNow', 'accountLogout', 'accountUserId', 'accountDevice', 'accountBackend',
+    'accountDevices', 'accountDevicesRefresh', 'accountDevicesRevokeOthers',
+    'accountDevicesStatus', 'accountDevicesList',
     'accountMessage', 'legacyMigration', 'legacyMigrationStatus', 'legacyMigrationStart',
     'legacyMigrationSummary', 'legacyMigrationProgress', 'legacyMigrationIssues',
     'cloudCollectionStatus', 'cloudHoldingCount', 'cloudCardCount', 'cloudSyncStatus',
@@ -63,6 +80,10 @@ function createRuntime({authenticated = true, recoveryHash = ''} = {}) {
   let resetRequestEmail = '';
   let resetConfirm = null;
   let replacedUrl = '';
+  let revokedDeviceId = '';
+  let revokeOthersCount = 0;
+  const currentDeviceId = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+  const otherDeviceId = 'dddddddd-dddd-dddd-dddd-dddddddddddd';
   const collection = [{
     id: 1,
     collectionKey: 'pokemon|sv03|025|de|reverse-holo',
@@ -84,7 +105,7 @@ function createRuntime({authenticated = true, recoveryHash = ''} = {}) {
     configurationError: null,
     session: authenticated ? {
       userId,
-      device: {name: 'Testgerät', platform: 'windows'}
+      device: {id: currentDeviceId, name: 'Testgerät', platform: 'windows'}
     } : null
   };
   const windowListeners = new Map();
@@ -102,6 +123,36 @@ function createRuntime({authenticated = true, recoveryHash = ''} = {}) {
       confirmPasswordReset: async (email, token, password) => {
         resetConfirm = {email, token, password};
         return {ok: true, status: {...status, authenticated: false, session: null}};
+      },
+      listDevices: async () => ({
+        ok: true,
+        status,
+        devices: [
+          {
+            id: currentDeviceId,
+            name: 'Testgerät',
+            platform: 'windows',
+            createdAt: '2026-09-20T10:00:00Z',
+            lastSeenAt: '2026-09-24T08:00:00Z',
+            current: true
+          },
+          {
+            id: otherDeviceId,
+            name: 'Pixel Test',
+            platform: 'android',
+            createdAt: '2026-09-21T10:00:00Z',
+            lastSeenAt: '2026-09-23T08:00:00Z',
+            current: false
+          }
+        ]
+      }),
+      revokeDevice: async deviceId => {
+        revokedDeviceId = deviceId;
+        return {ok: true, status};
+      },
+      revokeOtherDevices: async () => {
+        revokeOthersCount++;
+        return {ok: true, status};
       },
       logout: async () => ({ok: true, status: {...status, authenticated: false, session: null}})
     },
@@ -159,7 +210,10 @@ function createRuntime({authenticated = true, recoveryHash = ''} = {}) {
     setItem: (key, value) => storage.set(key, String(value)),
     removeItem: key => storage.delete(key)
   };
-  const document = {getElementById: id => elements.get(id) || null};
+  const document = {
+    getElementById: id => elements.get(id) || null,
+    createElement: tag => new FakeElement(tag)
+  };
   const CustomEvent = class CustomEvent {
     constructor(type, options) {
       this.type = type;
@@ -192,7 +246,11 @@ function createRuntime({authenticated = true, recoveryHash = ''} = {}) {
     get syncRuns() { return syncRuns; },
     get resetRequestEmail() { return resetRequestEmail; },
     get resetConfirm() { return resetConfirm; },
-    get replacedUrl() { return replacedUrl; }
+    get replacedUrl() { return replacedUrl; },
+    get revokedDeviceId() { return revokedDeviceId; },
+    get revokeOthersCount() { return revokeOthersCount; },
+    currentDeviceId,
+    otherDeviceId
   };
 }
 
@@ -279,4 +337,33 @@ test('angemeldete Sitzung verwirft einen eingehenden Reset-Code statt ihn verbor
   assert.equal(runtime.elements.get('accountRecoveryToken').value, '');
   assert.equal(runtime.window.location.hash, '');
   assert.equal(runtime.storage.size, 0);
+});
+
+test('Geräteverwaltung zeigt nur validierte Sitzungen und widerruft ein fremdes Gerät', async () => {
+  const runtime = createRuntime();
+  await new Promise(resolve => setImmediate(resolve));
+
+  const list = runtime.elements.get('accountDevicesList');
+  assert.equal(list.children.length, 2);
+  assert.equal(list.children[0].children[1].textContent, 'Dieses Gerät');
+  assert.equal(list.children[1].children[0].children[0].textContent, 'Pixel Test');
+
+  await list.children[1].children[1].emit('click');
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.equal(runtime.revokedDeviceId, runtime.otherDeviceId);
+  assert.equal(list.children.length, 1);
+  assert.match(runtime.elements.get('accountMessage').textContent, /wurde abgemeldet/);
+});
+
+test('Geräteverwaltung kann alle anderen Sitzungen mit Bestätigung widerrufen', async () => {
+  const runtime = createRuntime();
+  await new Promise(resolve => setImmediate(resolve));
+
+  await runtime.elements.get('accountDevicesRevokeOthers').emit('click');
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.equal(runtime.revokeOthersCount, 1);
+  assert.equal(runtime.elements.get('accountDevicesList').children.length, 1);
+  assert.match(runtime.elements.get('accountMessage').textContent, /andere Gerät/);
 });

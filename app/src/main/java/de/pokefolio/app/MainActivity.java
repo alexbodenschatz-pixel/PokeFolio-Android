@@ -362,6 +362,21 @@ public final class MainActivity extends Activity {
         }
 
         @JavascriptInterface
+        public void listAccountDevices(String requestId) {
+            accountBridge.listDevices(requestId);
+        }
+
+        @JavascriptInterface
+        public void revokeOtherAccountDevices(String requestId) {
+            accountBridge.revokeOtherDevices(requestId);
+        }
+
+        @JavascriptInterface
+        public void revokeAccountDevice(String deviceId, String requestId) {
+            accountBridge.revokeDevice(deviceId, requestId);
+        }
+
+        @JavascriptInterface
         public void resolveCatalogCard(String cardReferenceJson, String requestId) {
             cloudBridge.resolveCatalogCard(cardReferenceJson, requestId);
         }

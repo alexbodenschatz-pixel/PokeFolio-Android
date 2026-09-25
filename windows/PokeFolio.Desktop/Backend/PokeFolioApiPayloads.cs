@@ -29,6 +29,16 @@ internal static class PokeFolioApiPayloads
             "setCode",
             "number"
         };
+    private static readonly HashSet<string> DeviceProperties =
+        new(StringComparer.Ordinal)
+        {
+            "id",
+            "name",
+            "platform",
+            "createdAt",
+            "lastSeenAt",
+            "current"
+        };
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         PropertyNameCaseInsensitive = false,
@@ -268,6 +278,87 @@ internal static class PokeFolioApiPayloads
         }
     }
 
+    public static IReadOnlyList<PokeFolioManagedDevice> ParseDeviceList(
+        string json,
+        Guid expectedCurrentDeviceId)
+    {
+        if (expectedCurrentDeviceId == Guid.Empty)
+        {
+            throw new InvalidDataException("Current device id is missing.");
+        }
+        byte[] body;
+        try
+        {
+            body = StrictUtf8.GetBytes(json ?? throw new InvalidDataException(
+                "Device response is missing."));
+        }
+        catch (EncoderFallbackException error)
+        {
+            throw new InvalidDataException("Device response is not valid UTF-8.", error);
+        }
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(body);
+            JsonElement root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Array || HasDuplicateProperty(root))
+            {
+                throw new InvalidDataException("Device response must be one strict JSON array.");
+            }
+            JsonElement.ArrayEnumerator entries = root.EnumerateArray();
+            var result = new List<PokeFolioManagedDevice>();
+            int currentCount = 0;
+            foreach (JsonElement entry in entries)
+            {
+                if (result.Count >= 1000 ||
+                    entry.ValueKind != JsonValueKind.Object ||
+                    entry.EnumerateObject().Count() != DeviceProperties.Count ||
+                    entry.EnumerateObject().Any(property =>
+                        !DeviceProperties.Contains(property.Name)))
+                {
+                    throw new InvalidDataException("Device response violates the API contract.");
+                }
+                if (!entry.TryGetProperty("id", out JsonElement idValue) ||
+                    !idValue.TryGetGuid(out Guid id) || id == Guid.Empty ||
+                    !entry.TryGetProperty("createdAt", out JsonElement createdValue) ||
+                    !createdValue.TryGetDateTimeOffset(out DateTimeOffset createdAt) ||
+                    createdAt == default ||
+                    !entry.TryGetProperty("lastSeenAt", out JsonElement seenValue) ||
+                    !seenValue.TryGetDateTimeOffset(out DateTimeOffset lastSeenAt) ||
+                    lastSeenAt == default ||
+                    !entry.TryGetProperty("current", out JsonElement currentValue) ||
+                    currentValue.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+                {
+                    throw new InvalidDataException("Device response contains invalid values.");
+                }
+                string name = DeviceString(entry, "name", 120);
+                string platform = DeviceString(entry, "platform", 32);
+                bool current = currentValue.GetBoolean();
+                if ((current && id != expectedCurrentDeviceId) ||
+                    (!current && id == expectedCurrentDeviceId))
+                {
+                    throw new InvalidDataException("Device response has an invalid current marker.");
+                }
+                if (current) currentCount++;
+                result.Add(new PokeFolioManagedDevice(
+                    id, name, platform, createdAt, lastSeenAt, current));
+            }
+            if (currentCount != 1)
+            {
+                throw new InvalidDataException(
+                    "Device response must contain the current session once.");
+            }
+            return result;
+        }
+        catch (JsonException error)
+        {
+            throw new InvalidDataException("Device response is invalid JSON.", error);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(body);
+        }
+    }
+
     public static string DecodeBody(byte[] body)
     {
         try
@@ -315,6 +406,25 @@ internal static class PokeFolioApiPayloads
                 nameof(root));
         }
         return value.GetString()!;
+    }
+
+    private static string DeviceString(
+        JsonElement root,
+        string propertyName,
+        int maximumLength)
+    {
+        if (!root.TryGetProperty(propertyName, out JsonElement value) ||
+            value.ValueKind != JsonValueKind.String)
+        {
+            throw new InvalidDataException($"Device field {propertyName} must be text.");
+        }
+        string result = value.GetString()!;
+        if (string.IsNullOrWhiteSpace(result) ||
+            result.Length > maximumLength)
+        {
+            throw new InvalidDataException($"Device field {propertyName} is invalid.");
+        }
+        return result;
     }
 
     private static string NormalizeCatalogText(
@@ -385,6 +495,14 @@ internal sealed record PokeFolioAuthSessionEnvelope(
     PokeFolioAuthDeviceEnvelope Device);
 
 internal sealed record PokeFolioAuthDeviceEnvelope(
+    Guid Id,
+    string Name,
+    string Platform,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset LastSeenAt,
+    bool Current);
+
+internal sealed record PokeFolioManagedDevice(
     Guid Id,
     string Name,
     string Platform,

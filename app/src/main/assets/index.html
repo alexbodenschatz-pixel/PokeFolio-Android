@@ -388,6 +388,17 @@
           <button id="accountSyncNow" type="button" class="primary compact">Jetzt synchronisieren</button>
           <button id="accountLogout" type="button" class="secondary compact">Abmelden</button>
         </div>
+        <section id="accountDevices" class="account-devices" aria-labelledby="accountDevicesTitle">
+          <div class="account-devices-heading">
+            <div><span class="section-kicker">Sitzungen</span><h3 id="accountDevicesTitle">Meine Geräte</h3></div>
+            <div class="account-actions">
+              <button id="accountDevicesRefresh" type="button" class="secondary compact">Aktualisieren</button>
+              <button id="accountDevicesRevokeOthers" type="button" class="secondary compact">Andere abmelden</button>
+            </div>
+          </div>
+          <p id="accountDevicesStatus" class="muted">Geräte werden geladen.</p>
+          <ul id="accountDevicesList" class="account-device-list"></ul>
+        </section>
       </div>
       <p id="accountMessage" class="account-message" role="status" aria-live="polite"></p>
       <section id="legacyMigration" class="legacy-migration" hidden aria-labelledby="legacyMigrationTitle">
