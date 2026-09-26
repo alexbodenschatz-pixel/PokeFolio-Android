@@ -51,6 +51,7 @@ let recognitionRun = 0;
 let recognizedRotation = 0;
 let requestSequence = 1;
 let pendingBulkScanner = null;
+let bulkCameraBusy = false;
 let learningState = loadLearningState();
 let gradingState = loadGradingState();
 let learningScan = null;
@@ -2708,6 +2709,7 @@ function renderBulkFeatures(hints) {
     ['Identifier OCR', bulkPerformance ? Number(bulkPerformance.identifierOcrMs || 0).toFixed(1) + ' ms' : 'läuft'],
     ['Exact Lookup', bulkPerformance ? Number(bulkPerformance.exactLookupMs || 0).toFixed(1) + ' ms' : 'läuft'],
     ['Artwork Fallback', bulkPerformance ? Number(bulkPerformance.artworkFallbackMs || 0).toFixed(1) + ' ms' : 'nicht verwendet'],
+    ['Variante', bulkPerformance ? Number(bulkPerformance.variantMs || 0).toFixed(1) + ' ms' : 'läuft'],
     ['Collection Write', bulkPerformance ? Number(bulkPerformance.collectionWriteMs || 0).toFixed(1) + ' ms' : 'noch offen'],
     ['Gesamt', bulkPerformance ? Number(bulkPerformance.totalBulkRecognitionMs || 0).toFixed(1) + ' ms' : 'läuft']
   ];
@@ -2856,12 +2858,13 @@ function debugBulkPerformance(metrics) {
     + ' identifierOcrMs=' + Number(metrics.identifierOcrMs || 0).toFixed(1)
     + ' exactLookupMs=' + Number(metrics.exactLookupMs || 0).toFixed(1)
     + ' artworkFallbackMs=' + Number(metrics.artworkFallbackMs || 0).toFixed(1)
+    + ' variantMs=' + Number(metrics.variantMs || 0).toFixed(1)
     + ' collectionWriteMs=' + Number(metrics.collectionWriteMs || 0).toFixed(1)
     + ' totalBulkRecognitionMs=' + Number(metrics.totalBulkRecognitionMs || 0).toFixed(1)
     + ' lookupSource=' + (metrics.lookupSource || 'NONE'));
 }
 
-function isBulkAutoAcceptable(list) {
+function isBulkAutoAcceptable(list, allowUncertainVariant = false) {
   if (!list || !list.length) return false;
   const best = list[0];
   const second = list[1];
@@ -2880,7 +2883,8 @@ function isBulkAutoAcceptable(list) {
   const noContradiction = details.language !== 'mismatch'
     && details.cardType !== 'mismatch'
     && !(details.visualReliable !== false && Number.isFinite(Number(details.artwork)) && Number(details.artwork) < 0.55);
-  return decision.state === Variants.STATES.IDENTITY_CONFIRMED_VARIANT_CONFIRMED && confidence >= 0.80
+  return (decision.state === Variants.STATES.IDENTITY_CONFIRMED_VARIANT_CONFIRMED && confidence >= 0.80
+    || allowUncertainVariant && decision.state === Variants.STATES.IDENTITY_CONFIRMED_VARIANT_UNCERTAIN && confidence >= 0.80)
     && exactPrintedIdentity && noContradiction && gap >= 0.05;
 }
 
@@ -3060,7 +3064,7 @@ function commitBulkCandidate(candidate, trigger, options = {}) {
   scheduleBulkMetadataRefresh(saved.entry, bulkHints || {}, candidate.tcg || recognizedTcg);
   if ($('#bulkAutoContinue').checked) {
     setTimeout(() => {
-      if (scanMode === 'bulk') window.bulkMarkRemovedAndScan();
+      if (scanMode === 'bulk' && $('#bulkAutoContinue').checked) window.bulkMarkRemovedAndScan();
     }, 700);
   } else {
     setTimeout(() => {
@@ -3081,6 +3085,9 @@ async function runBulkRecognition(dataUrl, previewUrl, normalizedCapture = null)
   const run = ++recognitionRun;
   const startedAt = performance.now();
   bulkPerformance = BulkFast.createMetrics(startedAt);
+  const nativeCaptureMs = Math.max(0, Number(normalizedCapture && normalizedCapture.captureToCropMs) || 0);
+  bulkPerformance.startedAt -= nativeCaptureMs;
+  bulkPerformance.variantMs = 0;
   startBulkSession();
   BulkFast.beginScan(bulkFastSession);
   Object.assign(bulkSession, bulkFastSession.stats);
@@ -3110,7 +3117,7 @@ async function runBulkRecognition(dataUrl, previewUrl, normalizedCapture = null)
     }
     if (normalizedCapture) prepared = {...prepared, sourceOrientation: normalizedCapture};
     if (previewUrl && previewUrl.startsWith('blob:')) URL.revokeObjectURL(previewUrl);
-    bulkPerformance.captureToCropMs = performance.now() - cropStartedAt;
+    bulkPerformance.captureToCropMs = nativeCaptureMs + performance.now() - cropStartedAt;
     bulkSourceDataUrl = prepared.dataUrl || dataUrl;
     bulkPreviewUrl = bulkSourceDataUrl;
     showBulkCapturedImage(bulkSourceDataUrl);
@@ -3248,7 +3255,9 @@ async function runBulkRecognition(dataUrl, previewUrl, normalizedCapture = null)
     }
     if (run !== recognitionRun || scanMode !== 'bulk') return;
     found = applyLocalLearning(found, bulkLearningScan);
+    const variantStartedAt = performance.now();
     found = resolveCandidateVariants(found, $('#bulkVariant').value);
+    bulkPerformance.variantMs += performance.now() - variantStartedAt;
     if (kind === 'pokemon') found = Recognition.filterPlausibleCandidates(found);
     if (!found.length && serviceError) throw serviceError;
     bulkCandidates = found.slice(0, 3);
@@ -3261,7 +3270,7 @@ async function runBulkRecognition(dataUrl, previewUrl, normalizedCapture = null)
     }
     const decision = Recognition.confidenceDecision(bulkCandidates);
     if (decision.state === Variants.STATES.IDENTITY_CONFIRMED_VARIANT_UNCERTAIN
-      && bulkCandidates[0]) {
+      && bulkCandidates[0] && isBulkAutoAcceptable(bulkCandidates, true)) {
       commitBulkCandidate(bulkCandidates[0], 'AUTO', {
         identifier, lookupSource: 'OCR_NAME'
       });
@@ -3321,14 +3330,17 @@ async function runBulkRecognition(dataUrl, previewUrl, normalizedCapture = null)
 }
 
 window.startBulkCamera = async () => {
-  if (scanMode !== 'bulk') return;
+  if (scanMode !== 'bulk' || bulkCameraBusy) return;
+  bulkCameraBusy = true;
   setBulkStatus('busy', 'Kamera wird geöffnet', 'Torch bleibt ausgeschaltet, bis du ihn bewusst aktivierst.');
   try {
     const response = await nativeOpenBulkScanner();
+    if (scanMode !== 'bulk') return;
     if (response.cancelled) {
       setBulkStatus('ready', 'Bereit zum Scannen', 'Kameraaufnahme wurde abgebrochen.');
       return;
     }
+    if (response.removalConfirmed === true) bulkScanLock = Collection.markCardRemoved(bulkScanLock);
     await runBulkRecognition(response.dataUrl, response.dataUrl, response);
   } catch (error) {
     if (/nicht verfügbar/i.test(error.message || '')) {
@@ -3336,11 +3348,13 @@ window.startBulkCamera = async () => {
       return;
     }
     setBulkStatus('bad', 'Kamera konnte nicht geöffnet werden', error.message);
+  } finally {
+    bulkCameraBusy = false;
   }
 };
 
 window.bulkMarkRemovedAndScan = () => {
-  bulkScanLock = Collection.markCardRemoved(bulkScanLock);
+  if (bulkCameraBusy) return;
   bulkVariantCandidate = null;
   $('#bulkCandidatePanel').hidden = true;
   $('#bulkNoMatch').hidden = true;

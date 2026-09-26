@@ -1,0 +1,21 @@
+{
+  "exampleOnly": true,
+  "device": "SM-S918B",
+  "androidVersion": "16",
+  "appVersion": "0.17.0-dev1",
+  "samples": [
+    {
+      "file": "test-001.jpg",
+      "tcg": "pokemon",
+      "language": "de",
+      "set": "REPLACE_WITH_VERIFIED_SET_ID",
+      "number": "123/198",
+      "name": "REPLACE_WITH_VERIFIED_NAME",
+      "variant": "reverse-holo",
+      "lighting": "indoor",
+      "sleeve": false,
+      "orientationDegrees": 0,
+      "rights": "private-own-photo-not-for-publication"
+    }
+  ]
+}
