@@ -36,6 +36,13 @@ test('nur bestätigte native Entfernung erlaubt ein weiteres identisches Exempla
   }
 });
 
+test('explizite manuelle Bestätigung erhält den bisherigen Desktop- und Galerieablauf', async () => {
+  const ctx = harness({ok: true, dataUrl: 'image'});
+  ctx.window.bulkMarkRemovedAndScan(true);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(Collection.registerScan(ctx.bulkScanLock, 'same-card', 2000).accepted, true);
+});
+
 test('Abbruch und Fehler lösen die Workflow-Sperre ohne die Mengensperre aufzuheben', async () => {
   for (const failure of [false, true]) {
     const ctx = harness({cancelled: true});

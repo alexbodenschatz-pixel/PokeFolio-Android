@@ -16,7 +16,10 @@ the scanner/bulk milestone passes real-device validation.
   process restarts. At least six absent-contour frames over 700 ms release it.
   A short detection dropout or elapsed time alone does not release the latch.
 - Automatic continuation no longer marks a card removed after an arbitrary timer.
-  Native removal evidence releases the existing collection scan lock. Cancel,
+  Native removal evidence releases the existing collection scan lock. Explicitly
+  pressing “Nächste Karte scannen” retains manual removal confirmation for the
+  existing desktop/gallery workflow; the Android camera still requires removal.
+  Cancel,
   capture errors and concurrent open attempts are covered by regression tests.
 - A failed crop retains removal evidence for the subsequent retry. Capture errors
   impose a 2.5-second retry cooldown; background/stale frames do not accrue stability.
@@ -32,7 +35,7 @@ the scanner/bulk milestone passes real-device validation.
 
 ## Automated validation
 
-- 330 JavaScript tests passed.
+- 331 JavaScript tests passed.
 - 62 JVM tests passed, including 9 new auto-capture/quality tests.
 - `testDebugUnitTest lintDebug assembleDebug assembleDebugAndroidTest` passed.
 - Lint: 0 errors, 14 warnings (including native Switch styling and intentionally
@@ -43,7 +46,7 @@ the scanner/bulk milestone passes real-device validation.
   `5a5abde6616df317558b463f035d1b4702695d9b520abd7ac4fdc9f92f071bd5`.
   Updating a prior installation requires that same certificate and a lower version.
 - Local artifact: `build/releases/PokeFolio-Android-0.17.0-dev1.apk`.
-- APK SHA-256: `b94426a816e5b48def1bc230e043c6f1aa0df6ebadac0371176f3a3216a01a3e`.
+- APK SHA-256: `bd582578d09d032a834509f711540836563ceab03b9e261dc20d2675c76c1cf2`.
 - CI workflow retains Android, backend and Windows checks. Check its result for the
   exact milestone commit; a successful older run is not validation of this change.
 

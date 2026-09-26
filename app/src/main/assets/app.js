@@ -3353,8 +3353,9 @@ window.startBulkCamera = async () => {
   }
 };
 
-window.bulkMarkRemovedAndScan = () => {
+window.bulkMarkRemovedAndScan = (manualRemoval = false) => {
   if (bulkCameraBusy) return;
+  if (manualRemoval) bulkScanLock = Collection.markCardRemoved(bulkScanLock);
   bulkVariantCandidate = null;
   $('#bulkCandidatePanel').hidden = true;
   $('#bulkNoMatch').hidden = true;
@@ -3369,7 +3370,7 @@ window.openBulkManualSearch = () => {
 };
 
 $('#bulkCameraButton').onclick = () => window.startBulkCamera();
-$('#bulkNextButton').onclick = () => window.bulkMarkRemovedAndScan();
+$('#bulkNextButton').onclick = () => window.bulkMarkRemovedAndScan(true);
 $('#bulkGalleryButton').onclick = () => $('#bulkFile').click();
 $('#bulkFile').onchange = async event => {
   const file = event.target.files && event.target.files[0];
