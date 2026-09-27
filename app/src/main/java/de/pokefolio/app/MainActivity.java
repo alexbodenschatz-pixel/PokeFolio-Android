@@ -150,7 +150,7 @@ public final class MainActivity extends Activity {
         settings.setSupportMultipleWindows(false);
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
         settings.setMediaPlaybackRequiresUserGesture(false);
-        settings.setUserAgentString(settings.getUserAgentString() + " PokeFolio/0.17.0-dev1");
+        settings.setUserAgentString(settings.getUserAgentString() + " PokeFolio/0.17.0-dev2");
 
         webView.addJavascriptInterface(new NativeBridge(), "PokeNative");
         webView.setWebViewClient(new WebViewClient() {
@@ -657,7 +657,7 @@ public final class MainActivity extends Activity {
             connection.setReadTimeout(8000);
             connection.setInstanceFollowRedirects(false);
             connection.setRequestProperty("Accept", "image/avif,image/webp,image/*");
-            connection.setRequestProperty("User-Agent", "PokeFolio/0.17.0-dev1 Android");
+            connection.setRequestProperty("User-Agent", "PokeFolio/0.17.0-dev2 Android");
             int status = connection.getResponseCode();
             if (status < 200 || status >= 300) {
                 throw new IOException("Kartenbild HTTP " + status);
@@ -1133,7 +1133,7 @@ public final class MainActivity extends Activity {
             connection.setRequestMethod("GET");
             connection.setRequestProperty("Accept", "application/json");
             connection.setRequestProperty("Cache-Control", "no-cache");
-            connection.setRequestProperty("User-Agent", "PokeFolio/0.17.0-dev1 Android");
+            connection.setRequestProperty("User-Agent", "PokeFolio/0.17.0-dev2 Android");
             status = connection.getResponseCode();
             InputStream stream = status >= 200 && status < 400
                     ? connection.getInputStream()

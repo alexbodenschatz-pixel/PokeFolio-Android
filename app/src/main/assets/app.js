@@ -2384,7 +2384,8 @@ async function enrichWithVisualSimilarity(list, preparedCard, runToken) {
     if (!imageUrl) return candidate;
     if (consecutiveFailures >= 6) return candidate;
     try {
-      const result = await nativeVisualCompare(preparedCard, imageUrl);
+      const result = await PokeReference.compareWithFallback(candidate,
+        url => nativeVisualCompare(preparedCard, url));
       consecutiveFailures = 0;
       return {...Recognition.combineVisualSimilarity(candidate, result), coarseVisualChecked: true};
     } catch (error) {
@@ -2404,7 +2405,8 @@ async function enrichWithVisualSimilarity(list, preparedCard, runToken) {
     const imageUrl = candidate.imageLarge || candidate.imageSmall;
     if (!imageUrl || imageUrl === candidate.imageSmall && candidate.coarseVisualChecked) return candidate;
     try {
-      const result = await nativeVisualCompare(preparedCard, imageUrl);
+      const result = await PokeReference.compareWithFallback(candidate,
+        url => nativeVisualCompare(preparedCard, url), true);
       return {...Recognition.combineVisualSimilarity(candidate, result), detailedVisualChecked: true};
     } catch (error) {
       console.warn('Detaillierter Bildvergleich für Top-Kandidat fehlgeschlagen:', candidate.id, error.message);
@@ -2559,7 +2561,11 @@ function renderCandidates(showEmpty = false) {
   $('#comparisonHeadline').textContent = `${focused.name || 'Karte'}${focused.number ? ' · ' + focused.number : ''}`;
   $('#bestReferenceImg').hidden = !focusedImage;
   $('#bestReferencePlaceholder').classList.toggle('visible', !focusedImage);
-  if (focusedImage) $('#bestReferenceImg').src = focusedImage;
+  if (focusedImage) {
+    $('#bestReferenceImg').dataset.referenceUrls = JSON.stringify(PokeReference.imageUrls(focused, true).slice(1));
+    $('#bestReferenceImg').onerror = () => window.candidateImageFailed($('#bestReferenceImg'));
+    $('#bestReferenceImg').src = focusedImage;
+  }
   $('#bestReferenceLanguage').textContent = focused.referenceLanguageFallback
     ? `Referenzbild: ${focusedImageLanguage || 'andere Sprache'}`
     : focusedImageLanguage ? `Referenzbild: ${focusedImageLanguage}` : 'Kein Referenzbild verfügbar';
@@ -2570,7 +2576,7 @@ function renderCandidates(showEmpty = false) {
   $('#matchesSubtitle').textContent = decision.state === Variants.STATES.IDENTITY_CONFIRMED_VARIANT_UNCERTAIN
     ? 'Identität stimmt; bitte nur noch die Druckvariante auswählen'
     : confident ? `Platz 1 liegt ${Math.round(decision.margin * 100)} Punkte vor der nächsten Kartenidentität`
-    : plausible ? 'Mehrere Karten könnten passen' : 'Varianten weichen in wichtigen Merkmalen ab';
+    : 'Keine sichere Zuordnung – bitte Treffer auswählen oder erneut scannen';
 
   const focusedIdentity = Number(focused.identificationScore) || Number(focused.confidence) || 0;
   const focusedConfidence = Math.round(clamp(focusedIdentity, 0, 1) * 100);
@@ -2591,14 +2597,14 @@ function renderCandidates(showEmpty = false) {
     const imageUrl = candidate.imageSmall || candidate.imageLarge || '';
     const confidenceClass = confidence >= 80 ? 'strong' : confidence >= 65 ? 'possible' : 'uncertain';
     return `<button type="button" class="candidate-thumb ${confidenceClass}${index === candidateFocusIndex ? ' active' : ''}" onclick="focusCandidate(${index})" aria-label="${esc(candidate.name)} mit ${confidence} Prozent anzeigen">
-      <span><span class="candidate-image-placeholder${imageUrl ? '' : ' visible'}"><b>Kartenbild</b><small>nicht verfügbar</small></span>${imageUrl ? `<img loading="lazy" decoding="async" src="${esc(imageUrl)}" alt="${esc(candidate.name)}" onerror="candidateImageFailed(this)">` : ''}</span>
+      <span><span class="candidate-image-placeholder${imageUrl ? '' : ' visible'}"><b>Kartenbild</b><small>nicht verfügbar</small></span>${imageUrl ? `<img loading="lazy" decoding="async" src="${esc(imageUrl)}" data-reference-urls="${esc(JSON.stringify(PokeReference.imageUrls(candidate).slice(1)))}" alt="${esc(candidate.name)}" onerror="candidateImageFailed(this)">` : ''}</span>
       <b>${esc(candidate.name || 'Unbekannt')}</b><small>${confidence} %</small>
     </button>`;
   }).join('');
   box.innerHTML = `<div class="candidate-strip" role="list">${strip}</div>
     <article class="candidate-card candidate-primary${focusedConfidence >= 80 ? ' high-confidence' : ''}${focusedSelected ? ' selected' : ''}">
       <div class="candidate-content">
-        <div class="candidate-title"><span class="best-badge">${candidateFocusIndex === 0 ? 'Bester Treffer' : 'Alternative'}</span><b>${esc(focused.name || 'Unbekannte Karte')}</b><small>${esc(focused.set || 'Set unbekannt')}</small></div>
+        <div class="candidate-title"><span class="best-badge">${candidateFocusIndex === 0 && confident ? 'Bester Treffer' : 'Möglicher Treffer'}</span><b>${esc(focused.name || 'Unbekannte Karte')}</b><small>${esc(focused.set || 'Set unbekannt')}</small></div>
         <dl class="candidate-meta"><div><dt>Nummer</dt><dd>${esc(focused.number || '–')}</dd></div><div><dt>Sprache</dt><dd>${esc(languageLabel(focused.language))}</dd></div><div><dt>Variante</dt><dd>${esc(Collection.variantLabel(focused.printingVariant || 'unknown'))}</dd></div><div><dt>Raw-Preis</dt><dd>${price}</dd></div></dl>
         <b class="confidence-label ${esc(focusedLevel.key)}">${focusedConfidence} % Kartenidentität · ${esc(focusedLevel.label)}</b>
         <div class="confidence-track" aria-label="Trefferwahrscheinlichkeit ${focusedConfidence} Prozent"><span style="width:${focusedConfidence}%"></span></div>
@@ -2636,6 +2642,12 @@ window.rejectCandidate = index => {
 };
 
 window.candidateImageFailed = image => {
+  const remaining = JSON.parse(image.dataset.referenceUrls || '[]');
+  if (remaining.length) {
+    image.dataset.referenceUrls = JSON.stringify(remaining.slice(1));
+    image.src = remaining[0];
+    return;
+  }
   image.hidden = true;
   const placeholder = image.parentElement && image.parentElement.querySelector('.candidate-image-placeholder');
   if (placeholder) placeholder.classList.add('visible');
