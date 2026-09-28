@@ -1,8 +1,13 @@
-name: Build PokeFolio Android APK
+name: Build PokeFolio Android and Windows
 
 on:
   workflow_dispatch:
   push:
+    branches:
+      - main
+      - 'feature/**'
+      - 'codex/**'
+  pull_request:
     branches:
       - main
 
@@ -10,7 +15,58 @@ permissions:
   contents: read
 
 jobs:
-  build:
+  backend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up .NET 10 LTS
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore backend
+        run: dotnet restore backend/PokeFolio.Backend.slnx
+
+      - name: Restore migration tool
+        run: dotnet tool restore
+
+      - name: Build backend
+        run: dotnet build backend/PokeFolio.Backend.slnx -c Release --no-restore
+
+      - name: Test backend domain and persistence model
+        env:
+          POKEFOLIO_TEST_POSTGRES: Host=localhost;Port=5432;Username=postgres;Database=postgres;Include Error Detail=false
+        run: dotnet test backend/PokeFolio.Backend.slnx -c Release --no-build --logger "console;verbosity=normal"
+
+      - name: Verify committed migration matches the model
+        env:
+          POKEFOLIO_DB_CONNECTION: Host=localhost;Port=5432;Username=postgres;Database=postgres;Include Error Detail=false
+        run: >-
+          dotnet tool run dotnet-ef -- migrations has-pending-model-changes
+          --no-build
+          --project backend/src/PokeFolio.Infrastructure
+          --startup-project backend/src/PokeFolio.Api
+          --context PokeFolioDbContext
+          --configuration Release
+
+  android:
     runs-on: ubuntu-latest
     timeout-minutes: 35
 
@@ -25,7 +81,9 @@ jobs:
           java-version: '17'
 
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
+        with:
+          packages: ''
 
       - name: Install Android SDK 36
         shell: bash
@@ -43,20 +101,77 @@ jobs:
         shell: bash
         run: |
           chmod +x gradlew
-          ./gradlew --no-daemon testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace --console=plain
+          ./gradlew --no-daemon testDebugUnitTest :app:lintDebug :app:assembleDebug :app:assembleDebugAndroidTest --stacktrace --console=plain
 
       - name: Verify debug APK
         shell: bash
         run: |
           APK="app/build/outputs/apk/debug/app-debug.apk"
+          TEST_APK="app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk"
           test -f "$APK"
+          test -f "$TEST_APK"
           "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$APK" | head -25
           "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose "$APK"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose "$TEST_APK"
 
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
           name: PokeFolio-Android-debug-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          path: |
+            app/build/outputs/apk/debug/app-debug.apk
+            app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+          if-no-files-found: error
+          retention-days: 30
+
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up .NET 10 LTS
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Test shared JavaScript core
+        shell: pwsh
+        run: node --test tests/*.test.js
+
+      - name: Restore Windows solution
+        shell: pwsh
+        run: dotnet restore windows/PokeFolio.Desktop.sln
+
+      - name: Build Windows desktop host
+        shell: pwsh
+        run: dotnet build windows/PokeFolio.Desktop.sln -c Release --no-restore
+
+      - name: Test Windows bridge and capture abstractions
+        shell: pwsh
+        run: dotnet test windows/PokeFolio.Desktop.sln -c Release --no-build --logger "console;verbosity=normal"
+
+      - name: Validate packaged shared assets
+        shell: pwsh
+        # Invoke the managed entry point directly. A WinExe apphost can keep a headless
+        # Windows runner attached even after a CLI-only path returns.
+        run: dotnet windows/PokeFolio.Desktop/bin/Release/net10.0-windows10.0.19041.0/PokeFolio.Desktop.dll --self-test
+
+      - name: Publish Windows vision and EOS desktop host
+        shell: pwsh
+        run: dotnet publish windows/PokeFolio.Desktop/PokeFolio.Desktop.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false -o windows/artifacts/PokeFolio-Desktop
+
+      - name: Upload Windows desktop artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PokeFolio-Windows-vision-eos
+          path: windows/artifacts/PokeFolio-Desktop
           if-no-files-found: error
           retention-days: 30

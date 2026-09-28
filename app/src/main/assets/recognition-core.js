@@ -191,20 +191,41 @@
     } : null;
   }
 
+  const evolutionMarker = /\b(?:entwickelt\s+(?:sich\s+)?(?:aus|zu)|entwicklung\s+(?:aus|von|zu)|evolves?\s+(?:from|into|to)|evolution\s+of)\b/i;
+
   function isEvolutionSourceText(value) {
-    return /\b(?:entwickelt\s+sich\s+aus|entwickelt\s+aus|entwicklung\s+aus|evolves?\s+from|evolution\s+of)\b/i
-      .test(String(value || ''));
+    return evolutionMarker.test(String(value || ''));
+  }
+
+  function pokemonTitleText(value) {
+    // ML Kit may merge the title and evolution label into one line. Keep only its prefix.
+    return String(value || '').split(evolutionMarker)[0].trim();
   }
 
   /** Evolution-source labels describe the previous stage, never the printed card name. */
   function isEvolutionSourceNameLine(line, lines) {
-    if (isEvolutionSourceText(line && line.text)) return true;
+    if (isEvolutionSourceText(line && line.text)) return !bestKnownPokemonName(pokemonTitleText(line.text), true);
     const exactName = bestKnownPokemonName(line && line.text, false);
     if (!exactName) return false;
+    // Evolution markers can wrap across multiple OCR lines, or disappear in another pass.
+    const passes = new Set((lines || []).filter(item => item.rotation === line.rotation).map(item => item.pass));
+    for (const pass of passes) {
+      const text = (lines || []).filter(item => item.pass === pass && item.rotation === line.rotation)
+        .map(item => item.text).join('\n');
+      const suffixes = text.split(evolutionMarker).slice(1);
+      if (suffixes.some(suffix => {
+        const source = bestKnownPokemonName(suffix.trim().split('\n')[0], true);
+        return source && source.id === exactName.id;
+      })) return true;
+    }
     return (lines || []).some(marker => {
-      if (marker === line || marker.pass !== line.pass || !isEvolutionSourceText(marker.text)) return false;
+      if (marker === line || marker.rotation !== line.rotation || !isEvolutionSourceText(marker.text)) return false;
+      const suffix = String(marker.text).split(evolutionMarker).slice(1).join(' ');
+      const source = bestKnownPokemonName(suffix, true);
+      if (source && source.id === exactName.id) return true;
+      if (marker.pass !== line.pass || source) return false;
       const distance = Number(line.y) - Number(marker.y);
-      return distance >= -0.012 && distance <= 0.045;
+      return distance >= -0.012 && distance <= 0.10;
     });
   }
 
@@ -390,7 +411,7 @@
     }
     const fraction = text.match(/\b([A-Z]{0,4}\s*-?\s*[0-9OIL|SB]{1,4}[A-Z]?)\s*[\/／\\]\s*([A-Z]{0,4}\s*-?\s*[0-9OIL|SB]{1,4})\b/i);
     if (fraction) return parsePokemonCollector(fraction[1], fraction[2], {
-      ...(context || {}), text, rawNumber: fraction[1], rawTotal: fraction[2]
+      ...(context || {}), text: context && context.text || text, rawNumber: fraction[1], rawTotal: fraction[2]
     });
 
     // A missing slash is repaired only inside the dedicated lower-left ID ROI. Requiring a
@@ -419,7 +440,8 @@
     const line = String(context && context.text || '');
     const y = Number(context && context.y);
     const simpleInput = Boolean(context && context.simpleInput);
-    if (/\b(?:pok[eé]dex|national(?:er)?\s+pok[eé]dex|nr\.?|no\.?)\s*[:#-]?\s*0*\d{1,4}\b/i.test(line)) {
+    if (/\b(?:HP|KP|DAMAGE|SCHADEN|ATK|DEF)\b/i.test(line)
+      || /\b(?:pok[eé]dex|national(?:er)?\s+pok[eé]dex|nr\.?|no\.?)\s*[:#-]?\s*0*\d{1,4}\b/i.test(line)) {
       return null;
     }
     const number = normalizeCollectorOcrToken(numberValue);
@@ -427,13 +449,15 @@
     const numberMatch = number.match(/^([A-Z]{0,4})(\d{1,4})([A-Z]?)$/);
     const totalMatch = totalRaw.match(/^([A-Z]{0,4})(\d{1,4})$/);
     if (!numberMatch || !totalMatch) return null;
+    if (Number(numberMatch[2]) >= 1900 && Number(numberMatch[2]) <= 2099
+      && Number(totalMatch[2]) >= 1900 && Number(totalMatch[2]) <= 2099) return null;
     const numberPrefix = numberMatch[1];
     const totalPrefix = totalMatch[1];
     if (numberPrefix && !pokemonCollectorPrefixes.has(numberPrefix)) return null;
     if (totalPrefix && !pokemonCollectorPrefixes.has(totalPrefix)) return null;
     if (numberPrefix && totalPrefix && numberPrefix !== totalPrefix) return null;
     if (!simpleInput && Number.isFinite(y)) {
-      const minimumY = numberPrefix || totalPrefix ? 0.46 : 0.58;
+      const minimumY = 0.68;
       if (y < minimumY) return null;
     }
     const total = String(parseInt(totalMatch[2], 10));
@@ -512,7 +536,7 @@
       const dedicatedHeader = line.region === 'TOP_HEADER';
       if (!dedicatedHeader && line.y > 0.26) return;
       if (isEvolutionSourceNameLine(line, lines)) return;
-      const match = bestKnownPokemonName(line.text, true);
+      const match = bestKnownPokemonName(pokemonTitleText(line.text), true);
       if (!match) return;
       const containsHp = /\b(?:KP|HP)\s*[0-9OIL|]{2,3}\b/i.test(line.text);
       const titlePosition = line.y <= 0.11 ? 1.2 : line.y <= 0.16 ? 0.35 : -0.45;
@@ -1062,7 +1086,7 @@
       if (!titleRegion) return;
       if (isEvolutionSourceNameLine(line, lineEntries) || isRuleTextLikeTitle(line.text)) return;
       const containedHp = /\b(?:KP|HP)\s*[0-9OIL|]{2,3}\b/i.test(line.text);
-      let value = line.text
+      let value = pokemonTitleText(line.text)
         .replace(/\b(?:KP|HP)\s*[0-9OIL|]{2,3}\b/ig, '')
         .replace(/^(?:BASIS|BASIC|PHASE|STAGE)\s*\d*\s*/i, '')
         .trim();
@@ -2247,8 +2271,8 @@
   }
 
   function rankPokemonCandidates(candidates, hints, manual, limit) {
-    const ranked = candidates
-      .map(candidate => scorePokemonTcgCandidate(candidate, hints, manual || ''))
+    const ranked = deduplicateCandidates(candidates
+      .map(candidate => scorePokemonTcgCandidate(candidate, hints, manual || '')))
       .sort((a, b) => b.confidence - a.confidence);
     const maximum = Number.isFinite(Number(limit)) ? Math.max(1, Number(limit)) : 7;
     return ranked.slice(0, maximum);
@@ -2430,7 +2454,11 @@
       }
       const completeness = value => [value.imageSmall || value.imageLarge, value.setId || value.set,
         value.number, value.hp, value.rarity, value.attacks && value.attacks.length].filter(Boolean).length;
-      const preferred = completeness(candidate) > completeness(current) ? candidate : current;
+      const candidateScore = Number(candidate.identificationScore ?? candidate.confidence);
+      const currentScore = Number(current.identificationScore ?? current.confidence);
+      const preferred = Number.isFinite(candidateScore) && Number.isFinite(currentScore) && candidateScore !== currentScore
+        ? candidateScore > currentScore ? candidate : current
+        : completeness(candidate) > completeness(current) ? candidate : current;
       const secondary = preferred === candidate ? current : candidate;
       unique.set(key, {
         ...secondary,
@@ -2526,7 +2554,7 @@
       && details.collector === 'match' && Number.isFinite(artwork) && artwork >= 0.80;
     const strongStructuredIdentity = details.collector === 'match'
       && (Number(details.name) >= 0.90 || details.set === 'match');
-    const identityClear = !hardContradiction && (
+    const identityClear = !hardContradiction && identification >= 0.72 && (
       exactNameNumberArtwork
       || identification >= 0.90 && strongStructuredIdentity
       || identification >= 0.82 && margin >= 0.10 && (strongStructuredIdentity || Number(details.artwork) >= 0.82)

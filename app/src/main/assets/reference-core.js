@@ -45,5 +45,21 @@
     };
   }
 
-  return {normalizeLanguage, languagePriority, selectLocalizedImage};
+  function imageUrls(candidate, preferLarge = false) {
+    const urls = preferLarge
+      ? [candidate && candidate.imageLarge, candidate && candidate.imageSmall]
+      : [candidate && candidate.imageSmall, candidate && candidate.imageLarge];
+    return [...new Set(urls.filter(value => typeof value === 'string' && /^https:\/\//i.test(value)))];
+  }
+
+  async function compareWithFallback(candidate, compare, preferLarge = false) {
+    let lastError;
+    for (const url of imageUrls(candidate, preferLarge)) {
+      try { return {...await compare(url), referenceUrl: url}; }
+      catch (error) { lastError = error; }
+    }
+    throw lastError || new Error('Kein Referenzbild verfügbar.');
+  }
+
+  return {normalizeLanguage, languagePriority, selectLocalizedImage, imageUrls, compareWithFallback};
 });

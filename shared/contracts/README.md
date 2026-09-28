@@ -1,0 +1,25 @@
+# Shared contracts
+
+`openapi/pokefolio-v1.json` is the authoritative, versioned client/server contract for the first account, collection and synchronization increment.
+
+Contract rules:
+
+- server paths are relative to `/api/v1`;
+- private ownership is derived from the bearer principal, never from a request `user_id`;
+- `AuthSession.userId` is server output for stable on-device cache partitioning and is never accepted as an ownership selector;
+- password-reset requests return one neutral `202` response for every valid email, persist only a short-lived token hash and revoke all device sessions after one successful confirmation;
+- `/cards/resolve` maps allowlisted public provider identities to stable global card UUIDs before collection writes; repeated and concurrent resolutions are idempotent by provider identity;
+- catalog resolution retains the first accepted metadata and reports later disagreement through `metadataMatched`; authoritative provider-side metadata verification remains a server-adapter responsibility;
+- retriable commands use `Idempotency-Key` and a client-generated operation ID where replay identity is part of the payload;
+- quantity changes are signed atomic deltas;
+- non-commutative edits use `If-Match` or `baseVersion` and return a conflict instead of silently overwriting;
+- SignalR notifications may announce changes later, but `/sync/changes` remains the durable source of truth;
+- breaking changes require a new API version or a backwards-compatible migration window.
+
+Run the contract invariants with:
+
+```text
+node --test tests/contracts.test.js
+```
+
+Generated client/server models will be added only after the backend toolchain is introduced. Generated output must not become a second hand-edited source of truth.

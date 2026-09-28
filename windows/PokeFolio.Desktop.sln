@@ -1,0 +1,25 @@
+
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PokeFolio.Desktop", "PokeFolio.Desktop\PokeFolio.Desktop.csproj", "{8192CC7C-096A-46B6-A9DF-6A317A735E14}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PokeFolio.Desktop.Tests", "PokeFolio.Desktop.Tests\PokeFolio.Desktop.Tests.csproj", "{00C477BA-DAD0-4930-9CF9-10DC3C2FCE8E}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{8192CC7C-096A-46B6-A9DF-6A317A735E14}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{8192CC7C-096A-46B6-A9DF-6A317A735E14}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{8192CC7C-096A-46B6-A9DF-6A317A735E14}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{8192CC7C-096A-46B6-A9DF-6A317A735E14}.Release|Any CPU.Build.0 = Release|Any CPU
+		{00C477BA-DAD0-4930-9CF9-10DC3C2FCE8E}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{00C477BA-DAD0-4930-9CF9-10DC3C2FCE8E}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{00C477BA-DAD0-4930-9CF9-10DC3C2FCE8E}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{00C477BA-DAD0-4930-9CF9-10DC3C2FCE8E}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal

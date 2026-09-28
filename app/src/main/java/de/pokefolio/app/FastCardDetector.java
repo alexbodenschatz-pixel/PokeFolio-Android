@@ -95,7 +95,32 @@ public final class FastCardDetector {
             trackingMs = ema(trackingMs, measuredTrackingMs);
             lastSnapshot = snapshot;
         }
-        return new Result(snapshot, measuredDetectorMs, measuredTrackingMs);
+        boolean complete = detection != null && detection.borderComplete
+                && detection.coverage >= 0.22f && detection.aspectRatio >= 0.55f
+                && detection.aspectRatio <= 0.88f;
+        boolean qualityReady = complete && snapshot.ready
+                && qualityAcceptable(uprightFrame, viewQuad, viewWidth, viewHeight);
+        return new Result(snapshot, measuredDetectorMs, measuredTrackingMs,
+                detection != null, qualityReady);
+    }
+
+    private static boolean qualityAcceptable(Bitmap frame, PointF[] quad, int width, int height) {
+        // Sample only the card interior, excluding sharp background edges and the border.
+        int[] gray = new int[48 * 64];
+        for (int y = 0; y < 64; y++) {
+            float v = 0.08f + 0.84f * y / 63f;
+            for (int x = 0; x < 48; x++) {
+                float u = 0.08f + 0.84f * x / 47f;
+                float px = (1-v)*((1-u)*quad[0].x+u*quad[1].x)
+                        + v*((1-u)*quad[3].x+u*quad[2].x);
+                float py = (1-v)*((1-u)*quad[0].y+u*quad[1].y)
+                        + v*((1-u)*quad[3].y+u*quad[2].y);
+                int ix = Math.max(0, Math.min(frame.getWidth()-1, Math.round(px / width * frame.getWidth())));
+                int iy = Math.max(0, Math.min(frame.getHeight()-1, Math.round(py / height * frame.getHeight())));
+                gray[y*48+x] = frame.getPixel(ix, iy) & 255;
+            }
+        }
+        return PreviewQuality.acceptable(gray, 48, 64);
     }
 
     public synchronized Metrics metrics(long now) {
@@ -142,11 +167,16 @@ public final class FastCardDetector {
         public final CardDetectionTracker.Snapshot snapshot;
         public final float detectorMs;
         public final float trackingMs;
+        public final boolean present;
+        public final boolean qualityReady;
 
-        Result(CardDetectionTracker.Snapshot snapshot, float detectorMs, float trackingMs) {
+        Result(CardDetectionTracker.Snapshot snapshot, float detectorMs, float trackingMs,
+                boolean present, boolean qualityReady) {
             this.snapshot = snapshot;
             this.detectorMs = detectorMs;
             this.trackingMs = trackingMs;
+            this.present = present;
+            this.qualityReady = qualityReady;
         }
     }
 

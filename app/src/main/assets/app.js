@@ -9,8 +9,14 @@ const Collection = window.PokeCollection;
 const Learning = window.PokeLearning;
 const Grading = window.PokeGrading;
 const BulkFast = window.PokeBulkFast;
+const AccountMigration = window.PokeAccountMigration;
+const CollectionCloudCore = window.PokeCollectionCloudCore;
 const RecognitionMode = BulkFast.RecognitionMode;
 const BULK_IDENTITY_CACHE_KEY = 'pokefolio_bulk_identity_cache_v1';
+const LEGACY_COLLECTION_KEY = 'pf_collection';
+const LEGACY_COLLECTION_OWNER_KEY = 'pf_legacy_collection_owner_v1';
+const LEGACY_MIGRATION_PLAN_PREFIX = 'pf_legacy_collection_migration_v1:';
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 let selectedTcg = 'auto';
 let recognizedTcg = 'pokemon';
@@ -45,6 +51,7 @@ let recognitionRun = 0;
 let recognizedRotation = 0;
 let requestSequence = 1;
 let pendingBulkScanner = null;
+let bulkCameraBusy = false;
 let learningState = loadLearningState();
 let gradingState = loadGradingState();
 let learningScan = null;
@@ -502,28 +509,143 @@ function activeRecognitionLanguage() {
   return scanMode === 'bulk' ? $('#bulkLang').value : $('#lang').value;
 }
 
-function loadCollection() {
+function activeCollectionUserId() {
+  try {
+    const status = window.PokeAccount && window.PokeAccount.status();
+    const userId = status && status.authenticated && status.session
+      && String(status.session.userId || '').toLowerCase();
+    return userId && UUID_PATTERN.test(userId) ? userId : '';
+  } catch (_) {
+    return '';
+  }
+}
+
+function collectionStorageKey() {
+  const userId = activeCollectionUserId();
+  const owner = String(localStorage.getItem(LEGACY_COLLECTION_OWNER_KEY) || '').toLowerCase();
+  return AccountMigration.collectionStorageKey(userId, owner);
+}
+
+function collectionSchemaKey(storageKey) {
+  return storageKey === LEGACY_COLLECTION_KEY ? 'pf_collection_schema' : storageKey + ':schema';
+}
+
+function loadCollectionFrom(storageKey) {
   let raw = [];
   try {
-    raw = JSON.parse(localStorage.getItem('pf_collection') || '[]');
+    raw = JSON.parse(localStorage.getItem(storageKey) || '[]');
   } catch (error) {
     console.error('[PokeFolio Collection] Migration konnte Altbestand nicht lesen:', error.message);
   }
   const migrated = Collection.migrateCollection(raw);
-  const storedSchema = Number(localStorage.getItem('pf_collection_schema') || 0);
+  const schemaKey = collectionSchemaKey(storageKey);
+  const storedSchema = Number(localStorage.getItem(schemaKey) || 0);
   if (migrated.changed || storedSchema !== Collection.SCHEMA_VERSION) {
-    localStorage.setItem('pf_collection', JSON.stringify(migrated.collection));
-    localStorage.setItem('pf_collection_schema', String(Collection.SCHEMA_VERSION));
+    localStorage.setItem(storageKey, JSON.stringify(migrated.collection));
+    localStorage.setItem(schemaKey, String(Collection.SCHEMA_VERSION));
     console.debug('[PokeFolio Collection] Migration Schema=' + Collection.SCHEMA_VERSION
       + ' Einträge=' + migrated.collection.length + ' Zusammengeführt=' + migrated.mergedCount);
   }
   return migrated.collection;
 }
 
-function persistCollection(collection) {
-  localStorage.setItem('pf_collection', JSON.stringify(collection));
-  localStorage.setItem('pf_collection_schema', String(Collection.SCHEMA_VERSION));
+function loadCollection() {
+  return loadCollectionFrom(collectionStorageKey());
 }
+
+function loadCollectionForMigration(userId) {
+  const normalizedUserId = String(userId || '').toLowerCase();
+  if (!UUID_PATTERN.test(normalizedUserId)) throw new TypeError('Konto-ID ist ungültig.');
+  const owner = String(localStorage.getItem(LEGACY_COLLECTION_OWNER_KEY) || '').toLowerCase();
+  return loadCollectionFrom(AccountMigration.migrationCollectionStorageKey(normalizedUserId, owner));
+}
+
+function claimLegacyCollection(userId) {
+  const normalizedUserId = String(userId || '').toLowerCase();
+  if (!UUID_PATTERN.test(normalizedUserId)) throw new TypeError('Konto-ID ist ungültig.');
+  const owner = String(localStorage.getItem(LEGACY_COLLECTION_OWNER_KEY) || '').toLowerCase();
+  if (owner && owner !== normalizedUserId) return false;
+  if (!owner) localStorage.setItem(LEGACY_COLLECTION_OWNER_KEY, normalizedUserId);
+  return true;
+}
+
+function cloudCreateAllowed(currentCollection, userId) {
+  if (!userId || !UUID_PATTERN.test(userId)) return false;
+  if (collectionStorageKey() !== LEGACY_COLLECTION_KEY) return true;
+  if (!Array.isArray(currentCollection) || currentCollection.length === 0) {
+    return claimLegacyCollection(userId);
+  }
+  try {
+    const raw = localStorage.getItem(LEGACY_MIGRATION_PLAN_PREFIX + userId);
+    return Boolean(raw && AccountMigration.parsePlan(raw, userId).status === 'complete');
+  } catch (_) {
+    return false;
+  }
+}
+
+function markCloudCreateIntent(saved, previousCollection) {
+  const userId = activeCollectionUserId();
+  if (!saved || saved.action !== 'NEW_CARD'
+    || !cloudCreateAllowed(previousCollection, userId)) return saved;
+  const entry = saved.entry;
+  const marked = CollectionCloudCore.markCreateIntent(
+    entry, userId, AccountMigration.deterministicUuid);
+  return {
+    ...saved,
+    entry: marked,
+    collection: saved.collection.map(card => String(card.id) === String(entry.id) ? marked : card)
+  };
+}
+
+window.loadCollectionForMigration = loadCollectionForMigration;
+window.claimLegacyCollection = claimLegacyCollection;
+
+function persistCollection(collection, options = {}) {
+  if (!options.cloudOrigin && window.PokeCollectionCloud) {
+    try {
+      window.PokeCollectionCloud.queueCollectionChanges(loadCollection(), collection);
+    } catch (error) {
+      console.error('[PokeFolio Collection] Cloud-Änderung konnte nicht vorgemerkt werden:', error);
+      alert('Die Änderung wurde nicht gespeichert, weil sie nicht sicher für die Cloud vorgemerkt werden konnte. Bitte erneut versuchen.');
+      return false;
+    }
+  }
+  const storageKey = collectionStorageKey();
+  try {
+    localStorage.setItem(storageKey, JSON.stringify(collection));
+    localStorage.setItem(collectionSchemaKey(storageKey), String(Collection.SCHEMA_VERSION));
+  } catch (error) {
+    console.error('[PokeFolio Collection] Lokaler Speicher konnte nicht aktualisiert werden:', error);
+    alert('Die Sammlung konnte auf diesem Gerät nicht gespeichert werden. Bitte lokalen Speicher prüfen.');
+    return false;
+  }
+  window.dispatchEvent(new CustomEvent('pokefolio:collection-changed'));
+  return true;
+}
+
+Object.defineProperty(window, 'PokeCollectionStore', {
+  configurable: false,
+  enumerable: true,
+  writable: false,
+  value: Object.freeze({
+    read(userId) {
+      const normalized = String(userId || '').toLowerCase();
+      if (!UUID_PATTERN.test(normalized) || normalized !== activeCollectionUserId()) {
+        throw new Error('Cloud-Sammlung gehört nicht zum aktiven Konto.');
+      }
+      return JSON.parse(JSON.stringify(loadCollection()));
+    },
+    replaceFromCloud(userId, collection) {
+      const normalized = String(userId || '').toLowerCase();
+      if (!UUID_PATTERN.test(normalized) || normalized !== activeCollectionUserId()) return false;
+      if (!Array.isArray(collection) || collection.length > 100000) {
+        throw new TypeError('Cloud-Sammlung ist ungültig oder zu groß.');
+      }
+      const migrated = Collection.migrateCollection(collection).collection;
+      return persistCollection(migrated, {cloudOrigin: true});
+    }
+  })
+});
 
 function loadGradingState() {
   let raw = null;
@@ -2262,7 +2384,8 @@ async function enrichWithVisualSimilarity(list, preparedCard, runToken) {
     if (!imageUrl) return candidate;
     if (consecutiveFailures >= 6) return candidate;
     try {
-      const result = await nativeVisualCompare(preparedCard, imageUrl);
+      const result = await PokeReference.compareWithFallback(candidate,
+        url => nativeVisualCompare(preparedCard, url));
       consecutiveFailures = 0;
       return {...Recognition.combineVisualSimilarity(candidate, result), coarseVisualChecked: true};
     } catch (error) {
@@ -2282,7 +2405,8 @@ async function enrichWithVisualSimilarity(list, preparedCard, runToken) {
     const imageUrl = candidate.imageLarge || candidate.imageSmall;
     if (!imageUrl || imageUrl === candidate.imageSmall && candidate.coarseVisualChecked) return candidate;
     try {
-      const result = await nativeVisualCompare(preparedCard, imageUrl);
+      const result = await PokeReference.compareWithFallback(candidate,
+        url => nativeVisualCompare(preparedCard, url), true);
       return {...Recognition.combineVisualSimilarity(candidate, result), detailedVisualChecked: true};
     } catch (error) {
       console.warn('Detaillierter Bildvergleich für Top-Kandidat fehlgeschlagen:', candidate.id, error.message);
@@ -2437,7 +2561,11 @@ function renderCandidates(showEmpty = false) {
   $('#comparisonHeadline').textContent = `${focused.name || 'Karte'}${focused.number ? ' · ' + focused.number : ''}`;
   $('#bestReferenceImg').hidden = !focusedImage;
   $('#bestReferencePlaceholder').classList.toggle('visible', !focusedImage);
-  if (focusedImage) $('#bestReferenceImg').src = focusedImage;
+  if (focusedImage) {
+    $('#bestReferenceImg').dataset.referenceUrls = JSON.stringify(PokeReference.imageUrls(focused, true).slice(1));
+    $('#bestReferenceImg').onerror = () => window.candidateImageFailed($('#bestReferenceImg'));
+    $('#bestReferenceImg').src = focusedImage;
+  }
   $('#bestReferenceLanguage').textContent = focused.referenceLanguageFallback
     ? `Referenzbild: ${focusedImageLanguage || 'andere Sprache'}`
     : focusedImageLanguage ? `Referenzbild: ${focusedImageLanguage}` : 'Kein Referenzbild verfügbar';
@@ -2448,7 +2576,7 @@ function renderCandidates(showEmpty = false) {
   $('#matchesSubtitle').textContent = decision.state === Variants.STATES.IDENTITY_CONFIRMED_VARIANT_UNCERTAIN
     ? 'Identität stimmt; bitte nur noch die Druckvariante auswählen'
     : confident ? `Platz 1 liegt ${Math.round(decision.margin * 100)} Punkte vor der nächsten Kartenidentität`
-    : plausible ? 'Mehrere Karten könnten passen' : 'Varianten weichen in wichtigen Merkmalen ab';
+    : 'Keine sichere Zuordnung – bitte Treffer auswählen oder erneut scannen';
 
   const focusedIdentity = Number(focused.identificationScore) || Number(focused.confidence) || 0;
   const focusedConfidence = Math.round(clamp(focusedIdentity, 0, 1) * 100);
@@ -2469,14 +2597,14 @@ function renderCandidates(showEmpty = false) {
     const imageUrl = candidate.imageSmall || candidate.imageLarge || '';
     const confidenceClass = confidence >= 80 ? 'strong' : confidence >= 65 ? 'possible' : 'uncertain';
     return `<button type="button" class="candidate-thumb ${confidenceClass}${index === candidateFocusIndex ? ' active' : ''}" onclick="focusCandidate(${index})" aria-label="${esc(candidate.name)} mit ${confidence} Prozent anzeigen">
-      <span><span class="candidate-image-placeholder${imageUrl ? '' : ' visible'}"><b>Kartenbild</b><small>nicht verfügbar</small></span>${imageUrl ? `<img loading="lazy" decoding="async" src="${esc(imageUrl)}" alt="${esc(candidate.name)}" onerror="candidateImageFailed(this)">` : ''}</span>
+      <span><span class="candidate-image-placeholder${imageUrl ? '' : ' visible'}"><b>Kartenbild</b><small>nicht verfügbar</small></span>${imageUrl ? `<img loading="lazy" decoding="async" src="${esc(imageUrl)}" data-reference-urls="${esc(JSON.stringify(PokeReference.imageUrls(candidate).slice(1)))}" alt="${esc(candidate.name)}" onerror="candidateImageFailed(this)">` : ''}</span>
       <b>${esc(candidate.name || 'Unbekannt')}</b><small>${confidence} %</small>
     </button>`;
   }).join('');
   box.innerHTML = `<div class="candidate-strip" role="list">${strip}</div>
     <article class="candidate-card candidate-primary${focusedConfidence >= 80 ? ' high-confidence' : ''}${focusedSelected ? ' selected' : ''}">
       <div class="candidate-content">
-        <div class="candidate-title"><span class="best-badge">${candidateFocusIndex === 0 ? 'Bester Treffer' : 'Alternative'}</span><b>${esc(focused.name || 'Unbekannte Karte')}</b><small>${esc(focused.set || 'Set unbekannt')}</small></div>
+        <div class="candidate-title"><span class="best-badge">${candidateFocusIndex === 0 && confident ? 'Bester Treffer' : 'Möglicher Treffer'}</span><b>${esc(focused.name || 'Unbekannte Karte')}</b><small>${esc(focused.set || 'Set unbekannt')}</small></div>
         <dl class="candidate-meta"><div><dt>Nummer</dt><dd>${esc(focused.number || '–')}</dd></div><div><dt>Sprache</dt><dd>${esc(languageLabel(focused.language))}</dd></div><div><dt>Variante</dt><dd>${esc(Collection.variantLabel(focused.printingVariant || 'unknown'))}</dd></div><div><dt>Raw-Preis</dt><dd>${price}</dd></div></dl>
         <b class="confidence-label ${esc(focusedLevel.key)}">${focusedConfidence} % Kartenidentität · ${esc(focusedLevel.label)}</b>
         <div class="confidence-track" aria-label="Trefferwahrscheinlichkeit ${focusedConfidence} Prozent"><span style="width:${focusedConfidence}%"></span></div>
@@ -2514,6 +2642,12 @@ window.rejectCandidate = index => {
 };
 
 window.candidateImageFailed = image => {
+  const remaining = JSON.parse(image.dataset.referenceUrls || '[]');
+  if (remaining.length) {
+    image.dataset.referenceUrls = JSON.stringify(remaining.slice(1));
+    image.src = remaining[0];
+    return;
+  }
   image.hidden = true;
   const placeholder = image.parentElement && image.parentElement.querySelector('.candidate-image-placeholder');
   if (placeholder) placeholder.classList.add('visible');
@@ -2587,6 +2721,7 @@ function renderBulkFeatures(hints) {
     ['Identifier OCR', bulkPerformance ? Number(bulkPerformance.identifierOcrMs || 0).toFixed(1) + ' ms' : 'läuft'],
     ['Exact Lookup', bulkPerformance ? Number(bulkPerformance.exactLookupMs || 0).toFixed(1) + ' ms' : 'läuft'],
     ['Artwork Fallback', bulkPerformance ? Number(bulkPerformance.artworkFallbackMs || 0).toFixed(1) + ' ms' : 'nicht verwendet'],
+    ['Variante', bulkPerformance ? Number(bulkPerformance.variantMs || 0).toFixed(1) + ' ms' : 'läuft'],
     ['Collection Write', bulkPerformance ? Number(bulkPerformance.collectionWriteMs || 0).toFixed(1) + ' ms' : 'noch offen'],
     ['Gesamt', bulkPerformance ? Number(bulkPerformance.totalBulkRecognitionMs || 0).toFixed(1) + ' ms' : 'läuft']
   ];
@@ -2719,7 +2854,7 @@ function scheduleBulkMetadataRefresh(entry, hints, kind) {
         pricesByVariant: {...(collection[index].pricesByVariant || {}), ...(richer.pricesByVariant || {})},
         metadataUpdatedAt: new Date().toISOString()
       };
-      persistCollection(collection);
+      if (!persistCollection(collection)) throw new Error('Sammlungsmetadaten konnten nicht gespeichert werden.');
       console.debug('[PokeFolio Bulk] METADATA_BACKGROUND_UPDATED collectionKey=' + expectedKey);
     } catch (error) {
       console.warn('[PokeFolio Bulk] METADATA_BACKGROUND_FAILED ' + (error.message || error));
@@ -2735,12 +2870,13 @@ function debugBulkPerformance(metrics) {
     + ' identifierOcrMs=' + Number(metrics.identifierOcrMs || 0).toFixed(1)
     + ' exactLookupMs=' + Number(metrics.exactLookupMs || 0).toFixed(1)
     + ' artworkFallbackMs=' + Number(metrics.artworkFallbackMs || 0).toFixed(1)
+    + ' variantMs=' + Number(metrics.variantMs || 0).toFixed(1)
     + ' collectionWriteMs=' + Number(metrics.collectionWriteMs || 0).toFixed(1)
     + ' totalBulkRecognitionMs=' + Number(metrics.totalBulkRecognitionMs || 0).toFixed(1)
     + ' lookupSource=' + (metrics.lookupSource || 'NONE'));
 }
 
-function isBulkAutoAcceptable(list) {
+function isBulkAutoAcceptable(list, allowUncertainVariant = false) {
   if (!list || !list.length) return false;
   const best = list[0];
   const second = list[1];
@@ -2759,7 +2895,8 @@ function isBulkAutoAcceptable(list) {
   const noContradiction = details.language !== 'mismatch'
     && details.cardType !== 'mismatch'
     && !(details.visualReliable !== false && Number.isFinite(Number(details.artwork)) && Number(details.artwork) < 0.55);
-  return decision.state === Variants.STATES.IDENTITY_CONFIRMED_VARIANT_CONFIRMED && confidence >= 0.80
+  return (decision.state === Variants.STATES.IDENTITY_CONFIRMED_VARIANT_CONFIRMED && confidence >= 0.80
+    || allowUncertainVariant && decision.state === Variants.STATES.IDENTITY_CONFIRMED_VARIANT_UNCERTAIN && confidence >= 0.80)
     && exactPrintedIdentity && noContradiction && gap >= 0.05;
 }
 
@@ -2828,6 +2965,7 @@ function bulkCollectionEntry(candidate) {
   let setId = candidate.setId || candidate.setCode || '';
   if (!setId && candidate.tcg === 'onepiece') setId = String(number).split('-')[0];
   if (!setId && candidate.tcg === 'yugioh') setId = String(number).replace(/-\w+$/, '');
+  const catalogReference = AccountMigration && AccountMigration.referenceForCandidate(candidate);
   return {
     id: Date.now(),
     tcg: candidate.tcg || recognizedTcg,
@@ -2854,6 +2992,7 @@ function bulkCollectionEntry(candidate) {
     variantSelectionConfirmed: Variants.explicitVariant(candidate) !== 'unknown',
     recognitionConfidence: Number(candidate.identificationScore) || Number(candidate.confidence) || 0,
     recognitionSource: candidate.source || '',
+    ...(catalogReference ? {catalogReference} : {}),
     date: new Date().toISOString()
   };
 }
@@ -2881,8 +3020,15 @@ function commitBulkCandidate(candidate, trigger, options = {}) {
     return false;
   }
   bulkScanLock = gate.lock;
-  const saved = Collection.upsertCollection(loadCollection(), entry);
-  persistCollection(saved.collection);
+  const previousCollection = loadCollection();
+  let saved = Collection.upsertCollection(previousCollection, entry);
+  saved = markCloudCreateIntent(saved, previousCollection);
+  if (!persistCollection(saved.collection)) {
+    bulkScanLock = null;
+    setBulkStatus('error', 'Cloud-Speicherung fehlgeschlagen',
+      'Die Karte blieb unverändert. Bitte Synchronisationsstatus prüfen und erneut versuchen.');
+    return false;
+  }
   if (trigger === 'MANUAL_SELECTION' || trigger === 'AUTO_VARIANT_SELECTION') {
     recordLearningSelection(bulkLearningScan, candidate, 'bulk-manual-selection');
   }
@@ -2930,7 +3076,7 @@ function commitBulkCandidate(candidate, trigger, options = {}) {
   scheduleBulkMetadataRefresh(saved.entry, bulkHints || {}, candidate.tcg || recognizedTcg);
   if ($('#bulkAutoContinue').checked) {
     setTimeout(() => {
-      if (scanMode === 'bulk') window.bulkMarkRemovedAndScan();
+      if (scanMode === 'bulk' && $('#bulkAutoContinue').checked) window.bulkMarkRemovedAndScan();
     }, 700);
   } else {
     setTimeout(() => {
@@ -2951,6 +3097,9 @@ async function runBulkRecognition(dataUrl, previewUrl, normalizedCapture = null)
   const run = ++recognitionRun;
   const startedAt = performance.now();
   bulkPerformance = BulkFast.createMetrics(startedAt);
+  const nativeCaptureMs = Math.max(0, Number(normalizedCapture && normalizedCapture.captureToCropMs) || 0);
+  bulkPerformance.startedAt -= nativeCaptureMs;
+  bulkPerformance.variantMs = 0;
   startBulkSession();
   BulkFast.beginScan(bulkFastSession);
   Object.assign(bulkSession, bulkFastSession.stats);
@@ -2980,7 +3129,7 @@ async function runBulkRecognition(dataUrl, previewUrl, normalizedCapture = null)
     }
     if (normalizedCapture) prepared = {...prepared, sourceOrientation: normalizedCapture};
     if (previewUrl && previewUrl.startsWith('blob:')) URL.revokeObjectURL(previewUrl);
-    bulkPerformance.captureToCropMs = performance.now() - cropStartedAt;
+    bulkPerformance.captureToCropMs = nativeCaptureMs + performance.now() - cropStartedAt;
     bulkSourceDataUrl = prepared.dataUrl || dataUrl;
     bulkPreviewUrl = bulkSourceDataUrl;
     showBulkCapturedImage(bulkSourceDataUrl);
@@ -3118,7 +3267,9 @@ async function runBulkRecognition(dataUrl, previewUrl, normalizedCapture = null)
     }
     if (run !== recognitionRun || scanMode !== 'bulk') return;
     found = applyLocalLearning(found, bulkLearningScan);
+    const variantStartedAt = performance.now();
     found = resolveCandidateVariants(found, $('#bulkVariant').value);
+    bulkPerformance.variantMs += performance.now() - variantStartedAt;
     if (kind === 'pokemon') found = Recognition.filterPlausibleCandidates(found);
     if (!found.length && serviceError) throw serviceError;
     bulkCandidates = found.slice(0, 3);
@@ -3131,7 +3282,7 @@ async function runBulkRecognition(dataUrl, previewUrl, normalizedCapture = null)
     }
     const decision = Recognition.confidenceDecision(bulkCandidates);
     if (decision.state === Variants.STATES.IDENTITY_CONFIRMED_VARIANT_UNCERTAIN
-      && bulkCandidates[0]) {
+      && bulkCandidates[0] && isBulkAutoAcceptable(bulkCandidates, true)) {
       commitBulkCandidate(bulkCandidates[0], 'AUTO', {
         identifier, lookupSource: 'OCR_NAME'
       });
@@ -3191,14 +3342,17 @@ async function runBulkRecognition(dataUrl, previewUrl, normalizedCapture = null)
 }
 
 window.startBulkCamera = async () => {
-  if (scanMode !== 'bulk') return;
+  if (scanMode !== 'bulk' || bulkCameraBusy) return;
+  bulkCameraBusy = true;
   setBulkStatus('busy', 'Kamera wird geöffnet', 'Torch bleibt ausgeschaltet, bis du ihn bewusst aktivierst.');
   try {
     const response = await nativeOpenBulkScanner();
+    if (scanMode !== 'bulk') return;
     if (response.cancelled) {
       setBulkStatus('ready', 'Bereit zum Scannen', 'Kameraaufnahme wurde abgebrochen.');
       return;
     }
+    if (response.removalConfirmed === true) bulkScanLock = Collection.markCardRemoved(bulkScanLock);
     await runBulkRecognition(response.dataUrl, response.dataUrl, response);
   } catch (error) {
     if (/nicht verfügbar/i.test(error.message || '')) {
@@ -3206,11 +3360,14 @@ window.startBulkCamera = async () => {
       return;
     }
     setBulkStatus('bad', 'Kamera konnte nicht geöffnet werden', error.message);
+  } finally {
+    bulkCameraBusy = false;
   }
 };
 
-window.bulkMarkRemovedAndScan = () => {
-  bulkScanLock = Collection.markCardRemoved(bulkScanLock);
+window.bulkMarkRemovedAndScan = (manualRemoval = false) => {
+  if (bulkCameraBusy) return;
+  if (manualRemoval) bulkScanLock = Collection.markCardRemoved(bulkScanLock);
   bulkVariantCandidate = null;
   $('#bulkCandidatePanel').hidden = true;
   $('#bulkNoMatch').hidden = true;
@@ -3225,7 +3382,7 @@ window.openBulkManualSearch = () => {
 };
 
 $('#bulkCameraButton').onclick = () => window.startBulkCamera();
-$('#bulkNextButton').onclick = () => window.bulkMarkRemovedAndScan();
+$('#bulkNextButton').onclick = () => window.bulkMarkRemovedAndScan(true);
 $('#bulkGalleryButton').onclick = () => $('#bulkFile').click();
 $('#bulkFile').onchange = async event => {
   const file = event.target.files && event.target.files[0];
@@ -3290,6 +3447,7 @@ function identifiedCollectionEntry(candidate) {
   const value = candidate || recognition;
   if (!value) return null;
   if (Variants.explicitVariant(value) === 'unknown') return null;
+  const catalogReference = AccountMigration && AccountMigration.referenceForCandidate(value);
   return {
     ...value,
     id: value.collectionId || value.localCollectionId || Date.now(),
@@ -3307,7 +3465,8 @@ function identifiedCollectionEntry(candidate) {
     date: new Date().toISOString(),
     image: value.imageSmall || value.imageLarge || '',
     imageSmall: value.imageSmall || '',
-    imageLarge: value.imageLarge || ''
+    imageLarge: value.imageLarge || '',
+    ...(catalogReference ? {catalogReference} : {})
   };
 }
 
@@ -3360,8 +3519,10 @@ $('#saveIdentifiedCard').onclick = () => {
   const entry = identifiedCollectionEntry(recognition);
   if (!entry) return;
   if (recognition.accepted) recordLearningSelection(learningScan, recognition, 'single-collection-save');
-  const saved = Collection.upsertCollection(loadCollection(), entry);
-  persistCollection(saved.collection);
+  const previousCollection = loadCollection();
+  let saved = Collection.upsertCollection(previousCollection, entry);
+  saved = markCloudCreateIntent(saved, previousCollection);
+  if (!persistCollection(saved.collection)) return;
   recordScanHistory('SAVED', recognition, null);
   const message = saved.action === 'NEW_CARD'
     ? `${saved.entry.name} wurde zur Sammlung hinzugefügt.`
@@ -4868,7 +5029,7 @@ window.adjustDetailQuantity = (encodedId, delta) => {
 window.toggleCollectionFavorite = encodedId => {
   const id = decodeURIComponent(encodedId);
   const collection = loadCollection().map(card => String(card.id) === id ? {...card, favorite: !card.favorite} : card);
-  persistCollection(collection);
+  if (!persistCollection(collection)) return;
   renderCollection();
   openCollectionDetail(encodedId);
 };
@@ -4877,7 +5038,7 @@ window.saveCollectionNotes = encodedId => {
   const id = decodeURIComponent(encodedId);
   const value = $('#collectionDetailNotes').value.trim();
   const collection = loadCollection().map(card => String(card.id) === id ? {...card, collectionNotes: value} : card);
-  persistCollection(collection);
+  if (!persistCollection(collection)) return;
   renderCollection();
   openCollectionDetail(encodedId);
 };
@@ -4905,7 +5066,7 @@ window.changeCollectionVariant = async (encodedId, value) => {
   const localPrice = Variants.priceForVariant(current, value);
   let changed = Collection.changeVariant(loadCollection(), id, value, localPrice);
   if (!changed.entry || changed.action === 'INVALID_VARIANT') return;
-  persistCollection(changed.collection);
+  if (!persistCollection(changed.collection)) return;
 
   const nextIdentity = changed.entry.collectionKey;
   const migratedGrading = Grading.createState(gradingState);
@@ -4924,7 +5085,7 @@ window.changeCollectionVariant = async (encodedId, value) => {
   const freshPrice = await refreshedVariantPrice(changed.entry, value);
   if (!freshPrice) return;
   changed = Collection.changeVariant(loadCollection(), changed.entry.id, value, freshPrice);
-  persistCollection(changed.collection);
+  if (!persistCollection(changed.collection)) return;
   renderCollection();
   openCollectionDetail(encodeURIComponent(String(changed.entry.id)));
 };
@@ -4935,7 +5096,7 @@ window.adjustCardQuantity = (id, delta) => {
   if (!card) return;
   if (delta < 0 && card.quantity === 1 && !confirm(`${card.name} aus der Sammlung entfernen?`)) return;
   const adjusted = Collection.adjustQuantity(current, id, delta);
-  persistCollection(adjusted.collection);
+  if (!persistCollection(adjusted.collection)) return;
   console.debug('[PokeFolio Collection] Menge geändert collectionKey=' + card.collectionKey
     + ' Delta=' + delta + ' Neu=' + (adjusted.entry ? adjusted.entry.quantity : 0));
   renderCollection();
@@ -4946,7 +5107,7 @@ window.delCard = id => {
   const card = current.find(item => String(item.id) === String(id));
   if (!card || !confirm(`${card.name} vollständig aus der Sammlung entfernen?`)) return;
   const collection = current.filter(item => String(item.id) !== String(id));
-  persistCollection(collection);
+  if (!persistCollection(collection)) return;
   closeCollectionDetail();
   renderCollection();
 };
@@ -4954,3 +5115,13 @@ window.delCard = id => {
 loadCollection();
 renderDashboard();
 renderLearningSettings();
+
+function refreshAccountCollectionScope() {
+  renderDashboard();
+  if ($('#collection').classList.contains('active')) renderCollection();
+  if ($('#portfolio').classList.contains('active')) renderPortfolio();
+  if ($('#grading').classList.contains('active')) renderGradingPage();
+}
+
+window.addEventListener('pokefolio:account-state', refreshAccountCollectionScope);
+window.addEventListener('pokefolio:collection-scope', refreshAccountCollectionScope);

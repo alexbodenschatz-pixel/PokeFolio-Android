@@ -1,0 +1,905 @@
+using System.Collections.Concurrent;
+using System.Net;
+using System.Text;
+using System.Text.Json;
+using Microsoft.VisualStudio.TestTools.UnitTesting;
+using PokeFolio.Desktop.Backend;
+using PokeFolio.Desktop.Security;
+
+namespace PokeFolio.Desktop.Tests;
+
+[TestClass]
+public sealed class PokeFolioApiClientTests
+{
+    private static readonly Guid UserId =
+        Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+    private static readonly string FirstAccessToken = "access-" + new string('a', 64);
+    private static readonly string RotatedAccessToken = "access-" + new string('b', 64);
+    private static readonly string FirstRefreshToken = "refresh-" + new string('c', 64);
+    private static readonly string RotatedRefreshToken = "refresh-" + new string('d', 64);
+    private static readonly Guid CatalogCardId =
+        Guid.Parse("cccccccc-cccc-cccc-cccc-cccccccccccc");
+
+    [TestMethod]
+    public void AllowsHttpsAndLoopbackDevelopmentOriginsOnly()
+    {
+        Assert.IsTrue(PokeFolioApiClient.IsAllowedBackendOrigin(
+            new Uri("https://api.pokefolio.example/")));
+        Assert.IsTrue(PokeFolioApiClient.IsAllowedBackendOrigin(
+            new Uri("http://localhost:5080/")));
+        Assert.IsTrue(PokeFolioApiClient.IsAllowedBackendOrigin(
+            new Uri("http://127.0.0.1:5080/")));
+
+        Assert.IsFalse(PokeFolioApiClient.IsAllowedBackendOrigin(
+            new Uri("http://api.pokefolio.example/")));
+        Assert.IsFalse(PokeFolioApiClient.IsAllowedBackendOrigin(
+            new Uri("https://api.pokefolio.example/api/")));
+        Assert.IsFalse(PokeFolioApiClient.IsAllowedBackendOrigin(
+            new Uri("https://api.pokefolio.example/?target=other")));
+        Assert.IsFalse(PokeFolioApiClient.IsAllowedBackendOrigin(
+            new Uri("https://user:credential@api.pokefolio.example/")));
+    }
+
+    [TestMethod]
+    public async Task LoginKeepsAccessTokenInMemoryAndPersistsOnlyRotatingCredential()
+    {
+        Guid deviceId = Guid.NewGuid();
+        var store = new MemoryRefreshTokenStore();
+        var handler = new RecordingHandler((request, _, _) =>
+        {
+            Assert.AreEqual(HttpMethod.Post, request.Method);
+            Assert.AreEqual("/api/v1/auth/login", request.Uri.AbsolutePath);
+            Assert.IsNull(request.AuthorizationParameter);
+            using JsonDocument body = JsonDocument.Parse(request.Body);
+            Assert.AreEqual("windows", body.RootElement.GetProperty("platform").GetString());
+            Assert.AreEqual("owner@example.test", body.RootElement.GetProperty("email").GetString());
+            Assert.AreEqual("Desktop test", body.RootElement.GetProperty("deviceName").GetString());
+            return Task.FromResult(JsonResponse(
+                HttpStatusCode.OK,
+                SessionBody(deviceId, FirstAccessToken, FirstRefreshToken)));
+        });
+        using var client = CreateClient(store, handler);
+
+        PokeFolioAuthenticationResult result = await client.LoginAsync(
+            " owner@example.test ",
+            "correct horse battery staple",
+            " Desktop test ");
+
+        Assert.IsTrue(result.Succeeded);
+        Assert.AreEqual(UserId, result.Session?.UserId);
+        Assert.AreEqual(deviceId, result.Session?.Device.Id);
+        Assert.AreEqual(deviceId, client.CurrentSession?.Device.Id);
+        Assert.AreEqual(new RefreshTokenCredential(deviceId, FirstRefreshToken), store.Credential);
+        Assert.IsFalse(client.CurrentSession!.ToString().Contains(FirstAccessToken, StringComparison.Ordinal));
+        Assert.AreEqual(1, store.SaveCount);
+    }
+
+    [TestMethod]
+    public async Task PasswordResetUsesAnonymousRoutesAndConfirmationClearsLocalSession()
+    {
+        Guid deviceId = Guid.NewGuid();
+        string resetToken = "reset-" + new string('r', 48);
+        var store = new MemoryRefreshTokenStore();
+        var handler = new RecordingHandler((request, call, _) => Task.FromResult(call switch
+        {
+            0 => JsonResponse(
+                HttpStatusCode.OK,
+                SessionBody(deviceId, FirstAccessToken, FirstRefreshToken)),
+            1 => AssertResetRequest(request),
+            2 => AssertResetConfirm(request),
+            _ => throw new AssertFailedException("Unexpected password-reset request.")
+        }));
+        using var client = CreateClient(store, handler);
+        await client.LoginAsync("owner@example.test", "valid-password", "Desktop test");
+
+        PokeFolioApiResponse requested = await client.RequestPasswordResetAsync(
+            " owner@example.test ");
+        PokeFolioApiResponse confirmed = await client.ConfirmPasswordResetAsync(
+            " owner@example.test ",
+            resetToken,
+            "replacement password");
+
+        Assert.IsTrue(requested.Succeeded);
+        Assert.AreEqual((int)HttpStatusCode.Accepted, requested.Status);
+        Assert.IsTrue(confirmed.Succeeded);
+        Assert.AreEqual((int)HttpStatusCode.NoContent, confirmed.Status);
+        Assert.IsNull(client.CurrentSession);
+        Assert.IsNull(store.Credential);
+        Assert.AreEqual(1, store.DeleteCount);
+        Assert.HasCount(3, handler.Requests);
+
+        static HttpResponseMessage AssertResetRequest(RecordedRequest request)
+        {
+            Assert.AreEqual(HttpMethod.Post, request.Method);
+            Assert.AreEqual("/api/v1/auth/password/reset/request", request.Uri.AbsolutePath);
+            Assert.IsNull(request.AuthorizationParameter);
+            using JsonDocument body = JsonDocument.Parse(request.Body);
+            Assert.AreEqual(1, body.RootElement.EnumerateObject().Count());
+            Assert.AreEqual("owner@example.test", body.RootElement.GetProperty("email").GetString());
+            return new HttpResponseMessage(HttpStatusCode.Accepted);
+        }
+
+        HttpResponseMessage AssertResetConfirm(RecordedRequest request)
+        {
+            Assert.AreEqual(HttpMethod.Post, request.Method);
+            Assert.AreEqual("/api/v1/auth/password/reset/confirm", request.Uri.AbsolutePath);
+            Assert.IsNull(request.AuthorizationParameter);
+            using JsonDocument body = JsonDocument.Parse(request.Body);
+            Assert.AreEqual(3, body.RootElement.EnumerateObject().Count());
+            Assert.AreEqual("owner@example.test", body.RootElement.GetProperty("email").GetString());
+            Assert.AreEqual(resetToken, body.RootElement.GetProperty("token").GetString());
+            Assert.AreEqual(
+                "replacement password",
+                body.RootElement.GetProperty("newPassword").GetString());
+            return new HttpResponseMessage(HttpStatusCode.NoContent);
+        }
+    }
+
+    [TestMethod]
+    public async Task InvalidPasswordResetPayloadsAreRejectedBeforeNetworkAccess()
+    {
+        var store = new MemoryRefreshTokenStore();
+        var handler = new RecordingHandler((_, _, _) =>
+            throw new AssertFailedException("Invalid password-reset payload reached the network."));
+        using var client = CreateClient(store, handler);
+
+        await Assert.ThrowsExactlyAsync<ArgumentException>(async () =>
+            await client.RequestPasswordResetAsync("   "));
+        await Assert.ThrowsExactlyAsync<ArgumentException>(async () =>
+            await client.ConfirmPasswordResetAsync(
+                "owner@example.test", "short", "replacement password"));
+        await Assert.ThrowsExactlyAsync<ArgumentException>(async () =>
+            await client.ConfirmPasswordResetAsync(
+                "owner@example.test", "reset-" + new string('r', 48), "too-short"));
+        Assert.HasCount(0, handler.Requests);
+    }
+
+    [TestMethod]
+    public async Task DeviceManagementUsesAuthenticatedVersionedRoutes()
+    {
+        Guid currentDeviceId = Guid.NewGuid();
+        Guid otherDeviceId = Guid.NewGuid();
+        var store = new MemoryRefreshTokenStore();
+        var handler = new RecordingHandler((request, call, _) => Task.FromResult(call switch
+        {
+            0 => JsonResponse(
+                HttpStatusCode.OK,
+                SessionBody(currentDeviceId, FirstAccessToken, FirstRefreshToken)),
+            1 => AssertDeviceRequest(request, HttpMethod.Get, "/api/v1/devices",
+                JsonResponse(HttpStatusCode.OK, "[]")),
+            2 => AssertDeviceRequest(request, HttpMethod.Delete,
+                $"/api/v1/devices/{otherDeviceId:D}",
+                new HttpResponseMessage(HttpStatusCode.NoContent)),
+            3 => AssertDeviceRequest(request, HttpMethod.Delete, "/api/v1/devices",
+                new HttpResponseMessage(HttpStatusCode.NoContent)),
+            _ => throw new AssertFailedException("Unexpected device-management request.")
+        }));
+        using var client = CreateClient(store, handler);
+        await client.LoginAsync("owner@example.test", "valid-password", "Desktop test");
+
+        PokeFolioApiResponse listed = await client.ListDevicesAsync();
+        PokeFolioApiResponse revoked = await client.RevokeDeviceAsync(otherDeviceId);
+        PokeFolioApiResponse others = await client.RevokeOtherDevicesAsync();
+
+        Assert.IsTrue(listed.Succeeded);
+        Assert.IsTrue(revoked.Succeeded);
+        Assert.IsTrue(others.Succeeded);
+        Assert.HasCount(4, handler.Requests);
+        Assert.ThrowsExactly<ArgumentException>(() => client.RevokeDeviceAsync(Guid.Empty));
+
+        static HttpResponseMessage AssertDeviceRequest(
+            RecordedRequest request,
+            HttpMethod method,
+            string path,
+            HttpResponseMessage response)
+        {
+            Assert.AreEqual(method, request.Method);
+            Assert.AreEqual(path, request.Uri.AbsolutePath);
+            Assert.AreEqual(FirstAccessToken, request.AuthorizationParameter);
+            Assert.HasCount(0, request.Body);
+            return response;
+        }
+    }
+
+    [TestMethod]
+    public async Task PasswordChangeUsesAuthenticatedContractAndKeepsCurrentSession()
+    {
+        Guid deviceId = Guid.NewGuid();
+        var store = new MemoryRefreshTokenStore();
+        var handler = new RecordingHandler((request, call, _) => Task.FromResult(call switch
+        {
+            0 => JsonResponse(
+                HttpStatusCode.OK,
+                SessionBody(deviceId, FirstAccessToken, FirstRefreshToken)),
+            1 => AssertPasswordChange(request),
+            _ => throw new AssertFailedException("Unexpected password-change request.")
+        }));
+        using var client = CreateClient(store, handler);
+        await client.LoginAsync("owner@example.test", "valid-password", "Desktop test");
+
+        PokeFolioApiResponse result = await client.ChangePasswordAsync(
+            "legacy",
+            "replacement secure password");
+
+        Assert.IsTrue(result.Succeeded);
+        Assert.AreEqual((int)HttpStatusCode.NoContent, result.Status);
+        Assert.IsNotNull(client.CurrentSession);
+        Assert.AreEqual(FirstRefreshToken, store.Credential?.RefreshToken);
+        Assert.HasCount(2, handler.Requests);
+
+        static HttpResponseMessage AssertPasswordChange(RecordedRequest request)
+        {
+            Assert.AreEqual(HttpMethod.Post, request.Method);
+            Assert.AreEqual("/api/v1/auth/password/change", request.Uri.AbsolutePath);
+            Assert.AreEqual(FirstAccessToken, request.AuthorizationParameter);
+            using JsonDocument body = JsonDocument.Parse(request.Body);
+            Assert.AreEqual(2, body.RootElement.EnumerateObject().Count());
+            Assert.AreEqual(
+                "legacy",
+                body.RootElement.GetProperty("currentPassword").GetString());
+            Assert.AreEqual(
+                "replacement secure password",
+                body.RootElement.GetProperty("newPassword").GetString());
+            return new HttpResponseMessage(HttpStatusCode.NoContent);
+        }
+    }
+
+    [TestMethod]
+    public async Task InvalidPasswordChangePayloadsAreRejectedBeforeNetworkAccess()
+    {
+        var handler = new RecordingHandler((_, _, _) =>
+            throw new AssertFailedException("Invalid password-change payload reached the network."));
+        using var client = CreateClient(new MemoryRefreshTokenStore(), handler);
+
+        await Assert.ThrowsExactlyAsync<ArgumentException>(async () =>
+            await client.ChangePasswordAsync("", "replacement secure password"));
+        await Assert.ThrowsExactlyAsync<ArgumentException>(async () =>
+            await client.ChangePasswordAsync("same secure password", "same secure password"));
+        Assert.HasCount(0, handler.Requests);
+    }
+
+    [TestMethod]
+    public void DeviceListParserRejectsDuplicateOrContradictorySessionMetadata()
+    {
+        Guid currentDeviceId = Guid.NewGuid();
+        Guid otherDeviceId = Guid.NewGuid();
+        string valid = JsonSerializer.Serialize(new[]
+        {
+            new
+            {
+                id = currentDeviceId,
+                name = "Desktop test",
+                platform = "windows",
+                createdAt = DateTimeOffset.Parse("2026-09-20T00:00:00Z"),
+                lastSeenAt = DateTimeOffset.Parse("2026-09-24T00:00:00Z"),
+                current = true
+            },
+            new
+            {
+                id = otherDeviceId,
+                name = "Pixel test",
+                platform = "android",
+                createdAt = DateTimeOffset.Parse("2026-09-21T00:00:00Z"),
+                lastSeenAt = DateTimeOffset.Parse("2026-09-23T00:00:00Z"),
+                current = false
+            }
+        }, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+
+        IReadOnlyList<PokeFolioManagedDevice> parsed =
+            PokeFolioApiPayloads.ParseDeviceList(valid, currentDeviceId);
+
+        Assert.HasCount(2, parsed);
+        Assert.IsTrue(parsed[0].Current);
+        Assert.AreEqual(otherDeviceId, parsed[1].Id);
+        Assert.ThrowsExactly<InvalidDataException>(() =>
+            PokeFolioApiPayloads.ParseDeviceList(
+                valid.Replace("\"current\":false", "\"current\":true", StringComparison.Ordinal),
+                currentDeviceId));
+        Assert.ThrowsExactly<InvalidDataException>(() =>
+            PokeFolioApiPayloads.ParseDeviceList(
+                valid.Replace(
+                    $"\"id\":\"{currentDeviceId:D}\"",
+                    $"\"id\":\"{currentDeviceId:D}\",\"id\":\"{currentDeviceId:D}\"",
+                    StringComparison.Ordinal),
+                currentDeviceId));
+    }
+
+    [TestMethod]
+    public async Task RestoreRotatesStoredRefreshTokenForTheSameDevice()
+    {
+        Guid deviceId = Guid.NewGuid();
+        var store = new MemoryRefreshTokenStore
+        {
+            Credential = new RefreshTokenCredential(deviceId, FirstRefreshToken)
+        };
+        var handler = new RecordingHandler((request, _, _) =>
+        {
+            Assert.AreEqual("/api/v1/auth/refresh", request.Uri.AbsolutePath);
+            Assert.IsNull(request.AuthorizationParameter);
+            using JsonDocument body = JsonDocument.Parse(request.Body);
+            Assert.AreEqual(
+                FirstRefreshToken,
+                body.RootElement.GetProperty("refreshToken").GetString());
+            return Task.FromResult(JsonResponse(
+                HttpStatusCode.OK,
+                SessionBody(deviceId, RotatedAccessToken, RotatedRefreshToken)));
+        });
+        using var client = CreateClient(store, handler);
+
+        PokeFolioAuthenticationResult result = await client.RestoreSessionAsync();
+
+        Assert.IsTrue(result.Succeeded);
+        Assert.AreEqual(
+            new RefreshTokenCredential(deviceId, RotatedRefreshToken),
+            store.Credential);
+        Assert.AreEqual(1, store.SaveCount);
+    }
+
+    [TestMethod]
+    public async Task SyncCallsUseOnlyTheConfiguredOriginAndBearerToken()
+    {
+        Guid deviceId = Guid.NewGuid();
+        var store = new MemoryRefreshTokenStore();
+        var handler = new RecordingHandler((request, call, _) => Task.FromResult(call switch
+        {
+            0 => JsonResponse(
+                HttpStatusCode.OK,
+                SessionBody(deviceId, FirstAccessToken, FirstRefreshToken)),
+            1 => AssertSyncPush(request),
+            2 => AssertSyncPull(request),
+            _ => throw new AssertFailedException("Unexpected backend request.")
+        }));
+        using var client = CreateClient(store, handler);
+        await client.LoginAsync("owner@example.test", "valid-password", "Desktop test");
+        const string batch = "{\"operations\":[{\"kind\":\"holding.delete\",\"operationId\":\"10000000-0000-0000-0000-000000000001\",\"holdingId\":\"20000000-0000-0000-0000-000000000002\",\"baseVersion\":3}]}";
+
+        PokeFolioApiResponse pushed = await client.PushSyncOperationsAsync(batch);
+        PokeFolioApiResponse pulled = await client.PullSyncChangesAsync("abc+/=", 25);
+
+        Assert.IsTrue(pushed.Succeeded);
+        Assert.AreEqual("{\"results\":[]}", pushed.Body);
+        Assert.IsTrue(pulled.Succeeded);
+        Assert.AreEqual("{\"changes\":[],\"nextCursor\":\"abc\",\"hasMore\":false}", pulled.Body);
+
+        HttpResponseMessage AssertSyncPush(RecordedRequest request)
+        {
+            Assert.AreEqual("https://api.pokefolio.example/api/v1/sync/operations", request.Uri.AbsoluteUri);
+            Assert.AreEqual("Bearer", request.AuthorizationScheme);
+            Assert.AreEqual(FirstAccessToken, request.AuthorizationParameter);
+            Assert.AreEqual(batch, request.Body);
+            return JsonResponse(HttpStatusCode.OK, "{\"results\":[]}");
+        }
+
+        static HttpResponseMessage AssertSyncPull(RecordedRequest request)
+        {
+            Assert.AreEqual("/api/v1/sync/changes", request.Uri.AbsolutePath);
+            Assert.IsTrue(request.Uri.Query.Contains("limit=25", StringComparison.Ordinal));
+            Assert.IsTrue(request.Uri.Query.Contains("cursor=abc%2B%2F%3D", StringComparison.Ordinal));
+            return JsonResponse(
+                HttpStatusCode.OK,
+                "{\"changes\":[],\"nextCursor\":\"abc\",\"hasMore\":false}");
+        }
+    }
+
+    [TestMethod]
+    public async Task CatalogCallsNormalizeReferenceAndUseAuthenticatedContractPaths()
+    {
+        Guid deviceId = Guid.NewGuid();
+        var store = new MemoryRefreshTokenStore();
+        var handler = new RecordingHandler((request, call, _) => Task.FromResult(call switch
+        {
+            0 => JsonResponse(
+                HttpStatusCode.OK,
+                SessionBody(deviceId, FirstAccessToken, FirstRefreshToken)),
+            1 => AssertResolve(request),
+            2 => AssertGet(request),
+            _ => throw new AssertFailedException("Unexpected catalog backend request.")
+        }));
+        using var client = CreateClient(store, handler);
+        await client.LoginAsync("owner@example.test", "valid-password", "Desktop test");
+
+        PokeFolioApiResponse resolved = await client.ResolveCatalogCardAsync(
+            """
+            {
+              "provider": " TCGDEX ",
+              "providerCardId": " SV8-141 ",
+              "tcg": " POKEMON ",
+              "name": " Pikachu ex ",
+              "setCode": " SV8 ",
+              "number": " 219/191 "
+            }
+            """);
+        PokeFolioApiResponse card = await client.GetCatalogCardAsync(CatalogCardId);
+
+        Assert.IsTrue(resolved.Succeeded);
+        Assert.AreEqual((int)HttpStatusCode.Created, resolved.Status);
+        Assert.IsTrue(card.Succeeded);
+        Assert.AreEqual(CatalogCardBody(CatalogCardId), card.Body);
+
+        HttpResponseMessage AssertResolve(RecordedRequest request)
+        {
+            Assert.AreEqual(HttpMethod.Post, request.Method);
+            Assert.AreEqual("/api/v1/cards/resolve", request.Uri.AbsolutePath);
+            Assert.AreEqual(FirstAccessToken, request.AuthorizationParameter);
+            using JsonDocument body = JsonDocument.Parse(request.Body);
+            Assert.AreEqual("tcgdex", body.RootElement.GetProperty("provider").GetString());
+            Assert.AreEqual("sv8-141", body.RootElement.GetProperty("providerCardId").GetString());
+            Assert.AreEqual("pokemon", body.RootElement.GetProperty("tcg").GetString());
+            Assert.AreEqual("Pikachu ex", body.RootElement.GetProperty("name").GetString());
+            Assert.AreEqual("SV8", body.RootElement.GetProperty("setCode").GetString());
+            Assert.AreEqual("219/191", body.RootElement.GetProperty("number").GetString());
+            return JsonResponse(
+                HttpStatusCode.Created,
+                $"{{\"card\":{CatalogCardBody(CatalogCardId)},\"created\":true,\"metadataMatched\":true}}");
+        }
+
+        static HttpResponseMessage AssertGet(RecordedRequest request)
+        {
+            Assert.AreEqual(HttpMethod.Get, request.Method);
+            Assert.AreEqual($"/api/v1/cards/{CatalogCardId:D}", request.Uri.AbsolutePath);
+            Assert.AreEqual(FirstAccessToken, request.AuthorizationParameter);
+            return JsonResponse(HttpStatusCode.OK, CatalogCardBody(CatalogCardId));
+        }
+    }
+
+    [TestMethod]
+    public async Task UnauthorizedSyncRefreshesAndReplaysExactlyOnce()
+    {
+        Guid deviceId = Guid.NewGuid();
+        var store = new MemoryRefreshTokenStore();
+        var handler = new RecordingHandler((request, call, _) => Task.FromResult(call switch
+        {
+            0 => JsonResponse(
+                HttpStatusCode.OK,
+                SessionBody(deviceId, FirstAccessToken, FirstRefreshToken)),
+            1 when request.AuthorizationParameter == FirstAccessToken =>
+                ProblemResponse(HttpStatusCode.Unauthorized, "authentication_required"),
+            2 when request.Uri.AbsolutePath == "/api/v1/auth/refresh" => JsonResponse(
+                HttpStatusCode.OK,
+                SessionBody(deviceId, RotatedAccessToken, RotatedRefreshToken)),
+            3 when request.AuthorizationParameter == RotatedAccessToken =>
+                JsonResponse(HttpStatusCode.OK, "{\"changes\":[],\"nextCursor\":\"\",\"hasMore\":false}"),
+            _ => throw new AssertFailedException("Unexpected refresh/retry sequence.")
+        }));
+        using var client = CreateClient(store, handler);
+        await client.LoginAsync("owner@example.test", "valid-password", "Desktop test");
+
+        PokeFolioApiResponse response = await client.PullSyncChangesAsync();
+
+        Assert.IsTrue(response.Succeeded);
+        Assert.AreEqual(4, handler.Requests.Count);
+        Assert.AreEqual(
+            new RefreshTokenCredential(deviceId, RotatedRefreshToken),
+            store.Credential);
+        Assert.AreEqual(2, store.SaveCount);
+    }
+
+    [TestMethod]
+    public async Task ConcurrentUnauthorizedCallsShareOneRotatingRefresh()
+    {
+        Guid deviceId = Guid.NewGuid();
+        var store = new MemoryRefreshTokenStore();
+        var bothRejectedRequestsArrived = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        int rejectedRequestCount = 0;
+        int refreshCount = 0;
+        var handler = new RecordingHandler(async (request, call, cancellationToken) =>
+        {
+            if (call == 0)
+            {
+                return JsonResponse(
+                    HttpStatusCode.OK,
+                    SessionBody(deviceId, FirstAccessToken, FirstRefreshToken));
+            }
+            if (request.AuthorizationParameter == FirstAccessToken)
+            {
+                if (Interlocked.Increment(ref rejectedRequestCount) == 2)
+                {
+                    bothRejectedRequestsArrived.TrySetResult(true);
+                }
+                await bothRejectedRequestsArrived.Task.WaitAsync(cancellationToken);
+                return ProblemResponse(HttpStatusCode.Unauthorized, "authentication_required");
+            }
+            if (request.Uri.AbsolutePath == "/api/v1/auth/refresh")
+            {
+                Interlocked.Increment(ref refreshCount);
+                return JsonResponse(
+                    HttpStatusCode.OK,
+                    SessionBody(deviceId, RotatedAccessToken, RotatedRefreshToken));
+            }
+            if (request.AuthorizationParameter == RotatedAccessToken)
+            {
+                return JsonResponse(
+                    HttpStatusCode.OK,
+                    "{\"changes\":[],\"nextCursor\":\"\",\"hasMore\":false}");
+            }
+            throw new AssertFailedException("Unexpected concurrent refresh request.");
+        });
+        using var client = CreateClient(store, handler);
+        await client.LoginAsync("owner@example.test", "valid-password", "Desktop test");
+
+        PokeFolioApiResponse[] responses = await Task.WhenAll(
+            client.PullSyncChangesAsync(),
+            client.PullSyncChangesAsync());
+
+        Assert.IsTrue(responses.All(response => response.Succeeded));
+        Assert.AreEqual(2, rejectedRequestCount);
+        Assert.AreEqual(1, refreshCount);
+        Assert.AreEqual(2, store.SaveCount);
+    }
+
+    [TestMethod]
+    public async Task InvalidStoredRefreshTokenClearsLocalSession()
+    {
+        var store = new MemoryRefreshTokenStore
+        {
+            Credential = new RefreshTokenCredential(Guid.NewGuid(), FirstRefreshToken)
+        };
+        var handler = new RecordingHandler((_, _, _) => Task.FromResult(
+            ProblemResponse(HttpStatusCode.Unauthorized, "invalid_refresh_token")));
+        using var client = CreateClient(store, handler);
+
+        PokeFolioAuthenticationResult result = await client.RestoreSessionAsync();
+
+        Assert.IsFalse(result.Succeeded);
+        Assert.AreEqual("invalid_refresh_token", result.Problem?.Code);
+        Assert.IsNull(store.Credential);
+        Assert.IsNull(client.CurrentSession);
+        Assert.AreEqual(1, store.DeleteCount);
+    }
+
+    [TestMethod]
+    public async Task TemporaryRestoreFailureIsReportedWithoutDiscardingCredential()
+    {
+        Guid deviceId = Guid.NewGuid();
+        var original = new RefreshTokenCredential(deviceId, FirstRefreshToken);
+        var store = new MemoryRefreshTokenStore { Credential = original };
+        var handler = new RecordingHandler((_, _, _) => Task.FromResult(
+            ProblemResponse(HttpStatusCode.ServiceUnavailable, "database_unavailable")));
+        using var client = CreateClient(store, handler);
+
+        PokeFolioApiResponse result = await client.PushSyncOperationsAsync(
+            "{\"operations\":[{\"kind\":\"holding.delete\"}]}");
+
+        Assert.IsFalse(result.Succeeded);
+        Assert.AreEqual((int)HttpStatusCode.ServiceUnavailable, result.Status);
+        Assert.AreEqual("database_unavailable", result.Problem?.Code);
+        Assert.AreEqual(original, store.Credential);
+        Assert.AreEqual(0, store.DeleteCount);
+    }
+
+    [TestMethod]
+    public async Task LogoutRevokesServerSessionAndAlwaysDeletesLocalCredential()
+    {
+        Guid deviceId = Guid.NewGuid();
+        var store = new MemoryRefreshTokenStore();
+        var handler = new RecordingHandler((request, call, _) => Task.FromResult(call switch
+        {
+            0 => JsonResponse(
+                HttpStatusCode.OK,
+                SessionBody(deviceId, FirstAccessToken, FirstRefreshToken)),
+            1 when request.Uri.AbsolutePath == "/api/v1/auth/logout" &&
+                   request.AuthorizationParameter == FirstAccessToken =>
+                new HttpResponseMessage(HttpStatusCode.NoContent),
+            _ => throw new AssertFailedException("Unexpected logout sequence.")
+        }));
+        using var client = CreateClient(store, handler);
+        await client.LoginAsync("owner@example.test", "valid-password", "Desktop test");
+
+        PokeFolioLogoutResult result = await client.LogoutAsync();
+
+        Assert.IsTrue(result.ServerSessionRevoked);
+        Assert.IsNull(store.Credential);
+        Assert.IsNull(client.CurrentSession);
+        Assert.AreEqual(1, store.DeleteCount);
+    }
+
+    [TestMethod]
+    public async Task DuplicateAuthResponsePropertiesFailClosed()
+    {
+        Guid deviceId = Guid.NewGuid();
+        string validBody = SessionBody(deviceId, FirstAccessToken, FirstRefreshToken);
+        string duplicateBody = validBody.Replace(
+            "\"accessToken\":",
+            "\"accessToken\":\"duplicate\",\"accessToken\":",
+            StringComparison.Ordinal);
+        var store = new MemoryRefreshTokenStore();
+        var handler = new RecordingHandler((_, _, _) => Task.FromResult(
+            JsonResponse(HttpStatusCode.OK, duplicateBody)));
+        using var client = CreateClient(store, handler);
+
+        await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+            await client.LoginAsync("owner@example.test", "valid-password", "Desktop test"));
+        Assert.IsNull(store.Credential);
+        Assert.IsNull(client.CurrentSession);
+    }
+
+    [TestMethod]
+    public async Task MissingStableUserIdentityFailsClosed()
+    {
+        Guid deviceId = Guid.NewGuid();
+        string invalidBody = SessionBody(deviceId, FirstAccessToken, FirstRefreshToken)
+            .Replace(
+                UserId.ToString("D"),
+                Guid.Empty.ToString("D"),
+                StringComparison.Ordinal);
+        var store = new MemoryRefreshTokenStore();
+        var handler = new RecordingHandler((_, _, _) => Task.FromResult(
+            JsonResponse(HttpStatusCode.OK, invalidBody)));
+        using var client = CreateClient(store, handler);
+
+        await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+            await client.LoginAsync("owner@example.test", "valid-password", "Desktop test"));
+        Assert.IsNull(store.Credential);
+        Assert.IsNull(client.CurrentSession);
+    }
+
+    [TestMethod]
+    public async Task InvalidSyncPayloadsAreRejectedBeforeNetworkAccess()
+    {
+        var store = new MemoryRefreshTokenStore();
+        var handler = new RecordingHandler((_, _, _) =>
+            throw new AssertFailedException("Invalid sync payload reached the network."));
+        using var client = CreateClient(store, handler);
+
+        await Assert.ThrowsExactlyAsync<ArgumentException>(async () =>
+            await client.PushSyncOperationsAsync("[]"));
+        await Assert.ThrowsExactlyAsync<ArgumentException>(async () =>
+            await client.PushSyncOperationsAsync(
+                "{\"operations\":[],\"operations\":[]}"));
+        await Assert.ThrowsExactlyAsync<ArgumentException>(async () =>
+            await client.PushSyncOperationsAsync(
+                "{\"padding\":\"" + new string('x', 1024 * 1024) + "\"}"));
+        Assert.HasCount(0, handler.Requests);
+    }
+
+    [TestMethod]
+    public async Task InvalidCatalogReferencesAreRejectedBeforeNetworkAccess()
+    {
+        var store = new MemoryRefreshTokenStore();
+        var handler = new RecordingHandler((_, _, _) =>
+            throw new AssertFailedException("Invalid catalog payload reached the network."));
+        using var client = CreateClient(store, handler);
+
+        await Assert.ThrowsExactlyAsync<ArgumentException>(async () =>
+            await client.ResolveCatalogCardAsync("[]"));
+        await Assert.ThrowsExactlyAsync<ArgumentException>(async () =>
+            await client.ResolveCatalogCardAsync(
+                "{\"provider\":\"tcgdex\",\"providerCardId\":\"sv8-141\",\"tcg\":\"yugioh\",\"name\":\"Pikachu\",\"setCode\":\"SV8\",\"number\":\"141/191\"}"));
+        await Assert.ThrowsExactlyAsync<ArgumentException>(async () =>
+            await client.ResolveCatalogCardAsync(
+                "{\"provider\":\"tcgdex\",\"providerCardId\":\"../bad?query\",\"tcg\":\"pokemon\",\"name\":\"Pikachu\",\"setCode\":\"SV8\",\"number\":\"141/191\"}"));
+        await Assert.ThrowsExactlyAsync<ArgumentException>(async () =>
+            await client.ResolveCatalogCardAsync(
+                "{\"provider\":\"tcgdex\",\"providerCardId\":\"sv8-141\",\"tcg\":\"pokemon\",\"name\":\"Pikachu\",\"setCode\":\"SV8\",\"number\":\"141/191\",\"userId\":\"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\"}"));
+        await Assert.ThrowsExactlyAsync<ArgumentException>(async () =>
+            await client.ResolveCatalogCardAsync(
+                "{\"provider\":\"tcgdex\",\"provider\":\"tcgdex\",\"providerCardId\":\"sv8-141\",\"tcg\":\"pokemon\",\"name\":\"Pikachu\",\"setCode\":\"SV8\",\"number\":\"141/191\"}"));
+        Assert.ThrowsExactly<ArgumentException>(() =>
+            client.GetCatalogCardAsync(Guid.Empty));
+        Assert.HasCount(0, handler.Requests);
+    }
+
+    [TestMethod]
+    public async Task OversizedAuthResponseIsRejectedBeforeParsingOrPersistence()
+    {
+        var store = new MemoryRefreshTokenStore();
+        var handler = new RecordingHandler((_, _, _) => Task.FromResult(
+            JsonResponse(HttpStatusCode.OK, new string('x', 128 * 1024 + 1))));
+        using var client = CreateClient(store, handler);
+
+        await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+            await client.LoginAsync("owner@example.test", "valid-password", "Desktop test"));
+        Assert.IsNull(store.Credential);
+        Assert.IsNull(client.CurrentSession);
+    }
+
+    [TestMethod]
+    public async Task OperationBoundToPreviousAccountIsRejectedBeforeNetworkSend()
+    {
+        Guid deviceId = Guid.NewGuid();
+        Guid secondUserId = Guid.Parse("dddddddd-dddd-dddd-dddd-dddddddddddd");
+        int loginCount = 0;
+        var store = new MemoryRefreshTokenStore();
+        var handler = new RecordingHandler((request, _, _) =>
+        {
+            if (request.Uri.AbsolutePath != "/api/v1/auth/login")
+            {
+                Assert.Fail("Cross-account operation must not reach the network.");
+            }
+            loginCount++;
+            return Task.FromResult(JsonResponse(
+                HttpStatusCode.OK,
+                SessionBody(
+                    deviceId,
+                    loginCount == 1 ? FirstAccessToken : RotatedAccessToken,
+                    loginCount == 1 ? FirstRefreshToken : RotatedRefreshToken,
+                    loginCount == 1 ? UserId : secondUserId)));
+        });
+        using var client = CreateClient(store, handler);
+        await client.LoginAsync("first@example.test", "valid-password", "Desktop test");
+        await client.LoginAsync("second@example.test", "valid-password", "Desktop test");
+
+        PokeFolioApiResponse response = await client.PushSyncOperationsAsync(
+            "{\"operations\":[]}",
+            expectedUserId: UserId);
+
+        Assert.IsFalse(response.Succeeded);
+        Assert.AreEqual((int)HttpStatusCode.Conflict, response.Status);
+        Assert.AreEqual("account_changed", response.Problem?.Code);
+        Assert.AreEqual(secondUserId, client.CurrentSession?.UserId);
+        Assert.HasCount(2, handler.Requests);
+    }
+
+    [TestMethod]
+    public async Task RefreshResponseForAnotherDeviceFailsClosed()
+    {
+        Guid deviceId = Guid.NewGuid();
+        var store = new MemoryRefreshTokenStore
+        {
+            Credential = new RefreshTokenCredential(deviceId, FirstRefreshToken)
+        };
+        var handler = new RecordingHandler((_, _, _) => Task.FromResult(JsonResponse(
+            HttpStatusCode.OK,
+            SessionBody(Guid.NewGuid(), RotatedAccessToken, RotatedRefreshToken))));
+        using var client = CreateClient(store, handler);
+
+        await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+            await client.RestoreSessionAsync());
+        Assert.IsNull(store.Credential);
+        Assert.IsNull(client.CurrentSession);
+        Assert.AreEqual(1, store.DeleteCount);
+    }
+
+    [TestMethod]
+    public async Task FailedRotatedTokenPersistenceLeavesNoAuthenticatedSession()
+    {
+        var store = new MemoryRefreshTokenStore { FailSaves = true };
+        var handler = new RecordingHandler((_, _, _) => Task.FromResult(JsonResponse(
+            HttpStatusCode.OK,
+            SessionBody(Guid.NewGuid(), FirstAccessToken, FirstRefreshToken))));
+        using var client = CreateClient(store, handler);
+
+        await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+            await client.LoginAsync("owner@example.test", "valid-password", "Desktop test"));
+        Assert.IsNull(store.Credential);
+        Assert.IsNull(client.CurrentSession);
+        Assert.AreEqual(1, store.SaveCount);
+        Assert.AreEqual(1, store.DeleteCount);
+    }
+
+    private static PokeFolioApiClient CreateClient(
+        MemoryRefreshTokenStore store,
+        HttpMessageHandler handler) => new(
+            new Uri("https://api.pokefolio.example/"),
+            store,
+            handler);
+
+    private static string SessionBody(
+        Guid deviceId,
+        string accessToken,
+        string refreshToken,
+        Guid? sessionUserId = null) => JsonSerializer.Serialize(new
+        {
+            userId = sessionUserId ?? UserId,
+            accessToken,
+            refreshToken,
+            accessTokenExpiresAt = "2030-01-01T00:00:00+00:00",
+            device = new
+            {
+                id = deviceId,
+                name = "Desktop test",
+                platform = "windows",
+                createdAt = "2026-09-10T00:00:00+00:00",
+                lastSeenAt = "2026-09-10T00:00:00+00:00",
+                current = true
+            }
+        });
+
+    private static string CatalogCardBody(Guid cardId) => JsonSerializer.Serialize(new
+    {
+        id = cardId,
+        provider = "tcgdex",
+        providerCardId = "sv8-141",
+        tcg = "pokemon",
+        name = "Pikachu ex",
+        setCode = "SV8",
+        number = "219/191",
+        createdAt = "2026-09-12T00:00:00+00:00",
+        updatedAt = "2026-09-12T00:00:00+00:00"
+    });
+
+    private static HttpResponseMessage JsonResponse(HttpStatusCode status, string json) => new(status)
+    {
+        Content = new StringContent(json, Encoding.UTF8, "application/json")
+    };
+
+    private static HttpResponseMessage ProblemResponse(HttpStatusCode status, string code) =>
+        JsonResponse(status, JsonSerializer.Serialize(new
+        {
+            type = "about:blank",
+            title = "Request failed.",
+            status = (int)status,
+            code,
+            correlationId = "test-correlation"
+        }));
+
+    private sealed class MemoryRefreshTokenStore : IRefreshTokenStore
+    {
+        private readonly object gate = new();
+        private RefreshTokenCredential? credential;
+
+        public RefreshTokenCredential? Credential
+        {
+            get
+            {
+                lock (gate) return credential;
+            }
+            set
+            {
+                lock (gate) credential = value;
+            }
+        }
+
+        public int SaveCount { get; private set; }
+
+        public int DeleteCount { get; private set; }
+
+        public bool FailSaves { get; init; }
+
+        public RefreshTokenCredential? Load() => Credential;
+
+        public void Save(RefreshTokenCredential value)
+        {
+            lock (gate)
+            {
+                SaveCount++;
+                if (FailSaves) throw new IOException("Simulated credential-store failure.");
+                credential = value;
+            }
+        }
+
+        public void Delete()
+        {
+            lock (gate)
+            {
+                credential = null;
+                DeleteCount++;
+            }
+        }
+    }
+
+    private sealed record RecordedRequest(
+        HttpMethod Method,
+        Uri Uri,
+        string? AuthorizationScheme,
+        string? AuthorizationParameter,
+        string Body);
+
+    private sealed class RecordingHandler(
+        Func<RecordedRequest, int, CancellationToken, Task<HttpResponseMessage>> respond) :
+        HttpMessageHandler
+    {
+        private readonly ConcurrentQueue<RecordedRequest> requests = new();
+        private int callCount;
+
+        public IReadOnlyList<RecordedRequest> Requests => requests.ToArray();
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            var recorded = new RecordedRequest(
+                request.Method,
+                request.RequestUri!,
+                request.Headers.Authorization?.Scheme,
+                request.Headers.Authorization?.Parameter,
+                request.Content is null
+                    ? ""
+                    : await request.Content.ReadAsStringAsync(cancellationToken));
+            requests.Enqueue(recorded);
+            int call = Interlocked.Increment(ref callCount) - 1;
+            return await respond(recorded, call, cancellationToken);
+        }
+    }
+}

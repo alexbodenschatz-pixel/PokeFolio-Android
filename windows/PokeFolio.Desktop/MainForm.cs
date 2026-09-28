@@ -1,0 +1,195 @@
+using Microsoft.Web.WebView2.Core;
+using Microsoft.Web.WebView2.WinForms;
+using PokeFolio.Desktop.Backend;
+using PokeFolio.Desktop.Bridge;
+using PokeFolio.Desktop.Capture;
+using PokeFolio.Desktop.Recognition;
+using PokeFolio.Desktop.Vision;
+
+namespace PokeFolio.Desktop;
+
+public sealed class MainForm : Form
+{
+    private readonly WebView2 webView = new() { Dock = DockStyle.Fill };
+    private readonly SharedWebAssetLocator assets = new();
+    private HttpBridgeService? httpBridge;
+    private PokeNativeBridge? nativeBridge;
+    private VisualComparisonService? visualComparison;
+    private CanonEosCapture? canonCapture;
+
+    public MainForm()
+    {
+        Text = "PokéFolio Desktop";
+        MinimumSize = new Size(980, 700);
+        Size = new Size(1320, 900);
+        StartPosition = FormStartPosition.CenterScreen;
+        BackColor = Color.FromArgb(7, 15, 25);
+        Controls.Add(webView);
+        Shown += OnShown;
+    }
+
+    private async void OnShown(object? sender, EventArgs eventArgs)
+    {
+        Shown -= OnShown;
+        try
+        {
+            await InitializeWebViewAsync();
+        }
+        catch (Exception error)
+        {
+            MessageBox.Show(
+                this,
+                "PokéFolio Desktop konnte nicht gestartet werden.\n\n" + error.Message,
+                "Startfehler",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
+            Close();
+        }
+    }
+
+    private async Task InitializeWebViewAsync()
+    {
+        var validation = StartupValidator.Validate(assets);
+        if (!validation.Success)
+        {
+            throw new InvalidOperationException(string.Join(Environment.NewLine, validation.Errors));
+        }
+
+        var userDataFolder = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "PokeFolio",
+            "WebView2");
+        Directory.CreateDirectory(userDataFolder);
+        var environment = await CoreWebView2Environment.CreateAsync(userDataFolder: userDataFolder);
+        await webView.EnsureCoreWebView2Async(environment);
+
+        webView.CoreWebView2.Settings.AreDefaultScriptDialogsEnabled = true;
+        webView.CoreWebView2.Settings.IsStatusBarEnabled = false;
+        webView.CoreWebView2.Settings.AreDefaultContextMenusEnabled = false;
+#if !DEBUG
+        webView.CoreWebView2.Settings.AreDevToolsEnabled = false;
+#endif
+        webView.CoreWebView2.SetVirtualHostNameToFolderMapping(
+            WebViewSecurityPolicy.ApplicationHost,
+            assets.Root,
+            CoreWebView2HostResourceAccessKind.DenyCors);
+        webView.CoreWebView2.SetVirtualHostNameToFolderMapping(
+            WebViewSecurityPolicy.DesktopAssetHost,
+            assets.DesktopRoot,
+            CoreWebView2HostResourceAccessKind.Allow);
+
+        // PokeNative is a privileged COM boundary. An untrusted document must never receive it.
+        webView.CoreWebView2.NavigationStarting += (_, args) =>
+        {
+            if (!WebViewSecurityPolicy.IsAllowedTopLevelNavigation(args.Uri)) args.Cancel = true;
+        };
+        webView.CoreWebView2.FrameNavigationStarting += (_, args) =>
+        {
+            if (!WebViewSecurityPolicy.IsAllowedFrameNavigation(args.Uri)) args.Cancel = true;
+        };
+        webView.CoreWebView2.NewWindowRequested += (_, args) => args.Handled = true;
+        webView.CoreWebView2.PermissionRequested += (_, args) =>
+            args.State = CoreWebView2PermissionState.Deny;
+
+        var callbackDispatcher = new WebView2CallbackDispatcher(ExecuteScriptOnUiAsync);
+        var fileCapture = new WindowsFileCapture(SelectImageFileAsync);
+        canonCapture = new CanonEosCapture();
+        var captureDevices = new ICardCaptureDevice[] { fileCapture, canonCapture };
+        var codec = new ImageDataUrlCodec();
+        var vision = new WindowsVisionPipeline(codec, new CardDetector(),
+            new CardPerspectiveCorrector(), new ImageQualityAnalyzer());
+        var textRecognition = new WindowsTextRecognitionService();
+        var regions = new CardRegionExtractor();
+        var identifierParser = new CardIdentifierParser();
+        var orientation = new CardOrientationNormalizer(textRecognition, regions, identifierParser);
+        var recognition = new WindowsCardRecognitionService(vision, textRecognition, regions,
+            identifierParser, orientation);
+        visualComparison = new VisualComparisonService(vision, codec, new CardVisualMatcher());
+        httpBridge = new HttpBridgeService();
+        nativeBridge = new PokeNativeBridge(
+            callbackDispatcher,
+            httpBridge,
+            new LocalDataService(),
+            new DesktopStatusService(),
+            fileCapture,
+            captureDevices,
+            vision,
+            codec,
+            recognition,
+            visualComparison,
+            canonCapture,
+            PokeFolioAccountService.FromEnvironment());
+
+        webView.CoreWebView2.AddHostObjectToScript("PokeNative", nativeBridge);
+        var bootstrap = await File.ReadAllTextAsync(Path.Combine(assets.DesktopRoot, "desktop-bootstrap.js"));
+        await webView.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync(bootstrap);
+        webView.Source = new Uri(WebViewSecurityPolicy.StartPage);
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            nativeBridge?.Dispose();
+            if (canonCapture is not null) canonCapture.DisposeAsync().AsTask().GetAwaiter().GetResult();
+            visualComparison?.Dispose();
+            httpBridge?.Dispose();
+            webView.Dispose();
+        }
+        base.Dispose(disposing);
+    }
+
+    private Task<string?> SelectImageFileAsync(CancellationToken cancellationToken)
+    {
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return Task.FromCanceled<string?>(cancellationToken);
+        }
+
+        var completion = new TaskCompletionSource<string?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        void ShowPicker()
+        {
+            using var dialog = new OpenFileDialog
+            {
+                Title = "Kartenbild auswählen",
+                Filter = "Bilddateien|*.jpg;*.jpeg;*.png;*.webp;*.bmp;*.heic;*.heif|Alle Dateien|*.*",
+                CheckFileExists = true,
+                Multiselect = false
+            };
+            completion.TrySetResult(dialog.ShowDialog(this) == DialogResult.OK ? dialog.FileName : null);
+        }
+
+        if (InvokeRequired)
+        {
+            BeginInvoke((Action)ShowPicker);
+        }
+        else
+        {
+            ShowPicker();
+        }
+        return completion.Task;
+    }
+
+    private Task ExecuteScriptOnUiAsync(string script)
+    {
+        if (!InvokeRequired)
+        {
+            return webView.CoreWebView2.ExecuteScriptAsync(script);
+        }
+
+        var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        BeginInvoke((Action)(async () =>
+        {
+            try
+            {
+                await webView.CoreWebView2.ExecuteScriptAsync(script);
+                completion.TrySetResult();
+            }
+            catch (Exception error)
+            {
+                completion.TrySetException(error);
+            }
+        }));
+        return completion.Task;
+    }
+}

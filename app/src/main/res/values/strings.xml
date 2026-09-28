@@ -1,4 +1,7 @@
 <resources>
+    <string name="camera_auto_capture">Automatisch aufnehmen</string>
+    <string name="camera_remove_previous">Vorherige Karte aus dem Rahmen entfernen, dann nächste Karte einlegen.</string>
+    <string name="camera_quality_retry">Schärfe, Beleuchtung und vollständigen Kartenrand prüfen.</string>
     <string name="app_name">PokéFolio</string>
     <string name="camera_permission_required">Für den Kartenscanner wird der Kamerazugriff benötigt.</string>
     <string name="camera_start_failed">Die Kamera konnte nicht gestartet werden.</string>

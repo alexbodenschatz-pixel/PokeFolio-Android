@@ -25,6 +25,7 @@ import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
+import android.widget.Switch;
 
 import androidx.activity.ComponentActivity;
 import androidx.camera.core.Camera;
@@ -64,6 +65,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /** Native CameraX scanner with a card-sized region of interest. */
 public final class CameraActivity extends ComponentActivity {
     public static final String EXTRA_BULK_MODE = "de.pokefolio.app.extra.BULK_MODE";
+    public static final String EXTRA_REMOVAL_CONFIRMED = "de.pokefolio.app.extra.REMOVAL_CONFIRMED";
+    public static final String EXTRA_CAPTURE_TO_CROP_MS = "de.pokefolio.app.extra.CAPTURE_TO_CROP_MS";
     public static final String EXTRA_NORMALIZED_CARD = "de.pokefolio.app.extra.NORMALIZED_CARD";
     public static final String EXTRA_CROP_METHOD = "de.pokefolio.app.extra.CROP_METHOD";
     public static final String EXTRA_CROP_CONFIDENCE = "de.pokefolio.app.extra.CROP_CONFIDENCE";
@@ -97,6 +100,10 @@ public final class CameraActivity extends ComponentActivity {
     private final AtomicBoolean liveAnalysisBusy = new AtomicBoolean(false);
     private final FastCardDetector fastCardDetector = new FastCardDetector();
     private volatile CardDetectionTracker.Snapshot liveDetection;
+    private AutoCaptureGate autoCaptureGate;
+    private boolean autoCaptureEnabled;
+    private boolean captureInFlight;
+    private boolean resumed;
 
     private int dp(int value) {
         return Math.round(value * getResources().getDisplayMetrics().density);
@@ -107,6 +114,8 @@ public final class CameraActivity extends ComponentActivity {
         super.onCreate(state);
         WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
         bulkMode = getIntent().getBooleanExtra(EXTRA_BULK_MODE, false);
+        autoCaptureGate = new AutoCaptureGate(bulkMode && getPreferencesStore().getBoolean("bulk-await-removal", false));
+        autoCaptureEnabled = getPreferencesStore().getBoolean("auto-capture", true);
         cameraExecutor = Executors.newSingleThreadExecutor();
         buildUi();
 
@@ -151,6 +160,25 @@ public final class CameraActivity extends ComponentActivity {
         hintLayoutParams.gravity = Gravity.TOP;
         hintLayoutParams.setMargins(dp(16), dp(12), dp(16), 0);
         root.addView(hint, hintLayoutParams);
+
+        Switch autoSwitch = new Switch(this);
+        autoSwitch.setText(R.string.camera_auto_capture);
+        autoSwitch.setTextColor(Color.WHITE);
+        autoSwitch.setBackgroundColor(Color.argb(178, 0, 0, 0));
+        autoSwitch.setPadding(dp(16), 0, dp(16), 0);
+        autoSwitch.setChecked(autoCaptureEnabled);
+        FrameLayout.LayoutParams autoLayout = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(48));
+        root.addView(autoSwitch, autoLayout);
+        hint.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> {
+            autoLayout.topMargin = b;
+            autoSwitch.setLayoutParams(autoLayout);
+        });
+        autoSwitch.setOnCheckedChangeListener((button, enabled) -> {
+            autoCaptureEnabled = enabled;
+            autoCaptureGate.resetEvidence();
+            getPreferencesStore().edit().putBoolean("auto-capture", enabled).apply();
+        });
 
         cameraControls = new LinearLayout(this);
         cameraControls.setOrientation(LinearLayout.HORIZONTAL);
@@ -234,7 +262,7 @@ public final class CameraActivity extends ComponentActivity {
 
     private void updateOverlayReservedAreas() {
         if (overlay == null || cameraControls == null || hint == null) return;
-        int reservedTop = Math.max(hint.getBottom() + dp(12), dp(92));
+        int reservedTop = Math.max(hint.getBottom() + dp(60), dp(140));
         int reservedBottom = Math.max(cameraControls.getHeight() + dp(12), dp(96));
         overlay.setReservedAreas(reservedTop, reservedBottom);
     }
@@ -353,7 +381,7 @@ public final class CameraActivity extends ComponentActivity {
                     hint.setText(bulkMode
                             ? R.string.bulk_camera_frame_instructions
                             : R.string.camera_frame_instructions);
-                    shootButton.setEnabled(true);
+                    shootButton.setEnabled(!captureInFlight && !autoCaptureGate.waitingForRemoval());
                     overlay.removeCallbacks(focusCenterRunnable);
                     overlay.postDelayed(focusCenterRunnable, 350L);
                 }
@@ -396,7 +424,16 @@ public final class CameraActivity extends ComponentActivity {
                     upright, new Rect(left, top, right, bottom), viewWidth, viewHeight, now);
             CardDetectionTracker.Snapshot snapshot = result.snapshot;
             liveDetection = snapshot;
-            runOnUiThread(() -> applyLiveDetection(snapshot));
+            runOnUiThread(() -> {
+                if (!resumed || isFinishing() || captureInFlight
+                        || android.os.SystemClock.uptimeMillis() - now > 350) return;
+                applyLiveDetection(snapshot);
+                boolean ready = autoCaptureGate.update(now, result.present, result.qualityReady);
+                shootButton.setEnabled(previewStreaming && !autoCaptureGate.waitingForRemoval());
+                if (autoCaptureGate.waitingForRemoval()) hint.setText(R.string.camera_remove_previous);
+                else if (snapshot.ready && !result.qualityReady) hint.setText(R.string.camera_quality_retry);
+                if (ready && autoCaptureEnabled) takePhoto(true);
+            });
             FastCardDetector.Metrics metrics = fastCardDetector.metrics(now);
             if (metrics.windowComplete) {
                 Log.d(TAG, String.format(Locale.US,
@@ -544,10 +581,18 @@ public final class CameraActivity extends ComponentActivity {
     }
 
     private void takePhoto() {
-        if (imageCapture == null || !shootButton.isEnabled()) {
+        takePhoto(false);
+    }
+
+    private void takePhoto(boolean automatic) {
+        if (imageCapture == null || !resumed || captureInFlight || !shootButton.isEnabled()) {
             return;
         }
         shootButton.setEnabled(false);
+        captureInFlight = true;
+        final boolean removalConfirmed = autoCaptureGate.removalConfirmed();
+        final long captureStartedAt = android.os.SystemClock.uptimeMillis();
+        autoCaptureGate.captured(captureStartedAt);
         shootButton.setText(R.string.processing_card);
         RectF frame = overlay.getCardRect();
         int previewWidth = previewView.getWidth();
@@ -567,6 +612,7 @@ public final class CameraActivity extends ComponentActivity {
         }
 
         ImageCapture.OutputFileOptions options = new ImageCapture.OutputFileOptions.Builder(temporary).build();
+        try {
         imageCapture.takePicture(options, cameraExecutor, new ImageCapture.OnImageSavedCallback() {
             @Override
             public void onImageSaved(ImageCapture.OutputFileResults output) {
@@ -591,6 +637,11 @@ public final class CameraActivity extends ComponentActivity {
                             previewCrop);
                     preparation = CardImageProcessor.prepareCapturedCardDetailed(
                             region, liveQuadInRegion, capturedLiveConfidence);
+                    if (automatic && (!preparation.reliable || !preparation.fourCornersDetected
+                            || !preparation.borderComplete || preparation.fallbackUsed)) {
+                        showCaptureGuidance("Kartenrand unsicher. Karte ausrichten oder manuell aufnehmen.");
+                        return;
+                    }
                     if (preparation.fourCornersDetected && preparation.cardCoverage < 0.14f) {
                         showCaptureGuidance("Karte näher an die Kamera halten");
                         return;
@@ -638,6 +689,10 @@ public final class CameraActivity extends ComponentActivity {
                     resultIntent.putExtra(EXTRA_CROP_FOUR_CORNERS, preparation.fourCornersDetected);
                     resultIntent.putExtra(EXTRA_CROP_PERSPECTIVE, preparation.perspectiveCorrected);
                     resultIntent.putExtra(EXTRA_CROP_BORDER_COMPLETE, preparation.borderComplete);
+                    resultIntent.putExtra(EXTRA_REMOVAL_CONFIRMED, removalConfirmed);
+                    resultIntent.putExtra(EXTRA_CAPTURE_TO_CROP_MS,
+                            android.os.SystemClock.uptimeMillis() - captureStartedAt);
+                    if (bulkMode) getPreferencesStore().edit().putBoolean("bulk-await-removal", true).commit();
                     runOnUiThread(() -> {
                         setResult(RESULT_OK, resultIntent);
                         finish();
@@ -662,6 +717,10 @@ public final class CameraActivity extends ComponentActivity {
                 showCaptureError("Aufnahme fehlgeschlagen.", error);
             }
         });
+        } catch (RuntimeException error) {
+            temporary.delete();
+            showCaptureError("Aufnahme konnte nicht gestartet werden.", error);
+        }
     }
 
     private String formatQuad(android.graphics.PointF[] quad) {
@@ -744,6 +803,8 @@ public final class CameraActivity extends ComponentActivity {
     private void showCaptureError(String message, Exception error) {
         Log.e(TAG, message, error);
         runOnUiThread(() -> {
+            captureInFlight = false;
+            autoCaptureGate.failed(android.os.SystemClock.uptimeMillis());
             shootButton.setEnabled(true);
             shootButton.setText(R.string.capture_card);
             Toast.makeText(CameraActivity.this, message, Toast.LENGTH_LONG).show();
@@ -753,11 +814,31 @@ public final class CameraActivity extends ComponentActivity {
     private void showCaptureGuidance(String message) {
         Log.w(TAG, "CARD_CROP_RETRY reason=" + message);
         runOnUiThread(() -> {
+            captureInFlight = false;
+            autoCaptureGate.failed(android.os.SystemClock.uptimeMillis());
             shootButton.setEnabled(true);
             shootButton.setText(R.string.capture_card);
             hint.setText(message);
             Toast.makeText(CameraActivity.this, message, Toast.LENGTH_LONG).show();
         });
+    }
+
+    private android.content.SharedPreferences getPreferencesStore() {
+        return getSharedPreferences("scanner-settings", MODE_PRIVATE);
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        resumed = true;
+        autoCaptureGate.resetEvidence();
+    }
+
+    @Override
+    protected void onPause() {
+        resumed = false;
+        autoCaptureGate.resetEvidence();
+        super.onPause();
     }
 
     @Override

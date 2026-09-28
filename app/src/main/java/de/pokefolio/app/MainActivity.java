@@ -41,6 +41,11 @@ import com.google.mlkit.vision.text.japanese.JapaneseTextRecognizerOptions;
 import com.google.mlkit.vision.text.korean.KoreanTextRecognizerOptions;
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions;
 
+import de.pokefolio.app.backend.PokeFolioAccountBridge;
+import de.pokefolio.app.backend.PokeFolioCloudBridge;
+import de.pokefolio.app.backend.PokeFolioCloudService;
+import de.pokefolio.app.sync.PokeFolioSyncStateBridge;
+
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -91,6 +96,9 @@ public final class MainActivity extends Activity {
     private ExecutorService bridgeExecutor;
     private ExecutorService networkExecutor;
     private ExecutorService comparisonExecutor;
+    private PokeFolioAccountBridge accountBridge;
+    private PokeFolioCloudBridge cloudBridge;
+    private PokeFolioSyncStateBridge syncStateBridge;
     private int webSafeTop;
     private int webSafeRight;
     private int webSafeBottom;
@@ -120,16 +128,29 @@ public final class MainActivity extends Activity {
         webView = new WebView(this);
         setContentView(webView);
         installWebViewSafeArea();
+        PokeFolioApplication application = (PokeFolioApplication) getApplication();
+        PokeFolioCloudService cloudService = application.getCloudService();
+        accountBridge = new PokeFolioAccountBridge(cloudService, this::sendJs);
+        cloudBridge = new PokeFolioCloudBridge(cloudService, this::sendJs);
+        syncStateBridge = new PokeFolioSyncStateBridge(
+                cloudService,
+                application.getSyncStateStore());
 
         WebSettings settings = webView.getSettings();
         settings.setJavaScriptEnabled(true);
         settings.setDomStorageEnabled(true);
         settings.setDatabaseEnabled(true);
+        // The entry point and its subresources are packaged under android_asset.
         settings.setAllowFileAccess(true);
-        settings.setAllowContentAccess(true);
+        settings.setAllowContentAccess(false);
+        settings.setAllowFileAccessFromFileURLs(false);
+        settings.setAllowUniversalAccessFromFileURLs(false);
+        settings.setGeolocationEnabled(false);
+        settings.setJavaScriptCanOpenWindowsAutomatically(false);
+        settings.setSupportMultipleWindows(false);
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
         settings.setMediaPlaybackRequiresUserGesture(false);
-        settings.setUserAgentString(settings.getUserAgentString() + " PokeFolio/0.16.5");
+        settings.setUserAgentString(settings.getUserAgentString() + " PokeFolio/0.17.0-dev2");
 
         webView.addJavascriptInterface(new NativeBridge(), "PokeNative");
         webView.setWebViewClient(new WebViewClient() {
@@ -141,10 +162,9 @@ public final class MainActivity extends Activity {
 
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
-                Uri uri = request.getUrl();
-                return !("file".equalsIgnoreCase(uri.getScheme())
-                        && uri.getPath() != null
-                        && uri.getPath().startsWith("/android_asset/"));
+                return request == null
+                        || request.getUrl() == null
+                        || !AndroidWebViewSecurityPolicy.isTrustedAssetUrl(request.getUrl().toString());
             }
         });
         webView.setWebChromeClient(new WebChromeClient() {
@@ -158,14 +178,9 @@ public final class MainActivity extends Activity {
 
             @Override
             public void onPermissionRequest(PermissionRequest request) {
-                runOnUiThread(() -> {
-                    if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
-                        request.grant(request.getResources());
-                    } else {
-                        requestPermissions(new String[]{Manifest.permission.CAMERA}, CAMERA_PERMISSION);
-                        request.deny();
-                    }
-                });
+                // Camera capture is native (CameraX/file chooser). The bundled page does not need
+                // WebRTC, geolocation, MIDI or any other privileged browser resource.
+                if (request != null) runOnUiThread(request::deny);
             }
 
             @Override
@@ -294,6 +309,118 @@ public final class MainActivity extends Activity {
         @JavascriptInterface
         public void httpGet(String urlString, String requestId) {
             networkExecutor.execute(() -> performHttpGet(urlString, requestId));
+        }
+
+        @JavascriptInterface
+        public String getAccountStatus() {
+            return accountBridge.getStatusJson();
+        }
+
+        @JavascriptInterface
+        public void registerAccount(
+                String email,
+                String password,
+                String deviceName,
+                String requestId
+        ) {
+            accountBridge.register(email, password, deviceName, requestId);
+        }
+
+        @JavascriptInterface
+        public void loginAccount(
+                String email,
+                String password,
+                String deviceName,
+                String requestId
+        ) {
+            accountBridge.login(email, password, deviceName, requestId);
+        }
+
+        @JavascriptInterface
+        public void requestPasswordReset(String email, String requestId) {
+            accountBridge.requestPasswordReset(email, requestId);
+        }
+
+        @JavascriptInterface
+        public void confirmPasswordReset(
+                String email,
+                String token,
+                String newPassword,
+                String requestId
+        ) {
+            accountBridge.confirmPasswordReset(email, token, newPassword, requestId);
+        }
+
+        @JavascriptInterface
+        public void changeAccountPassword(
+                String currentPassword,
+                String newPassword,
+                String requestId
+        ) {
+            accountBridge.changePassword(currentPassword, newPassword, requestId);
+        }
+
+        @JavascriptInterface
+        public void restoreAccountSession(String requestId) {
+            accountBridge.restore(requestId);
+        }
+
+        @JavascriptInterface
+        public void logoutAccount(String requestId) {
+            accountBridge.logout(requestId);
+        }
+
+        @JavascriptInterface
+        public void listAccountDevices(String requestId) {
+            accountBridge.listDevices(requestId);
+        }
+
+        @JavascriptInterface
+        public void revokeOtherAccountDevices(String requestId) {
+            accountBridge.revokeOtherDevices(requestId);
+        }
+
+        @JavascriptInterface
+        public void revokeAccountDevice(String deviceId, String requestId) {
+            accountBridge.revokeDevice(deviceId, requestId);
+        }
+
+        @JavascriptInterface
+        public void resolveCatalogCard(String cardReferenceJson, String requestId) {
+            cloudBridge.resolveCatalogCard(cardReferenceJson, requestId);
+        }
+
+        @JavascriptInterface
+        public void getCatalogCard(String cardId, String requestId) {
+            cloudBridge.getCatalogCard(cardId, requestId);
+        }
+
+        @JavascriptInterface
+        public void pushSyncOperations(String operationBatchJson, String requestId) {
+            cloudBridge.pushSyncOperations(operationBatchJson, requestId);
+        }
+
+        @JavascriptInterface
+        public void pullSyncChanges(String cursor, int limit, String requestId) {
+            cloudBridge.pullSyncChanges(cursor, limit, requestId);
+        }
+
+        @JavascriptInterface
+        public String loadAccountSyncSnapshot() {
+            try {
+                return syncStateBridge.load();
+            } catch (IOException error) {
+                throw new IllegalStateException("Account sync snapshot cannot be loaded.", error);
+            }
+        }
+
+        @JavascriptInterface
+        public boolean saveAccountSyncSnapshot(String snapshotJson) {
+            try {
+                return syncStateBridge.save(snapshotJson);
+            } catch (IOException error) {
+                throw new IllegalStateException("Account sync snapshot cannot be saved.", error);
+            }
         }
 
         @JavascriptInterface
@@ -530,7 +657,7 @@ public final class MainActivity extends Activity {
             connection.setReadTimeout(8000);
             connection.setInstanceFollowRedirects(false);
             connection.setRequestProperty("Accept", "image/avif,image/webp,image/*");
-            connection.setRequestProperty("User-Agent", "PokeFolio/0.16.5 Android");
+            connection.setRequestProperty("User-Agent", "PokeFolio/0.17.0-dev2 Android");
             int status = connection.getResponseCode();
             if (status < 200 || status >= 300) {
                 throw new IOException("Kartenbild HTTP " + status);
@@ -1006,7 +1133,7 @@ public final class MainActivity extends Activity {
             connection.setRequestMethod("GET");
             connection.setRequestProperty("Accept", "application/json");
             connection.setRequestProperty("Cache-Control", "no-cache");
-            connection.setRequestProperty("User-Agent", "PokeFolio/0.16.5 Android");
+            connection.setRequestProperty("User-Agent", "PokeFolio/0.17.0-dev2 Android");
             status = connection.getResponseCode();
             InputStream stream = status >= 200 && status < 400
                     ? connection.getInputStream()
@@ -1151,6 +1278,8 @@ public final class MainActivity extends Activity {
                         Base64.NO_WRAP
                 ));
                 putCaptureMetadata(output, data);
+                output.put("removalConfirmed", data.getBooleanExtra(CameraActivity.EXTRA_REMOVAL_CONFIRMED, false));
+                output.put("captureToCropMs", data.getLongExtra(CameraActivity.EXTRA_CAPTURE_TO_CROP_MS, 0));
                 if (isDebugBuild()) {
                     Log.d(TAG, "Bulk scanner image delivered requestId="
                             + sanitizeLogText(requestId, 80)
@@ -1379,6 +1508,15 @@ public final class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        if (accountBridge != null) {
+            accountBridge.close();
+            accountBridge = null;
+        }
+        if (cloudBridge != null) {
+            cloudBridge.close();
+            cloudBridge = null;
+        }
+        syncStateBridge = null;
         if (fileCallback != null) {
             fileCallback.onReceiveValue(null);
             fileCallback = null;

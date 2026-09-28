@@ -1,0 +1,10 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/PokeFolio.Api/PokeFolio.Api.csproj" />
+    <Project Path="src/PokeFolio.Domain/PokeFolio.Domain.csproj" />
+    <Project Path="src/PokeFolio.Infrastructure/PokeFolio.Infrastructure.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/PokeFolio.Backend.Tests/PokeFolio.Backend.Tests.csproj" />
+  </Folder>
+</Solution>
