@@ -26,10 +26,10 @@ test('schneidet und entzerrt den Scan genau einmal vor den Kandidatenvergleichen
   assert.match(processor, /scaled != source && !scaled\.isRecycled\(\)/);
   assert.match(processor, /!isVariantBitmap\(variants, base\) && !base\.isRecycled\(\)/);
   assert.match(processor, /"detected-perspective"/);
-  assert.match(processor, /"bounded-card-fallback"/);
+  assert.doesNotMatch(processor, /"bounded-card-fallback"/);
   assert.doesNotMatch(processor, /isCardAspectFrame/);
   assert.match(processor, /detectCard\(detectionBitmap\)/);
-  assert.match(processor, /"search-region-fallback"/);
+  assert.match(processor, /"original-image-fallback"/);
   assert.match(app, /recognizeCardFeatures\(\s*prepared\.dataUrl \|\| dataUrl/);
   assert.match(app, /displayNormalizedCard\('front', prepared\)/);
   assert.match(app, /The native normalized card is authoritative/);
@@ -106,12 +106,13 @@ test('bewahrt beim Kamera- und Konturzuschnitt Sicherheitsränder an allen Karte
   assert.match(processor, /frameInView\.width\(\) \* 0\.025f/);
   assert.match(processor, /frameInView\.height\(\) \* 0\.025f/);
   assert.match(processor, /rectangleHeight \* scaleY \* 0\.035f/);
-  assert.match(processor, /HIGH_CONFIDENCE_MARGIN = 0\.018f/);
+  assert.match(processor, /HIGH_CONFIDENCE_MARGIN = 0\.025f/);
   assert.match(processor, /NORMAL_DETECTION_MARGIN = 0\.024f/);
   assert.match(processor, /LOW_CONFIDENCE_MARGIN = 0\.030f/);
   assert.match(processor, /safetyMarginForConfidence/);
   assert.match(processor, /factor = 1f \+ fraction \* 2f/);
-  assert.match(camera, /cropPreviewRegionDetailed/);
+  assert.doesNotMatch(camera, /cropPreviewRegionDetailed\(/);
+  assert.match(camera, /new RectF\(0, 0, oriented\.getWidth\(\), oriented\.getHeight\(\)\)/);
   assert.match(camera, /prepareCapturedCardDetailed\(\s*region,\s*liveQuadInRegion,\s*capturedLiveConfidence\s*\)/);
   assert.match(styles, /\.photo-card img\{[^}]*object-fit:contain/);
   assert.match(styles, /\.bulk-result-image img\{[^}]*object-fit:contain/);
@@ -131,7 +132,8 @@ test('entzerrt nur belastbare Vierpunktkonturen und diagnostiziert den finalen C
   assert.match(processor, /MIN_PERSPECTIVE_CONFIDENCE = 0\.66f/);
   assert.match(processor, /RELIABLE_DETECTION = 0\.72f/);
   assert.match(processor, /detection\.borderCompleteness >= 0\.50f/);
-  assert.match(processor, /cropLikelyCardBounds\(scaled\)/);
+  assert.doesNotMatch(processor, /cropLikelyCardBounds\(scaled\)/);
+  assert.match(processor, /safeCaptureQuad\(detection\.quad/);
   assert.match(camera, /Karte näher an die Kamera halten/);
   assert.match(camera, /Karte etwas weiter von der Kamera entfernen/);
   assert.match(app, /fourCornersDetected/);
@@ -171,7 +173,7 @@ test('liefert gezielte Collector-Number-OCR in mehreren Bildvarianten', () => {
 });
 
 test('liefert eine enge Kopfzeilen-OCR mit Original, Grau, Kontrast, Schärfe und Skalierungen', () => {
-  assert.match(processor, /card\.getHeight\(\) \* 0\.23f/);
+  assert.match(processor, /card\.getHeight\(\) \* 0\.20f/);
   assert.match(processor, /kopfzeile-original-/);
   assert.match(processor, /kopfzeile-grau-/);
   assert.match(processor, /kopfzeile-kontrast-/);

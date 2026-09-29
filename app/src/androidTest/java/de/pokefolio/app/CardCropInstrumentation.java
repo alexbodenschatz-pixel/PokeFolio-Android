@@ -40,7 +40,7 @@ public final class CardCropInstrumentation extends Instrumentation {
         Bundle result = new Bundle();
         try {
             int syntheticCases = runCropCases();
-            int geometryCases = runPreviewMappingCase() + runSafeFallbackCase() + runTrackingCase()
+            int geometryCases = runPreviewMappingCase() + runSafeFallbackCase() + runClippedLiveHeaderCase() + runTrackingCase()
                     + runFastDetectorCadenceCase() + runFastDetectorPerformanceCase()
                     + runExifOrientationCases()
                     + AndroidKeystoreCredentialInstrumentation.run(getTargetContext());
@@ -322,6 +322,19 @@ public final class CardCropInstrumentation extends Instrumentation {
         assertTrue(testCase.name + " no excessive bottom background", actualBottom <= expectedBottom + verticalTolerance);
         assertTrue(testCase.name + " no excessive left background", actualLeft >= expectedLeft - horizontalTolerance);
         assertTrue(testCase.name + " no excessive right background", actualRight <= expectedRight + horizontalTolerance);
+    }
+
+    private int runClippedLiveHeaderCase() {
+        Bitmap source = makeScene(new Case("alola-full-card", Color.rgb(226, 226, 222), false,
+                quad(250, 210, 950, 210, 950, 1188, 250, 1188)));
+        CardImageProcessor.VisualPreparation full = CardImageProcessor.prepareCapturedCardDetailed(source);
+        CardImageProcessor.VisualPreparation staleLive = CardImageProcessor.prepareCapturedCardDetailed(
+                source, quad(250, 400, 950, 400, 950, 1188, 250, 1188), 0.99f);
+        assertTrue("clipped live header must never override captured boundaries", full.bitmap.sameAs(staleLive.bitmap));
+        assertTrue("top outer border remains visible", containsYellowBorder(staleLive.bitmap, 0));
+        assertTrue("bottom collector border remains visible", containsYellowBorder(staleLive.bitmap, 2));
+        full.bitmap.recycle(); staleLive.bitmap.recycle(); source.recycle();
+        return 1;
     }
 
     private int runPreviewMappingCase() {

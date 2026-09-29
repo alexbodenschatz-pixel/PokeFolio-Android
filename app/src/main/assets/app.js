@@ -101,6 +101,7 @@ function attachCropMetadata(hints, prepared) {
       perspectiveCorrected: Boolean(prepared && prepared.perspectiveCorrected),
       correctedRotationDegrees: Number(prepared && prepared.correctedRotationDegrees) || 0,
       confidence: Number(prepared && prepared.confidence) || 0,
+      boundingBox: prepared && (prepared.cropBoundingBox || prepared.detectedQuad) || null,
       safetyMargin: Number(prepared && prepared.safetyMargin) || 0,
       borderComplete: Boolean(prepared && prepared.borderComplete),
       fallbackUsed: Boolean(prepared && prepared.fallbackUsed),
@@ -354,6 +355,8 @@ function renderRecognitionFeatures(hints) {
     ['Region', hints.region || 'nicht sicher erkannt'],
     ['Kartentyp', cardTypeLabel],
     ['Haupttitel', hints.mainTitle || identity.baseName || 'nicht zuverlässig erkannt'],
+    ['Name-ROI OCR', hints.ocrByRegion && hints.ocrByRegion.top || 'nicht erkannt'],
+    ['Full-Card OCR Name', hints.fullCardName || 'nicht erkannt'],
     ['Manueller Hinweis', hints.manualTitleHint || 'nicht verwendet'],
     ['Hinweisquelle', hints.manualTitleSource || 'keine'],
     ['Entwickelt sich aus', hints.evolvesFrom || 'nicht vorhanden'],
@@ -371,6 +374,8 @@ function renderRecognitionFeatures(hints) {
     ['Candidate Retrieval', hints.candidateRetrievalStrategy || 'noch offen'],
     ['Candidate Count', Number.isFinite(Number(hints.candidateCount))
       ? String(hints.candidateCount) : 'noch offen'],
+    ['DB-Kandidaten vor Ranking', hints.candidatesBeforeRanking == null ? 'noch offen' : String(hints.candidatesBeforeRanking)],
+    ['Ranking-Scores', (hints.rankingScores || []).join(' · ') || 'noch offen'],
     ['Artwork Match', Number.isFinite(Number(hints.bestArtworkScore))
       ? Math.round(Number(hints.bestArtworkScore) * 100) + ' %' : 'noch offen'],
     ['Final Identity', hints.finalCanonicalIdentity || 'noch nicht bestimmt'],
@@ -378,6 +383,7 @@ function renderRecognitionFeatures(hints) {
     ['Regulation Mark', hints.regulationMark || 'nicht erkannt'],
     ['Set', setCode && setCode.value || 'nicht erkannt'],
     ['Attacken', (hints.attackHints || []).slice(0, 3).map(item => item.value).join(', ') || 'nicht erkannt'],
+    ['Fähigkeiten', (hints.abilityHints || []).map(item => item.value).join(', ') || 'nicht erkannt'],
     ['Schadenswerte', (hints.damageValues || []).slice(0, 4).map(item => item.value).join(', ') || 'nicht erkannt'],
     ['Regeltext', (hints.ruleTextHints || []).slice(0, 2).map(item => item.value).join(' / ') || 'nicht erkannt'],
     ['Kartensprache', hints.language ? languageLabel(hints.language) : 'nicht sicher erkannt'],
@@ -393,6 +399,7 @@ function renderRecognitionFeatures(hints) {
     ['CARD CROP · Perspective', crop.perspectiveCorrected ? 'korrigiert' : 'nicht angewendet'],
     ['CARD CROP · Rotation', `${crop.correctedRotationDegrees >= 0 ? '+' : ''}${(crop.correctedRotationDegrees || 0).toFixed(1)}°`],
     ['CARD CROP · Confidence', Math.round((crop.confidence || 0) * 100) + ' %'],
+    ['CARD CROP · Bounding Box', crop.boundingBox ? JSON.stringify(crop.boundingBox) : 'Originalbild / nicht erkannt'],
     ['CARD CROP · Sicherheitsrand', Math.round((crop.safetyMargin || 0) * 1000) / 10 + ' %'],
     ['CARD CROP · Rand vollständig', crop.borderComplete ? 'JA' : 'NICHT SICHER'],
     ['CARD CROP · Fallback', crop.fallbackUsed ? `JA · ${crop.method}` : 'NEIN']
@@ -1962,7 +1969,12 @@ async function pokemonSearch(hints, manual = '', runToken) {
   // Chinese use a controlled structured fallback instead of mixing arbitrary results.
   const language = ({de: 'de', en: 'en', ja: 'ja', 'zh-TW': 'zh-tw', 'zh-CN': 'zh-tw'})[requestedLanguage] || 'en';
   const candidateLanguage = language === 'zh-tw' ? 'zh-TW' : language;
-  const retrievalStrategy = PokeAsia.retrievalStrategy(hints);
+  const retrievalStrategy = [PokeAsia.retrievalStrategy(hints),
+    hints.pokemonNumber ? 'COLLECTOR_NUMBER' : '',
+    hints.mainTitle || manual ? 'PARTIAL_NAME' : '',
+    hints.hp ? 'NAME_HP' : '',
+    (hints.attackHints || []).length ? 'ATTACK' : '',
+    (hints.abilityHints || []).length ? 'ABILITY' : ''].filter(Boolean).join(' / ');
   hints.candidateRetrievalStrategy = retrievalStrategy;
   const regionalPrints = PokeAsia.exactRegionalPrints(hints);
   const pokemonTcgUrls = Api.buildPokemonTcgUrls(hints, manual);
@@ -2027,6 +2039,7 @@ async function pokemonSearch(hints, manual = '', runToken) {
   const localizedVariants = Recognition.deduplicateCandidates([...variants.values()].map(candidate =>
     selectLocalizedReference(candidate, requestedLanguage)
   ));
+  hints.candidatesBeforeRanking = localizedVariants.length;
   const identityFiltered = Recognition.prefilterPokemonCandidates(localizedVariants, hints, manual);
   const filterDiagnostics = identityFiltered.filterDiagnostics || {};
   console.debug('[PokeFolio Recognition] Kandidaten vor=' + (filterDiagnostics.before == null ? localizedVariants.length : filterDiagnostics.before)
@@ -3679,7 +3692,7 @@ async function runRecognition(manual = false) {
       hints.recognitionPerformance.exactLookupMs = performance.now() - exactLookupStartedAt;
     }
 
-    if (!exactPrimaryIdentity) {
+    if (!exactPrimaryIdentity || kind === 'pokemon') {
       setRecState('busy', 'Lese Kartenkopf …', 'Die Nummer war nicht eindeutig; Name und weitere Merkmale werden als Fallback gelesen.');
       const fallbackOcrStartedAt = performance.now();
       const fallbackAnalysis = await recognizeCardFeatures(
@@ -3750,6 +3763,7 @@ async function runRecognition(manual = false) {
     }
     if (!foundCandidates.length && serviceError) throw serviceError;
     hints.recognitionPerformance.totalMs = performance.now() - recognitionStartedAt;
+    hints.rankingScores = foundCandidates.map(candidate => `${candidate.id}: ${Math.round((candidate.identificationScore || candidate.confidence || 0) * 100)} %`);
     hints.recognitionPerformance.totalRecognitionMs = hints.recognitionPerformance.totalMs;
     renderRecognitionFeatures(hints);
     console.debug('[PokeFolio Recognition] RECOGNITION_PERF'

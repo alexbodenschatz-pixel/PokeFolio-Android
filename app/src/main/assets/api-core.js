@@ -206,7 +206,8 @@
     // Exact regional print endpoints are cheapest and most precise. A 404 is settled
     // independently and must not cancel localId/name fallbacks.
     if (numbers[0]) setCodes.slice(0, 2).forEach(setId => {
-      urls.push(`${TCGDEX_ENDPOINT}/${lang}/cards/${encodeURIComponent(setId + '-' + numbers[0])}`);
+      const providerSet = /^(?:MEP|SVP)$/i.test(setId) ? setId.toLowerCase() : setId;
+      urls.push(`${TCGDEX_ENDPOINT}/${lang}/cards/${encodeURIComponent(providerSet + '-' + numbers[0])}`);
     });
     const variants = [];
     const cardType = String(hints && hints.cardType || 'unknown');
@@ -223,6 +224,14 @@
       if (names[0] && numbers[0]) variants.push({name: names[0], localId: numbers[0]});
       names.forEach(name => variants.push({name}));
     }
+    // These are independent fallback routes: an incomplete title or a failed exact
+    // endpoint must not suppress corroborating printed text. TCGdex name= is already
+    // case-insensitive substring matching (including regional prefixes).
+    if (names[0] && hints && hints.hp) variants.push({name: names[0], hp: hints.hp});
+    const fingerprint = (hints && hints.attackHints || []).find(item => Number(item.votes) >= 1.0);
+    if (fingerprint) variants.push({'attacks.name': fingerprint.value});
+    const ability = (hints && hints.abilityHints || [])[0];
+    if (ability) variants.push({'abilities.name': ability.value});
     variants.forEach(parameters => {
       const query = new URLSearchParams({
         ...parameters,
@@ -231,7 +240,7 @@
       });
       urls.push(`${TCGDEX_ENDPOINT}/${lang}/cards?${query.toString()}`);
     });
-    return [...new Set(urls)].slice(0, 7);
+    return [...new Set(urls)].slice(0, 10);
   }
 
   /** Settles every variant independently so one bad endpoint never cancels the other results. */

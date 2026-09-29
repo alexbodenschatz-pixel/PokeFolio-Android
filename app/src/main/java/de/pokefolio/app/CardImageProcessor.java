@@ -207,7 +207,7 @@ public final class CardImageProcessor {
     static final int NORMALIZED_HEIGHT = 1257;
     private static final float CARD_RATIO = 63f / 88f;
     private static final float YUGIOH_CARD_RATIO = 59f / 86f;
-    private static final float HIGH_CONFIDENCE_MARGIN = 0.018f;
+    private static final float HIGH_CONFIDENCE_MARGIN = 0.025f;
     private static final float NORMAL_DETECTION_MARGIN = 0.024f;
     private static final float LOW_CONFIDENCE_MARGIN = 0.030f;
     // A plausible aspect ratio alone is insufficient for a destructive homography. The live
@@ -652,6 +652,7 @@ public final class CardImageProcessor {
                 } else {
                     addHeaderOcrVariants(variants, card, normalizedRotation);
                     addSecondaryHeaderOcrVariants(variants, card, normalizedRotation);
+                    addHpOcrVariant(variants, card, normalizedRotation);
                     addMiddleTextOcrVariants(variants, card, normalizedRotation);
                     addLowerTextOcrVariant(variants, card, normalizedRotation);
                     addCollectorOcrVariants(variants, card, normalizedRotation);
@@ -737,37 +738,20 @@ public final class CardImageProcessor {
                 scaled.getWidth() / (float) Math.max(1, detectionBitmap.getWidth()),
                 scaled.getHeight() / (float) Math.max(1, detectionBitmap.getHeight())
         );
-        if (attemptPerspectiveCorrection && preferredQuad != null && preferredQuad.length == 4
-                && preferredConfidence >= 0.60f) {
-            PointF[] scaledPreferred = copyPoints(preferredQuad);
-            float scaleX = scaled.getWidth() / (float) Math.max(1, source.getWidth());
-            float scaleY = scaled.getHeight() / (float) Math.max(1, source.getHeight());
-            for (PointF point : scaledPreferred) {
-                point.x *= scaleX;
-                point.y *= scaleY;
-            }
-            CardDetection live = detectionFromQuad(scaledPreferred, scaled.getWidth(), scaled.getHeight(),
-                    preferredConfidence);
-            if (live != null && (detection == null
-                    || detection.confidence < MIN_PERSPECTIVE_CONFIDENCE
-                    || meanCornerDistance(live.quad, detection.quad, scaled.getWidth(), scaled.getHeight()) < 0.075f)) {
-                detection = live.confidence >= (detection == null ? 0f : detection.confidence * 0.88f)
-                        ? live : detection;
-            }
-        }
+        // Preview and still capture have different fields of view. Live corners guide the
+        // user, but never replace boundaries measured on the complete captured photograph.
         if (detectionBitmap != null && !detectionBitmap.isRecycled()) detectionBitmap.recycle();
         float safetyMargin = detection == null
                 ? LOW_CONFIDENCE_MARGIN : safetyMarginForConfidence(detection.confidence);
         boolean usePerspective = detection != null
                 && detection.confidence >= MIN_PERSPECTIVE_CONFIDENCE
-                && detection.borderCompleteness >= 0.50f;
+                && detection.borderCompleteness >= 0.75f
+                && safeCaptureQuad(detection.quad, scaled.getWidth(), scaled.getHeight());
         Bitmap rectified = usePerspective
                 ? rectifyCard(scaled, detection.quad, safetyMargin) : null;
-        // A weak quadrilateral is never blindly warped. A conservative axis-aligned crop may
-        // remove obvious table/background, otherwise the complete guide ROI is retained.
-        FallbackCrop boundedFallback = rectified == null ? cropLikelyCardBounds(scaled) : null;
-        Bitmap base = rectified != null
-                ? rectified : boundedFallback != null ? boundedFallback.bitmap : scaled;
+        // Uncertain boundaries retain ALL source pixels. An axis-aligned edge-peak crop can
+        // mistake artwork edges for the top/title or bottom/collector border.
+        Bitmap base = rectified != null ? rectified : scaled;
         boolean landscapeOrientation = base.getWidth() > base.getHeight();
         Bitmap oriented = landscapeOrientation ? rotate(base, 90) : base;
         int detectionWidth = scaled.getWidth();
@@ -779,10 +763,6 @@ public final class CardImageProcessor {
         }
         if (rectified != null && !rectified.isRecycled() && rectified != normalized) {
             rectified.recycle();
-        }
-        if (boundedFallback != null && !boundedFallback.bitmap.isRecycled()
-                && boundedFallback.bitmap != normalized) {
-            boundedFallback.bitmap.recycle();
         }
         if (scaled != source && !scaled.isRecycled() && scaled != normalized) {
             scaled.recycle();
@@ -798,17 +778,12 @@ public final class CardImageProcessor {
             }
         }
         float confidence = !attemptPerspectiveCorrection ? 1f
-                : rectified != null ? detection.confidence
-                : boundedFallback != null ? boundedFallback.confidence : 0.16f;
-        float coverage = detection != null ? detection.coverage
-                : boundedFallback != null ? boundedFallback.coverage : 1f;
+                : rectified != null ? detection.confidence : 0.16f;
+        float coverage = rectified != null ? detection.coverage : 1f;
         float aspectRatio = detection != null ? detection.aspectRatio
-                : boundedFallback != null ? boundedFallback.aspectRatio
                 : Math.min(source.getWidth(), source.getHeight())
                     / (float) Math.max(1, Math.max(source.getWidth(), source.getHeight()));
-        boolean borderComplete = detection != null
-                ? detection.borderCompleteness >= 0.50f
-                : boundedFallback != null && boundedFallback.borderComplete;
+        boolean borderComplete = rectified != null && detection.borderCompleteness >= 0.75f;
         return new VisualPreparation(
                 normalized,
                 !attemptPerspectiveCorrection
@@ -816,22 +791,41 @@ public final class CardImageProcessor {
                 attemptPerspectiveCorrection
                         ? rectified != null
                             ? "detected-perspective"
-                            : boundedFallback != null
-                                ? "bounded-card-fallback"
-                                : "search-region-fallback"
+                            : "original-image-fallback"
                         : "reference-normalized",
                 confidence,
                 coverage,
                 attemptPerspectiveCorrection && rectified == null,
                 sourceQuad,
                 aspectRatio,
-                attemptPerspectiveCorrection ? safetyMargin : 0f,
+                rectified != null ? safetyMargin : 0f,
                 detection == null ? 0f : detection.rotationDegrees
                         + (landscapeOrientation ? 90f : 0f),
                 detection != null && detection.quad != null && detection.quad.length == 4,
                 rectified != null,
                 borderComplete
         );
+    }
+
+    static float[] cropBoundingBox(VisualPreparation preparation, int width, int height) {
+        if (preparation.fallbackUsed || preparation.detectedQuad == null) return new float[]{0, 0, width, height};
+        float left = width, top = height, right = 0, bottom = 0;
+        for (PointF point : preparation.detectedQuad) {
+            left = Math.min(left, point.x); top = Math.min(top, point.y);
+            right = Math.max(right, point.x); bottom = Math.max(bottom, point.y);
+        }
+        return new float[]{left, top, right, bottom};
+    }
+
+    static boolean safeCaptureQuad(PointF[] quad, int width, int height) {
+        if (quad == null || quad.length != 4) return false;
+        float[] points = new float[8];
+        for (int i = 0; i < quad.length; i++) {
+            if (quad[i] == null) return false;
+            points[i * 2] = quad[i].x;
+            points[i * 2 + 1] = quad[i].y;
+        }
+        return CardCropSafety.accepts(points, width, height);
     }
 
     private static CardDetection detectionFromQuad(PointF[] quad, int width, int height, float confidence) {
@@ -2050,9 +2044,19 @@ public final class CardImageProcessor {
         if (roi != card) roi.recycle();
     }
 
-    /** Dedicated 23%-header OCR for species name, V/ex/GX marker and KP/HP. */
+    private static void addHpOcrVariant(List<OcrVariant> variants, Bitmap card, int rotation) {
+        int left = Math.round(card.getWidth() * 0.68f);
+        Bitmap roi = Bitmap.createBitmap(card, left, 0, card.getWidth() - left,
+                Math.max(2, Math.round(card.getHeight() * 0.18f)));
+        Bitmap enlarged = Bitmap.createScaledBitmap(roi, 700,
+                Math.max(2, Math.round(roi.getHeight() * 700f / roi.getWidth())), true);
+        variants.add(new OcrVariant("kopfzeile-hp-" + rotation, enlarged));
+        if (roi != enlarged) roi.recycle();
+    }
+
+    /** Dedicated header OCR for species name, V/ex/GX marker and KP/HP. */
     private static void addHeaderOcrVariants(List<OcrVariant> variants, Bitmap card, int rotation) {
-        int height = Math.max(2, Math.round(card.getHeight() * 0.23f));
+        int height = Math.max(2, Math.round(card.getHeight() * 0.20f));
         Bitmap header = Bitmap.createBitmap(card, 0, 0, card.getWidth(), height);
         Bitmap base = scaleDown(header, 700);
         variants.add(new OcrVariant("kopfzeile-original-" + rotation, base));

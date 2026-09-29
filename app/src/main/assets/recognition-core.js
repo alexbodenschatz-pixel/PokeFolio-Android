@@ -290,7 +290,7 @@
   }
 
   function mapRegionY(region, rawY) {
-    if (region === 'TOP_HEADER') return rawY * 0.23;
+    if (region === 'TOP_HEADER') return rawY * 0.20;
     if (region === 'TOP_SECONDARY') return 0.11 + rawY * 0.20;
     if (region === 'MIDDLE_TEXT') return 0.34 + rawY * 0.44;
     if (region === 'LOWER_TEXT') return 0.67 + rawY * 0.21;
@@ -538,6 +538,8 @@
       if (isEvolutionSourceNameLine(line, lines)) return;
       const match = bestKnownPokemonName(pokemonTitleText(line.text), true);
       if (!match) return;
+      const form = pokemonTitleText(line.text).match(/\b(Alola|Galar|Hisui|Paldea)[\s\-‐‑–—]*/i);
+      if (form) match.display = form[1][0].toUpperCase() + form[1].slice(1).toLowerCase() + '-' + match.display;
       const containsHp = /\b(?:KP|HP)\s*[0-9OIL|]{2,3}\b/i.test(line.text);
       const titlePosition = line.y <= 0.11 ? 1.2 : line.y <= 0.16 ? 0.35 : -0.45;
       const weight = (dedicatedHeader
@@ -958,6 +960,25 @@
       });
 
       const seenCollectors = new Set();
+      // A bare promo number is only meaningful alongside a printed promo set in the
+      // same footer pass. Never promote HP, damage, years or an isolated "13" to an ID.
+      const promoFooter = normalizedLines.filter(line => line.region === 'BOTTOM_METADATA'
+        || line.region === 'WHOLE_CARD' && line.y >= 0.82);
+      const promoSet = promoFooter.map(line => line.text).join(' ').match(/\b(MEP|SVP)\b/i);
+      if (promoSet) {
+        const set = promoSet[1].toUpperCase();
+        addVote(setCodeVotes, set, set, 2.1);
+        promoFooter.forEach(line => {
+          const stripped = line.text.replace(/\b(?:MEP|SVP|DE|EN|FR|IT|ES|PT)\b/gi, '').trim();
+          const match = stripped.match(/^([0-9]{3})$/);
+          if (!match || Number(match[1]) === 0) return;
+          const item = {number: match[1], total: '', normalizedValue: match[1],
+            sourceRegion: 'BOTTOM_METADATA', corroboratedSet: set};
+          const key = numberKey(item.number) + '/';
+          seenCollectors.add(key);
+          addVote(collectorVotes, key, item, 2.1);
+        });
+      }
       normalizedLines.forEach(line => {
         const collectorPattern = /\b([A-Z]{0,4}\s*-?\s*[0-9OIL|SB]{1,4}[A-Z]?)\s*[\/／\\]\s*([A-Z]{0,4}\s*-?\s*[0-9OIL|SB]{1,4})\b/gi;
         let collectorMatch;
@@ -1049,10 +1070,10 @@
       });
 
       normalizedLines.forEach(line => {
-        const hpPattern = /\b(?:KP|HP)\s*([0-9OIL|]{2,3})\b/gi;
+        const hpPattern = /\b(?:KP|HP)\s*([0-9OIL|]{2,3})\b|\b([0-9OIL|]{2,3})\s*(?:KP|HP)\b/gi;
         let hpMatch;
         while ((hpMatch = hpPattern.exec(line.text)) !== null) {
-          const hp = cleanOcrDigits(hpMatch[1]).replace(/\D/g, '');
+          const hp = cleanOcrDigits(hpMatch[1] || hpMatch[2]).replace(/\D/g, '');
           if (!hp || Number(hp) < 10 || Number(hp) > 500) continue;
           const weight = line.region === 'TOP_HEADER'
             ? 2.4
@@ -1140,6 +1161,14 @@
     const nonPokemonTitle = deriveNonPokemonTitle(lineEntries, cardTypeResult.value, dominantRotation);
     const evolvesFrom = extractEvolutionSource(lineEntries, dominantRotation);
     const attackFeatures = extractAttackFeatures(activeLines);
+    const abilityHints = activeLines.filter(line => line.y >= 0.24 && line.y <= 0.8)
+      .map((line, index, lines) => {
+        const match = line.text.match(/^(?:Fähigkeit|Fahigkeit|Ability)\s*[:：]?\s*(.*)$/i);
+        if (!match) return '';
+        return match[1].trim() || (lines[index + 1] && lines[index + 1].pass === line.pass
+          ? lines[index + 1].text.trim() : '');
+      }).filter(value => value && value.length <= 45 && !/\d/.test(value))
+      .map(value => ({value, votes: 1.5}));
     const ruleTextHints = extractRuleTextHints(activeLines, cardTypeResult.value);
     const detectedLanguage = detectCardLanguage(orientedText);
     const requestedLanguage = String(input && input.language || '');
@@ -1204,6 +1233,8 @@
 
     return {
       rawText: completeText,
+      fullCardName: derivePokemonIdentity(lineEntries.filter(line => line.region === 'WHOLE_CARD'),
+        new Map(), dominantRotation).baseName || '',
       lines: lineEntries,
       cardType: cardTypeResult.value,
       cardTypeConfidence: cardTypeResult.confidence,
@@ -1234,6 +1265,7 @@
       hp: pokemonIdentity.hp || (hpVotes.size ? [...hpVotes.values()].sort((a, b) => b.votes - a.votes)[0].value : ''),
       hpConfidence: pokemonIdentity.hpConfidence,
       attackHints: attackFeatures.attacks,
+      abilityHints,
       damageValues: attackFeatures.damages,
       ruleTextHints,
       language: detectedLanguage.value,
@@ -1454,7 +1486,7 @@
   function candidateAttackData(candidate) {
     const attacks = Array.isArray(candidate && candidate.attacks) ? candidate.attacks : [];
     return {
-      names: attacks.map(attack => typeof attack === 'string' ? attack : attack && attack.name)
+      names: attacks.concat(candidate && candidate.abilities || []).map(attack => typeof attack === 'string' ? attack : attack && attack.name)
         .map(value => String(value || '').trim()).filter(Boolean),
       damages: attacks.map(attack => typeof attack === 'object' && attack ? attack.damage : '')
         .map(damageKey).filter(Boolean)
@@ -1462,7 +1494,7 @@
   }
 
   function scoreAttackFeatures(candidate, hints) {
-    const detectedAttacks = hints && hints.attackHints || [];
+    const detectedAttacks = (hints && hints.attackHints || []).concat(hints && hints.abilityHints || []);
     const detectedDamages = hints && hints.damageValues || [];
     const candidateData = candidateAttackData(candidate);
     let attackScore = 0;
@@ -1668,7 +1700,7 @@
 
     const titleReliable = Boolean(manualHint)
       || Boolean(hints && hints.pokemonIdentity && hints.pokemonIdentity.reliable)
-      || Number(hints && hints.pokemonIdentity && hints.pokemonIdentity.nameConfidence) >= 0.82;
+      || Number(hints && hints.pokemonIdentity && hints.pokemonIdentity.nameConfidence) >= 0.80;
     const nameStatus = nameScore >= 0.88
       ? 'match'
       : titleReliable && nameScore < 0.62 ? 'mismatch' : 'unknown';
@@ -1676,8 +1708,8 @@
     const signalWeights = asianRecognition
       ? {collector: 0.37, set: 0.25, regulation: 0.07, name: manualHint ? 0.055 : 0.035, hp: 0.075,
         variant: 0.02, attack: 0.015, damage: 0.01, language: 0.05, type: 0.045, rarity: 0.06}
-      : {collector: 0.38, set: 0.24, regulation: 0.07, name: manualHint ? 0.08 : 0.10, hp: 0.07,
-        variant: 0.03, attack: 0.02, damage: 0.01, language: 0.02, type: 0.03, rarity: 0.03};
+      : {collector: 0.22, set: 0.13, regulation: 0.04, name: 0.30, hp: 0.05,
+        variant: 0.03, attack: 0.15, damage: 0.01, language: 0.025, type: 0.025, rarity: 0.02};
     const signals = [
       {key: 'collector', status: collectorStatus, weight: signalWeights.collector,
         penalty: asianRecognition ? 0.55 : 0.42},

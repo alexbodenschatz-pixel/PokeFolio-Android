@@ -24,8 +24,8 @@ android {
         applicationId 'app.pokefolio.mobile'
         minSdk 29
         targetSdk 36
-        versionCode 37
-        versionName '0.17.0-dev2'
+        versionCode 38
+        versionName '0.17.0-dev3'
         testInstrumentationRunner 'de.pokefolio.app.CardCropInstrumentation'
         buildConfigField 'String', 'POKEFOLIO_BACKEND_ORIGIN',
                 groovy.json.JsonOutput.toJson(configuredBackendOrigin)

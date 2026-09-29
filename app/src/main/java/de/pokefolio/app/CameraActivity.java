@@ -621,12 +621,10 @@ public final class CameraActivity extends ComponentActivity {
                 CardImageProcessor.VisualPreparation preparation = null;
                 try {
                     oriented = CardImageProcessor.decodeAndOrient(temporary, 3200);
-                    CardImageProcessor.PreviewCrop previewCrop = CardImageProcessor.cropPreviewRegionDetailed(
-                            oriented,
-                            frame,
-                            previewWidth,
-                            previewHeight
-                    );
+                    // The guide is not a physical card boundary. Preserve the full still
+                    // photograph until its own four outer edges have been validated.
+                    CardImageProcessor.PreviewCrop previewCrop = new CardImageProcessor.PreviewCrop(
+                            oriented, new RectF(0, 0, oriented.getWidth(), oriented.getHeight()));
                     region = previewCrop.bitmap;
                     PointF[] liveQuadInRegion = CardImageProcessor.mapPreviewQuadToCrop(
                             capturedPreviewQuad,
@@ -637,16 +635,16 @@ public final class CameraActivity extends ComponentActivity {
                             previewCrop);
                     preparation = CardImageProcessor.prepareCapturedCardDetailed(
                             region, liveQuadInRegion, capturedLiveConfidence);
-                    if (automatic && (!preparation.reliable || !preparation.fourCornersDetected
-                            || !preparation.borderComplete || preparation.fallbackUsed)) {
+                    if (automatic && !preparation.fallbackUsed && (!preparation.reliable || !preparation.fourCornersDetected
+                            || !preparation.borderComplete)) {
                         showCaptureGuidance("Kartenrand unsicher. Karte ausrichten oder manuell aufnehmen.");
                         return;
                     }
-                    if (preparation.fourCornersDetected && preparation.cardCoverage < 0.14f) {
+                    if (!preparation.fallbackUsed && preparation.fourCornersDetected && preparation.cardCoverage < 0.14f) {
                         showCaptureGuidance("Karte näher an die Kamera halten");
                         return;
                     }
-                    if (preparation.fourCornersDetected && !preparation.borderComplete) {
+                    if (!preparation.fallbackUsed && preparation.fourCornersDetected && !preparation.borderComplete) {
                         showCaptureGuidance("Karte etwas weiter von der Kamera entfernen");
                         return;
                     }
@@ -679,6 +677,8 @@ public final class CameraActivity extends ComponentActivity {
                     resultIntent.setData(uri);
                     resultIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
                     resultIntent.putExtra(EXTRA_NORMALIZED_CARD, true);
+                    resultIntent.putExtra("cropBoundingBox", CardImageProcessor.cropBoundingBox(
+                            preparation, oriented.getWidth(), oriented.getHeight()));
                     resultIntent.putExtra(EXTRA_CROP_METHOD, preparation.method);
                     resultIntent.putExtra(EXTRA_CROP_CONFIDENCE, preparation.confidence);
                     resultIntent.putExtra(EXTRA_CROP_COVERAGE, preparation.cardCoverage);

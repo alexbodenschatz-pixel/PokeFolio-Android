@@ -150,7 +150,7 @@ public final class MainActivity extends Activity {
         settings.setSupportMultipleWindows(false);
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
         settings.setMediaPlaybackRequiresUserGesture(false);
-        settings.setUserAgentString(settings.getUserAgentString() + " PokeFolio/0.17.0-dev2");
+        settings.setUserAgentString(settings.getUserAgentString() + " PokeFolio/0.17.0-dev3");
 
         webView.addJavascriptInterface(new NativeBridge(), "PokeNative");
         webView.setWebViewClient(new WebViewClient() {
@@ -528,6 +528,8 @@ public final class MainActivity extends Activity {
             output.put("cardCoverage", preparation.cardCoverage);
             output.put("fallbackUsed", preparation.fallbackUsed);
             output.put("detectedQuad", quadJson(preparation.detectedQuad));
+            output.put("cropBoundingBox", new JSONArray(CardImageProcessor.cropBoundingBox(
+                    preparation, source.getWidth(), source.getHeight())));
             output.put("detectedAspectRatio", preparation.detectedAspectRatio);
             output.put("safetyMargin", preparation.safetyMargin);
             output.put("correctedRotationDegrees", preparation.correctedRotationDegrees);
@@ -657,7 +659,7 @@ public final class MainActivity extends Activity {
             connection.setReadTimeout(8000);
             connection.setInstanceFollowRedirects(false);
             connection.setRequestProperty("Accept", "image/avif,image/webp,image/*");
-            connection.setRequestProperty("User-Agent", "PokeFolio/0.17.0-dev2 Android");
+            connection.setRequestProperty("User-Agent", "PokeFolio/0.17.0-dev3 Android");
             int status = connection.getResponseCode();
             if (status < 200 || status >= 300) {
                 throw new IOException("Kartenbild HTTP " + status);
@@ -1133,7 +1135,7 @@ public final class MainActivity extends Activity {
             connection.setRequestMethod("GET");
             connection.setRequestProperty("Accept", "application/json");
             connection.setRequestProperty("Cache-Control", "no-cache");
-            connection.setRequestProperty("User-Agent", "PokeFolio/0.17.0-dev2 Android");
+            connection.setRequestProperty("User-Agent", "PokeFolio/0.17.0-dev3 Android");
             status = connection.getResponseCode();
             InputStream stream = status >= 200 && status < 400
                     ? connection.getInputStream()
@@ -1480,6 +1482,8 @@ public final class MainActivity extends Activity {
         output.put("method", data.getStringExtra(CameraActivity.EXTRA_CROP_METHOD));
         output.put("confidence", confidence);
         output.put("cardCoverage", data.getFloatExtra(CameraActivity.EXTRA_CROP_COVERAGE, 0f));
+        float[] cropBounds = data.getFloatArrayExtra("cropBoundingBox");
+        if (cropBounds != null) output.put("cropBoundingBox", new JSONArray(cropBounds));
         output.put("fallbackUsed", fallback);
         output.put("detectedAspectRatio", data.getFloatExtra(
                 CameraActivity.EXTRA_CROP_ASPECT_RATIO, 0f));
