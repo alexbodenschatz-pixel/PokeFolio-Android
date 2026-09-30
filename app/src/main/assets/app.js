@@ -389,6 +389,10 @@ function renderRecognitionFeatures(hints) {
     ['Kartensprache', hints.language ? languageLabel(hints.language) : 'nicht sicher erkannt'],
     ['OCR-Sicherheit Titel', Number.isFinite(titleConfidence) ? Math.round(titleConfidence * 100) + ' %' : '0 %'],
     ['OCR-Sicherheit Name', Number.isFinite(confidence) ? Math.round(confidence * 100) + ' %' : '0 %'],
+    ['Number Confidence', collector ? Math.round(Math.min(1, collector.votes / 3) * 100) + ' %' : '0 %'],
+    ['Set Confidence', setCode ? Math.round(Math.min(1, setCode.votes / 3) * 100) + ' %' : '0 %'],
+    ['Rotation', String(hints.appliedRotation || 0) + '°'],
+    ['Rotationsquelle', hints.rotationSource || 'Sensor/EXIF'],
     ['Namensquelle', identity.source || 'keine validierte Pokémon-Kopfzeile'],
     ['Titelquelle', hints.titleSource || identity.source || 'keine validierte Kopfzeile'],
     ['Official Validation', hints.officialValidationStatus || 'Nicht verfügbar'],
@@ -1693,6 +1697,7 @@ function nativeGet(url) {
 }
 
 function chooseRecognitionRotation(ocrResult) {
+  if (!ocrResult || ocrResult.orientationConfident !== true) return 0;
   if (ocrResult && ocrResult.orientationConfident === false) {
     console.debug('[PokeFolio Orientation] KEEP_SOURCE reason=low-margin best='
       + Number(ocrResult.orientationBestRotation || ocrResult.orientation || 0)
@@ -1703,7 +1708,7 @@ function chooseRecognitionRotation(ocrResult) {
   if (ocrResult && [0, 90, 180, 270].includes(Number(ocrResult.orientation))) {
     return Number(ocrResult.orientation);
   }
-  return Recognition.selectBestOrientation(ocrResult, selectedTcg || 'auto').rotation;
+  return 0;
 }
 
 function marketPrice(value, currency, source) {
@@ -3636,7 +3641,7 @@ async function runRecognition(manual = false) {
     const cropMs = performance.now() - cropStartedAt;
     setRecState('busy', 'Richte Karte aus …', 'Bestimme die Kartenorientierung vor der Identifier-OCR.');
     const primaryOcrStartedAt = performance.now();
-    const primaryOcr = await nativePrimaryIdentifierOcr(
+    let primaryOcr = await nativePrimaryIdentifierOcr(
       prepared.dataUrl || dataUrl, $('#lang').value, selectedTcg || 'auto');
     if (run !== recognitionRun) return null;
     recognizedRotation = chooseRecognitionRotation(primaryOcr);
@@ -3647,6 +3652,8 @@ async function runRecognition(manual = false) {
     }
     const parseStartedAt = performance.now();
     let hints = attachCropMetadata(Recognition.extractHints(primaryOcr), prepared);
+    hints.appliedRotation = prepared.orientationCorrectedByOcr ? 180 : 0;
+    hints.rotationSource = primaryOcr.orientationSource || 'Sensor/EXIF';
     hints.priorityRoi = primaryOcr.priorityRoi || {
       x: 0, y: 0.80, width: 0.72, height: 0.185, source: 'normalizedCardImage'
     };
@@ -3695,8 +3702,26 @@ async function runRecognition(manual = false) {
     if (!exactPrimaryIdentity || kind === 'pokemon') {
       setRecState('busy', 'Lese Kartenkopf …', 'Die Nummer war nicht eindeutig; Name und weitere Merkmale werden als Fallback gelesen.');
       const fallbackOcrStartedAt = performance.now();
-      const fallbackAnalysis = await recognizeCardFeatures(
+      let fallbackAnalysis = await recognizeCardFeatures(
         prepared.dataUrl || dataUrl, $('#lang').value, kind || selectedTcg || 'auto');
+      const cropHints = Recognition.extractHints(fallbackAnalysis.result);
+      if (kind === 'pokemon' && prepared.perspectiveCorrected
+        && (!cropHints.mainTitle || !cropHints.collectorNumbers.length)) {
+        const original = prepared.originalDataUrl || dataUrl;
+        prepared = {...prepared, dataUrl: original, reliable: false, perspectiveCorrected: false,
+          fallbackUsed: true, method: 'original-after-roi-validation', confidence: 0,
+          correctedRotationDegrees: 0, orientationCorrectedByOcr: false,
+          fourCornersDetected: false, detectedQuad: null, cropBoundingBox: null,
+          borderComplete: false, safetyMargin: 0};
+        fallbackAnalysis = await recognizeCardFeatures(original, $('#lang').value, 'pokemon');
+        if (run !== recognitionRun) return null;
+        const rotation = chooseRecognitionRotation(fallbackAnalysis.result);
+        prepared = await correctPreparedOrientation(prepared, rotation);
+        hints.appliedRotation = prepared.orientationCorrectedByOcr ? 180 : 0;
+        hints.rotationSource = fallbackAnalysis.result.orientationSource || 'Sensor/EXIF';
+        primaryOcr = {passes: [], orientationConfident: false};
+        displayNormalizedCard('front', prepared);
+      }
       hints.recognitionPerformance.fallbackNameOcrMs = performance.now() - fallbackOcrStartedAt;
       hints.recognitionPerformance.detailedOcrMs = Number(fallbackAnalysis.result.detailedOcrMs) || 0;
       hints.recognitionPerformance.totalOcrMs += Number(fallbackAnalysis.result.totalOcrMs) || 0;
@@ -3704,12 +3729,18 @@ async function runRecognition(manual = false) {
       const mergedParseStartedAt = performance.now();
       const mergedHints = attachCropMetadata(Recognition.extractHints(mergedOcr), prepared);
       mergedHints.priorityRoi = hints.priorityRoi;
+      mergedHints.appliedRotation = hints.appliedRotation;
+      mergedHints.rotationSource = hints.rotationSource;
       mergedHints.recognitionPerformance = hints.recognitionPerformance;
       hints = mergedHints;
       hints.recognitionPerformance.collectorNumberParseMs += performance.now() - mergedParseStartedAt;
       kind = selectedTcg && selectedTcg !== 'auto'
         ? selectedTcg : fallbackAnalysis.result.detectedProfile || Recognition.classifyTcg(hints, 'auto');
       recognizedTcg = kind;
+      if (prepared.method === 'original-after-roi-validation') {
+        learningScan = await buildLearningScan(prepared, hints, kind, 'single');
+        if (run !== recognitionRun) return null;
+      }
       learningScan.hints = hints;
       learningScan.context = learningContext(hints, kind);
       learningScan.matchResult = Learning.findMatches(

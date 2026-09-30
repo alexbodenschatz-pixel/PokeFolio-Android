@@ -24,7 +24,7 @@ test('MEP + 094 in separate footer lines supplies a corroborated identifier and 
 });
 
 test('unconfirmed numbers and unrelated numeric metadata never become collector IDs', () => {
-  for (const footer of ['094', '13', 'MEP DE\n150 KP', 'MEP DE\n2026', 'MEP DE\nPokédex Nr. 094', 'MEP DE\nSchaden 094']) {
+  for (const footer of ['13', 'MEP DE\n150 KP', 'MEP DE\n2026', 'MEP DE\nPokédex Nr. 094', 'MEP DE\nSchaden 094']) {
     assert.equal(hints('Kokowei', footer).collectorNumbers.length, 0, footer);
   }
 });

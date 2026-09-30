@@ -150,7 +150,7 @@ public final class MainActivity extends Activity {
         settings.setSupportMultipleWindows(false);
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
         settings.setMediaPlaybackRequiresUserGesture(false);
-        settings.setUserAgentString(settings.getUserAgentString() + " PokeFolio/0.17.0-dev3");
+        settings.setUserAgentString(settings.getUserAgentString() + " PokeFolio/0.17.0-dev4");
 
         webView.addJavascriptInterface(new NativeBridge(), "PokeNative");
         webView.setWebViewClient(new WebViewClient() {
@@ -659,7 +659,7 @@ public final class MainActivity extends Activity {
             connection.setReadTimeout(8000);
             connection.setInstanceFollowRedirects(false);
             connection.setRequestProperty("Accept", "image/avif,image/webp,image/*");
-            connection.setRequestProperty("User-Agent", "PokeFolio/0.17.0-dev3 Android");
+            connection.setRequestProperty("User-Agent", "PokeFolio/0.17.0-dev4 Android");
             int status = connection.getResponseCode();
             if (status < 200 || status >= 300) {
                 throw new IOException("Kartenbild HTTP " + status);
@@ -763,7 +763,7 @@ public final class MainActivity extends Activity {
             }
             recognizeOrientationVariant(
                     requestId, output, recognizer, bitmap, profile, orientationVariants, 0,
-                    new JSONArray(), new OrientationSelection(), recognitionStarted,
+                    new JSONArray(), new OrientationSelection(profile), recognitionStarted,
                     System.nanoTime(), mode
             );
             bitmap = null; // Ownership moved to the asynchronous orientation stage.
@@ -824,15 +824,16 @@ public final class MainActivity extends Activity {
                 output.put("orientationSecondScore", selection.secondScoreValue());
                 output.put("orientationMargin", selection.margin());
                 output.put("orientationConfident", selection.isConfident());
+                output.put("orientationSource", appliedRotation == 0 ? "Sensor/EXIF" : "OCR-ROI-Struktur");
                 output.put("detectedProfile", effectiveProfile);
                 output.put("orientationProbes", probeDiagnostics);
                 output.put("orientationMs", orientationMs);
                 if ("pokemon".equals(effectiveProfile)) {
                     JSONObject roi = new JSONObject();
-                    roi.put("x", 0.0);
-                    roi.put("y", 0.80);
-                    roi.put("width", 0.72);
-                    roi.put("height", 0.185);
+                    roi.put("x", CardRoiLayout.LEFT);
+                    roi.put("y", CardRoiLayout.BOTTOM_TOP);
+                    roi.put("width", CardRoiLayout.RIGHT - CardRoiLayout.LEFT);
+                    roi.put("height", CardRoiLayout.BOTTOM_BOTTOM - CardRoiLayout.BOTTOM_TOP);
                     roi.put("source", "normalizedCardImage");
                     output.put("priorityRoi", roi);
                 }
@@ -864,6 +865,13 @@ public final class MainActivity extends Activity {
                     textValue = text.getText().trim();
                     score = orientationProbeScore(text, variant.bitmap.getWidth(),
                             variant.bitmap.getHeight(), profile);
+                    CardRoiLayout.Evidence structure = new CardRoiLayout.Evidence();
+                    for (Text.TextBlock block : text.getTextBlocks()) for (Text.Line line : block.getLines()) {
+                        Rect box = line.getBoundingBox();
+                        if (box != null) structure.add(line.getText(), box.centerY() / (float) variant.bitmap.getHeight());
+                    }
+                    selection.structures[rotationFromVariant(variant.name) / 90] = structure.complete();
+                    if (structure.complete()) score += 12f;
                 }
                 int rotation = rotationFromVariant(variant.name);
                 String detectedProfile = detectRecognitionProfile(textValue);
@@ -965,8 +973,14 @@ public final class MainActivity extends Activity {
         int secondRotation;
         float secondScore = -Float.MAX_VALUE;
         String detectedProfile = "auto";
+        final boolean[] structures = new boolean[4];
+        float uprightScore;
+        final String requestedProfile;
+
+        OrientationSelection(String profile) { requestedProfile = profile; }
 
         void consider(int candidateRotation, float candidateScore, String candidateProfile) {
+            if (candidateRotation == 0) uprightScore = candidateScore;
             if (candidateScore > score) {
                 secondRotation = rotation;
                 secondScore = score;
@@ -989,6 +1003,10 @@ public final class MainActivity extends Activity {
 
         boolean isConfident() {
             if (rotation == 0) return true;
+            if (!"yugioh".equals(requestedProfile) && !"onepiece".equals(requestedProfile)) {
+                return CardRoiLayout.allowRotation(structures[0], structures[rotation / 90],
+                        score, uprightScore, secondScoreValue());
+            }
             return score >= 2.0f && margin() >= Math.max(1.15f, score * 0.14f);
         }
 
@@ -1135,7 +1153,7 @@ public final class MainActivity extends Activity {
             connection.setRequestMethod("GET");
             connection.setRequestProperty("Accept", "application/json");
             connection.setRequestProperty("Cache-Control", "no-cache");
-            connection.setRequestProperty("User-Agent", "PokeFolio/0.17.0-dev3 Android");
+            connection.setRequestProperty("User-Agent", "PokeFolio/0.17.0-dev4 Android");
             status = connection.getResponseCode();
             InputStream stream = status >= 200 && status < 400
                     ? connection.getInputStream()
@@ -1478,6 +1496,16 @@ public final class MainActivity extends Activity {
         float confidence = data.getFloatExtra(CameraActivity.EXTRA_CROP_CONFIDENCE, 0f);
         boolean fallback = data.getBooleanExtra(CameraActivity.EXTRA_CROP_FALLBACK, false);
         output.put("normalized", true);
+        String originalUri = data.getStringExtra("originalCaptureUri");
+        if (originalUri != null && originalUri.startsWith("content://" + getPackageName()
+                + ".fileprovider/normalized_uploads/capture-source-")) {
+            try {
+                output.put("originalDataUrl", "data:image/jpeg;base64," + Base64.encodeToString(
+                        readContentBytes(Uri.parse(originalUri), 12_000_000), Base64.NO_WRAP));
+                // FileProvider deletion stays confined to the cache URI created above.
+                getContentResolver().delete(Uri.parse(originalUri), null, null);
+            } catch (Exception error) { Log.w(TAG, "Original capture fallback unavailable", error); }
+        }
         output.put("prepared", true);
         output.put("method", data.getStringExtra(CameraActivity.EXTRA_CROP_METHOD));
         output.put("confidence", confidence);

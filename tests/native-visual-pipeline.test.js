@@ -167,13 +167,13 @@ test('liefert gezielte Collector-Number-OCR in mehreren Bildvarianten', () => {
   assert.match(processor, /unterkante-kontext-normal-/);
   assert.match(processor, /unterkante-kontext-scharf-/);
   assert.match(processor, /sharpenForOcr/);
-  assert.match(processor, /card\.getWidth\(\) \* 0\.72f/);
-  assert.match(processor, /card\.getHeight\(\) \* 0\.80f/);
+  assert.match(processor, /card\.getWidth\(\) \* CardRoiLayout.RIGHT/);
+  assert.match(processor, /card\.getHeight\(\) \* CardRoiLayout.BOTTOM_TOP/);
   assert.match(processor, /card\.getHeight\(\) \* 0\.84f/);
 });
 
 test('liefert eine enge Kopfzeilen-OCR mit Original, Grau, Kontrast, Schärfe und Skalierungen', () => {
-  assert.match(processor, /card\.getHeight\(\) \* 0\.20f/);
+  assert.match(processor, /CardRoiLayout.NAME_BOTTOM - CardRoiLayout.NAME_TOP/);
   assert.match(processor, /kopfzeile-original-/);
   assert.match(processor, /kopfzeile-grau-/);
   assert.match(processor, /kopfzeile-kontrast-/);

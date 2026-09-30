@@ -290,11 +290,11 @@
   }
 
   function mapRegionY(region, rawY) {
-    if (region === 'TOP_HEADER') return rawY * 0.20;
+    if (region === 'TOP_HEADER') return 0.015 + rawY * 0.165;
     if (region === 'TOP_SECONDARY') return 0.11 + rawY * 0.20;
     if (region === 'MIDDLE_TEXT') return 0.34 + rawY * 0.44;
     if (region === 'LOWER_TEXT') return 0.67 + rawY * 0.21;
-    if (region === 'BOTTOM_METADATA') return 0.80 + rawY * 0.20;
+    if (region === 'BOTTOM_METADATA') return 0.84 + rawY * 0.155;
     return rawY;
   }
 
@@ -531,9 +531,13 @@
 
   function derivePokemonIdentity(lines, hpVotes, dominantRotation) {
     const speciesVotes = new Map();
+    const headerHasName = (lines || []).some(line => line.region === 'TOP_HEADER'
+      && line.rotation === dominantRotation && !isEvolutionSourceNameLine(line, lines)
+      && bestKnownPokemonName(pokemonTitleText(line.text), true));
     (lines || []).forEach(line => {
       if (Number.isFinite(Number(dominantRotation)) && line.rotation !== dominantRotation) return;
       const dedicatedHeader = line.region === 'TOP_HEADER';
+      if (headerHasName && !dedicatedHeader) return;
       if (!dedicatedHeader && line.y > 0.26) return;
       if (isEvolutionSourceNameLine(line, lines)) return;
       const match = bestKnownPokemonName(pokemonTitleText(line.text), true);
@@ -960,6 +964,17 @@
       });
 
       const seenCollectors = new Set();
+      normalizedLines.filter(line => line.region === 'BOTTOM_METADATA').forEach(line => {
+        if (normalizedLines.some(item => item.region === 'BOTTOM_METADATA' && /\b(?:MEP|SVP)\b/i.test(item.text))) return;
+        const match = line.text.trim().match(/^(\d{3})(?:\s*\/\s*[xX?]{1,4})?$/);
+        if (!match || Number(match[1]) === 0) return;
+        // Retrieval evidence only: without a name/set this must never auto-identify a print.
+        const item = {number: match[1], total: '', normalizedValue: match[1],
+          sourceRegion: 'BOTTOM_METADATA', requiresConfirmation: true};
+        const key = numberKey(item.number) + '/';
+        seenCollectors.add(key);
+        addVote(collectorVotes, key, item, 0.7);
+      });
       // A bare promo number is only meaningful alongside a printed promo set in the
       // same footer pass. Never promote HP, damage, years or an isolated "13" to an ID.
       const promoFooter = normalizedLines.filter(line => line.region === 'BOTTOM_METADATA'
@@ -1083,9 +1098,11 @@
       });
 
       const upper = text.toUpperCase();
+      const footerUpper = normalizedLines.filter(line => line.region === 'BOTTOM_METADATA'
+        || line.region === 'WHOLE_CARD' && line.y >= 0.84).map(line => line.text).join(' ').toUpperCase();
       const setPattern = /\b((?:SV|SWSH|SM|XY|BW|HGSS|DP|PL|EX)[A-Z0-9-]{1,8})\b/g;
       let setMatch;
-      while ((setMatch = setPattern.exec(upper)) !== null) {
+      while ((setMatch = setPattern.exec(footerUpper)) !== null) {
         addVote(setCodeVotes, setMatch[1], setMatch[1], 1);
       }
       const onePiecePattern = /\b((?:(?:OP|ST|EB|PRB|EX|DON)\s*-?\s*\d{1,2}\s*-\s*\d{3})|(?:P\s*-\s*\d{3}))\b/g;
@@ -1171,6 +1188,13 @@
       .map(value => ({value, votes: 1.5}));
     const ruleTextHints = extractRuleTextHints(activeLines, cardTypeResult.value);
     const detectedLanguage = detectCardLanguage(orientedText);
+    const footerLanguage = activeLines.filter(line => line.region === 'BOTTOM_METADATA' && line.text.length <= 48)
+      .map(line => line.text.match(/\b(DE|EN|FR|IT|ES|PT)\b/)).find(Boolean);
+    if (footerLanguage) {
+      detectedLanguage.value = footerLanguage[1].toLowerCase();
+      detectedLanguage.confidence = 0.95;
+      detectedLanguage.source = 'BOTTOM_ROI';
+    }
     const requestedLanguage = String(input && input.language || '');
     if (!detectedLanguage.value && /^(?:ja|ko|zh-CN|zh-TW)$/i.test(requestedLanguage)) {
       detectedLanguage.value = /^zh-tw$/i.test(requestedLanguage)
@@ -1757,6 +1781,10 @@
     }
     if (collectorStatus !== 'match' && exactName && hpStatus === 'match' && !corroboratedText) {
       identificationScore = Math.min(identificationScore, 0.66);
+    }
+    if ((hints.collectorNumbers || []).some(item => item.requiresConfirmation)
+      && (!exactName || setStatus !== 'match' && !corroboratedText)) {
+      identificationScore = Math.min(identificationScore, 0.69);
     }
     let dataConfidence = dataCoverage(signals);
     if (exactName && exactPrintedIdentity) dataConfidence = Math.max(dataConfidence, 0.92);

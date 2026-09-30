@@ -5,6 +5,7 @@ import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.Path;
+import android.graphics.Matrix;
 import android.graphics.PointF;
 import android.graphics.RectF;
 import android.view.View;
@@ -63,6 +64,30 @@ public final class CardOverlayView extends View {
 
     private float dp(float value) {
         return value * getResources().getDisplayMetrics().density;
+    }
+
+    private void drawRoiGuides(Canvas canvas) {
+        PointF[] quad = detectedQuad != null ? detectedQuad : new PointF[]{
+                new PointF(cardRect.left, cardRect.top), new PointF(cardRect.right, cardRect.top),
+                new PointF(cardRect.right, cardRect.bottom), new PointF(cardRect.left, cardRect.bottom)};
+        Matrix map = new Matrix();
+        float[] corners = new float[8];
+        for (int i = 0; i < 4; i++) { corners[2*i] = quad[i].x; corners[2*i+1] = quad[i].y; }
+        if (!map.setPolyToPoly(new float[]{0,0,1,0,1,1,0,1}, 0, corners, 0, 4)) return;
+        Paint label = new Paint(Paint.ANTI_ALIAS_FLAG);
+        label.setColor(Color.argb(190, 255, 255, 255)); label.setTextSize(dp(11));
+        float[][] regions = {{CardRoiLayout.NAME_TOP, CardRoiLayout.NAME_BOTTOM},
+                {CardRoiLayout.BOTTOM_TOP, CardRoiLayout.BOTTOM_BOTTOM}};
+        String[] names = {"NAME", "SET / NUMMER"};
+        for (int i = 0; i < regions.length; i++) {
+            float[] points = {CardRoiLayout.LEFT,regions[i][0],CardRoiLayout.RIGHT,regions[i][0],
+                    CardRoiLayout.RIGHT,regions[i][1],CardRoiLayout.LEFT,regions[i][1]};
+            map.mapPoints(points);
+            Path path = new Path(); path.moveTo(points[0],points[1]);
+            for (int j = 1; j < 4; j++) path.lineTo(points[j*2],points[j*2+1]);
+            path.close(); canvas.drawPath(path,guide);
+            canvas.drawText(names[i],points[0]+dp(4),points[1]+dp(12),label);
+        }
     }
 
     public RectF getCardRect() {
@@ -162,10 +187,7 @@ public final class CardOverlayView extends View {
         canvas.drawPath(cutout, shade);
         canvas.drawRoundRect(cardRect, radius, radius, border);
 
-        float thirdY1 = cardRect.top + cardRect.height() / 3f;
-        float thirdY2 = cardRect.top + cardRect.height() * 2f / 3f;
-        canvas.drawLine(cardRect.left + radius, thirdY1, cardRect.right - radius, thirdY1, guide);
-        canvas.drawLine(cardRect.left + radius, thirdY2, cardRect.right - radius, thirdY2, guide);
+        drawRoiGuides(canvas);
 
         float length = dp(31f);
         float x1 = cardRect.left;

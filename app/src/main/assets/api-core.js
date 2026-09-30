@@ -186,8 +186,14 @@
       : identity.speciesId && (identity.reliable || Number(identity.nameConfidence) >= 0.88)
         ? [localizedIdentity, localizedBase]
         : (hints && hints.validatedNameHints || [])
-          .filter(item => Number(item.confidence) >= 0.88)
+          .filter(item => Number(item.confidence) >= 0.80)
           .map(item => item.value);
+    if (!values.length && hints && hints.ocrByRegion && hints.ocrByRegion.top) {
+      const partial = hints.ocrByRegion.top.split('\n').map(cleanNameCandidate)
+        .find(value => /^[\p{L}][\p{L}\s.'’\-…]{3,35}$/u.test(value)
+          && !/entwickelt|phase|basis|fähigkeit|attack|copyright|illus|\b(?:KP|HP)\b/i.test(value));
+      if (partial) values.push(partial.replace(/[.…]+$/g, '').trim());
+    }
     return [...new Set(values.map(cleanNameCandidate).filter(value => nameTokens(value).length))].slice(0, 3);
   }
 
@@ -211,6 +217,11 @@
     });
     const variants = [];
     const cardType = String(hints && hints.cardType || 'unknown');
+    if (cardType !== 'trainer' && cardType !== 'energy' && !/^(?:ja|ko|zh)/.test(lang)) {
+    if (names[0] && numbers[0] && setCodes[0]) variants.push({name: names[0], localId: numbers[0], 'set.id': setCodes[0].toLowerCase()});
+    if (names[0] && numbers[0]) variants.push({name: names[0], localId: numbers[0]});
+    if (names[0] && setCodes[0]) variants.push({name: names[0], 'set.id': setCodes[0].toLowerCase()});
+    }
     if ((cardType === 'trainer' || cardType === 'energy') && numbers.length) {
       // Trainer/energy identity starts with the footer number. The localized
       // title then confirms the otherwise non-unique localId across sets.

@@ -752,7 +752,7 @@ public final class CardImageProcessor {
         // Uncertain boundaries retain ALL source pixels. An axis-aligned edge-peak crop can
         // mistake artwork edges for the top/title or bottom/collector border.
         Bitmap base = rectified != null ? rectified : scaled;
-        boolean landscapeOrientation = base.getWidth() > base.getHeight();
+        boolean landscapeOrientation = rectified != null && base.getWidth() > base.getHeight();
         Bitmap oriented = landscapeOrientation ? rotate(base, 90) : base;
         int detectionWidth = scaled.getWidth();
         int detectionHeight = scaled.getHeight();
@@ -972,6 +972,25 @@ public final class CardImageProcessor {
         if (confidence >= 0.80f) return HIGH_CONFIDENCE_MARGIN;
         if (confidence >= RELIABLE_DETECTION) return NORMAL_DETECTION_MARGIN;
         return LOW_CONFIDENCE_MARGIN;
+    }
+
+    static Bitmap createLiveRoiProbe(Bitmap source, PointF[] sourceQuad) {
+        if (!safeCaptureQuad(sourceQuad, source.getWidth(), source.getHeight())) return null;
+        Bitmap card = rectifyCard(source, sourceQuad, 0f);
+        if (card == null) return null;
+        Bitmap probe = Bitmap.createBitmap(760, 280, Bitmap.Config.ARGB_8888);
+        Canvas canvas = new Canvas(probe);
+        Paint paint = new Paint(Paint.FILTER_BITMAP_FLAG);
+        float[][] zones = {{CardRoiLayout.NAME_TOP, CardRoiLayout.NAME_BOTTOM},
+                {CardRoiLayout.BOTTOM_TOP, CardRoiLayout.BOTTOM_BOTTOM}};
+        for (int i = 0; i < 2; i++) {
+            android.graphics.Rect crop = new android.graphics.Rect(
+                    Math.round(card.getWidth()*CardRoiLayout.LEFT), Math.round(card.getHeight()*zones[i][0]),
+                    Math.round(card.getWidth()*CardRoiLayout.RIGHT), Math.round(card.getHeight()*zones[i][1]));
+            canvas.drawBitmap(card, crop, new RectF(0, i*140, 760, (i+1)*140), paint);
+        }
+        card.recycle();
+        return probe;
     }
 
     private static Bitmap rectifyCard(Bitmap source, PointF[] detectedQuad, float safetyMargin) {
@@ -1884,10 +1903,10 @@ public final class CardImageProcessor {
         // Pokemon print identity is concentrated in the lower-left footer. Limiting the primary
         // OCR to 72% width keeps damage/rules/copyright on the right from becoming search keys.
         // y=80.0..98.5% retains regulation marks and set symbols without including the card edge.
-        int left = 0;
-        int top = Math.max(0, Math.round(card.getHeight() * 0.80f));
-        int right = clamp(Math.round(card.getWidth() * 0.72f), 2, card.getWidth());
-        int bottomEdge = clamp(Math.round(card.getHeight() * 0.985f), top + 2, card.getHeight());
+        int left = Math.round(card.getWidth() * CardRoiLayout.LEFT);
+        int top = Math.max(0, Math.round(card.getHeight() * CardRoiLayout.BOTTOM_TOP));
+        int right = clamp(Math.round(card.getWidth() * CardRoiLayout.RIGHT), left + 2, card.getWidth());
+        int bottomEdge = clamp(Math.round(card.getHeight() * CardRoiLayout.BOTTOM_BOTTOM), top + 2, card.getHeight());
         Bitmap bottom = Bitmap.createBitmap(card, left, top, right - left, bottomEdge - top);
         int normalWidth = 1050;
         Bitmap normal = Bitmap.createScaledBitmap(
@@ -2056,8 +2075,11 @@ public final class CardImageProcessor {
 
     /** Dedicated header OCR for species name, V/ex/GX marker and KP/HP. */
     private static void addHeaderOcrVariants(List<OcrVariant> variants, Bitmap card, int rotation) {
-        int height = Math.max(2, Math.round(card.getHeight() * 0.20f));
-        Bitmap header = Bitmap.createBitmap(card, 0, 0, card.getWidth(), height);
+        int left = Math.round(card.getWidth() * CardRoiLayout.LEFT);
+        int top = Math.round(card.getHeight() * CardRoiLayout.NAME_TOP);
+        int height = Math.max(2, Math.round(card.getHeight() * (CardRoiLayout.NAME_BOTTOM - CardRoiLayout.NAME_TOP)));
+        Bitmap header = Bitmap.createBitmap(card, left, top,
+                Math.round(card.getWidth() * (CardRoiLayout.RIGHT - CardRoiLayout.LEFT)), height);
         Bitmap base = scaleDown(header, 700);
         variants.add(new OcrVariant("kopfzeile-original-" + rotation, base));
         variants.add(new OcrVariant("kopfzeile-grau-" + rotation, grayscaleForOcr(base)));

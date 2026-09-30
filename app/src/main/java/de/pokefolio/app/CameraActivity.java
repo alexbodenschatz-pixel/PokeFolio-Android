@@ -61,6 +61,11 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import com.google.mlkit.vision.common.InputImage;
+import com.google.mlkit.vision.text.Text;
+import com.google.mlkit.vision.text.TextRecognition;
+import com.google.mlkit.vision.text.TextRecognizer;
+import com.google.mlkit.vision.text.latin.TextRecognizerOptions;
 
 /** Native CameraX scanner with a card-sized region of interest. */
 public final class CameraActivity extends ComponentActivity {
@@ -98,6 +103,10 @@ public final class CameraActivity extends ComponentActivity {
     private FrameLayout.LayoutParams hintLayoutParams;
     private final Runnable focusCenterRunnable = this::focusFrameCenter;
     private final AtomicBoolean liveAnalysisBusy = new AtomicBoolean(false);
+    private final AtomicBoolean liveTextBusy = new AtomicBoolean(false);
+    private final TextRecognizer liveRoiRecognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS);
+    private volatile long liveTextAt, liveTextGeneration;
+    private long lastLiveTextAttempt;
     private final FastCardDetector fastCardDetector = new FastCardDetector();
     private volatile CardDetectionTracker.Snapshot liveDetection;
     private AutoCaptureGate autoCaptureGate;
@@ -424,11 +433,14 @@ public final class CameraActivity extends ComponentActivity {
                     upright, new Rect(left, top, right, bottom), viewWidth, viewHeight, now);
             CardDetectionTracker.Snapshot snapshot = result.snapshot;
             liveDetection = snapshot;
+            if (!result.qualityReady) { liveTextAt = 0; liveTextGeneration++; }
+            else if (autoCaptureEnabled) checkLiveRoiText(upright, snapshot, viewWidth, viewHeight, now);
             runOnUiThread(() -> {
                 if (!resumed || isFinishing() || captureInFlight
                         || android.os.SystemClock.uptimeMillis() - now > 350) return;
                 applyLiveDetection(snapshot);
-                boolean ready = autoCaptureGate.update(now, result.present, result.qualityReady);
+                boolean textReady = liveTextAt > 0 && now - liveTextAt >= 0 && now - liveTextAt < 1500;
+                boolean ready = autoCaptureGate.update(now, result.present, result.qualityReady && textReady);
                 shootButton.setEnabled(previewStreaming && !autoCaptureGate.waitingForRemoval());
                 if (autoCaptureGate.waitingForRemoval()) hint.setText(R.string.camera_remove_previous);
                 else if (snapshot.ready && !result.qualityReady) hint.setText(R.string.camera_quality_retry);
@@ -465,6 +477,41 @@ public final class CameraActivity extends ComponentActivity {
         else if (snapshot.ready) hint.setText(R.string.camera_ready);
         else if (snapshot.confidence >= 0.60f) hint.setText(R.string.camera_hold_still);
         else hint.setText(R.string.camera_keep_card_visible);
+    }
+
+    private void checkLiveRoiText(Bitmap frame, CardDetectionTracker.Snapshot snapshot,
+                                  int viewWidth, int viewHeight, long now) {
+        if (snapshot.quad == null || now - lastLiveTextAttempt < 700 || !liveTextBusy.compareAndSet(false, true)) return;
+        lastLiveTextAttempt = now;
+        final long generation = liveTextGeneration;
+        Bitmap probe = null;
+        try {
+            PointF[] quad = new PointF[4];
+            for (int i = 0; i < 4; i++) quad[i] = new PointF(
+                    snapshot.quad[i].x / viewWidth * frame.getWidth(),
+                    snapshot.quad[i].y / viewHeight * frame.getHeight());
+            probe = CardImageProcessor.createLiveRoiProbe(frame, quad);
+            if (probe == null) { liveTextBusy.set(false); return; }
+            final Bitmap ownedProbe = probe;
+            liveRoiRecognizer.process(InputImage.fromBitmap(probe, 0)).addOnCompleteListener(task -> {
+                try {
+                    CardRoiLayout.Evidence evidence = new CardRoiLayout.Evidence();
+                    if (task.isSuccessful() && task.getResult() != null) {
+                        for (Text.TextBlock block : task.getResult().getTextBlocks()) for (Text.Line line : block.getLines()) {
+                            Rect bounds = line.getBoundingBox();
+                            if (bounds != null) evidence.add(line.getText(), bounds.centerY() < 140 ? 0.1f : 0.9f);
+                        }
+                    }
+                    long completed = android.os.SystemClock.uptimeMillis();
+                    if (resumed && generation == liveTextGeneration && completed - now < 1500)
+                        liveTextAt = evidence.complete() ? completed : 0;
+                } finally { ownedProbe.recycle(); liveTextBusy.set(false); }
+            });
+        } catch (RuntimeException error) {
+            if (probe != null && !probe.isRecycled()) probe.recycle();
+            liveTextBusy.set(false); liveTextAt = 0;
+            Log.w(TAG, "ROI text-presence probe failed", error);
+        }
     }
 
     private static RectF polygonBounds(PointF[] points) {
@@ -674,6 +721,18 @@ public final class CameraActivity extends ComponentActivity {
                     Uri uri = writeCardToGallery(preparation.bitmap);
 
                     Intent resultIntent = new Intent();
+                    // Keep an EXIF-normalized source for a single post-OCR crop fallback.
+                    // Only a URI crosses the Activity boundary, never a large bitmap parcel.
+                    try {
+                        File directory = new File(getCacheDir(), "normalized-uploads");
+                        if (!directory.exists() && !directory.mkdirs()) throw new java.io.IOException("Cache unavailable");
+                        File original = File.createTempFile("capture-source-", ".jpg", directory);
+                        try (java.io.FileOutputStream stream = new java.io.FileOutputStream(original)) {
+                            if (!oriented.compress(Bitmap.CompressFormat.JPEG, 88, stream)) throw new java.io.IOException("Source encoding failed");
+                        }
+                        resultIntent.putExtra("originalCaptureUri", androidx.core.content.FileProvider.getUriForFile(
+                                CameraActivity.this, getPackageName() + ".fileprovider", original).toString());
+                    } catch (Exception error) { Log.w(TAG, "Optional source fallback unavailable", error); }
                     resultIntent.setData(uri);
                     resultIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
                     resultIntent.putExtra(EXTRA_NORMALIZED_CARD, true);
@@ -837,6 +896,7 @@ public final class CameraActivity extends ComponentActivity {
     @Override
     protected void onPause() {
         resumed = false;
+        liveTextAt = 0; liveTextGeneration++;
         autoCaptureGate.resetEvidence();
         super.onPause();
     }
@@ -850,6 +910,7 @@ public final class CameraActivity extends ComponentActivity {
     @Override
     protected void onDestroy() {
         forceTorchOff("activity-destroyed");
+        liveRoiRecognizer.close();
         super.onDestroy();
         if (cameraProvider != null) {
             cameraProvider.unbindAll();

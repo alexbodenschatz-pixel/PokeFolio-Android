@@ -92,8 +92,8 @@ test('native ROI ist fokussiert und der normale Scan führt Exact Lookup vor Ful
   const main = fs.readFileSync(path.join(root,
     'app/src/main/java/de/pokefolio/app/MainActivity.java'), 'utf8');
   const app = fs.readFileSync(path.join(root, 'app/src/main/assets/app.js'), 'utf8');
-  assert.match(processor, /card\.getWidth\(\) \* 0\.72f/);
-  assert.match(processor, /card\.getHeight\(\) \* 0\.80f/);
+  assert.match(processor, /card\.getWidth\(\) \* CardRoiLayout.RIGHT/);
+  assert.match(processor, /card\.getHeight\(\) \* CardRoiLayout.BOTTOM_TOP/);
   assert.match(processor, /unterkante-idzone-original/);
   assert.match(main, /recognizePrimaryIdentifier/);
   const flow = app.slice(app.indexOf('async function runRecognition'), app.indexOf("$('#recognize').onclick"));
