@@ -98,10 +98,16 @@ public final class FastCardDetector {
         boolean complete = detection != null && detection.borderComplete
                 && detection.coverage >= 0.22f && detection.aspectRatio >= 0.55f
                 && detection.aspectRatio <= 0.88f;
-        boolean qualityReady = complete && snapshot.ready
-                && qualityAcceptable(uprightFrame, viewQuad, viewWidth, viewHeight);
+        float[] targetPoints = detection == null ? null : new float[8];
+        if (detection != null) for (int i = 0; i < 4; i++) {
+            targetPoints[2*i] = detection.quad[i].x / searchWidth;
+            targetPoints[2*i+1] = detection.quad[i].y / searchHeight;
+        }
+        boolean inside = complete && FixedCaptureFrame.containsCard(targetPoints);
+        boolean sharp = inside && qualityAcceptable(uprightFrame, viewQuad, viewWidth, viewHeight);
+        boolean qualityReady = inside && snapshot.ready && sharp;
         return new Result(snapshot, measuredDetectorMs, measuredTrackingMs,
-                detection != null, qualityReady);
+                detection != null, qualityReady, inside, sharp);
     }
 
     private static boolean qualityAcceptable(Bitmap frame, PointF[] quad, int width, int height) {
@@ -169,14 +175,18 @@ public final class FastCardDetector {
         public final float trackingMs;
         public final boolean present;
         public final boolean qualityReady;
+        public final boolean insideTarget;
+        public final boolean sharpEnough;
 
         Result(CardDetectionTracker.Snapshot snapshot, float detectorMs, float trackingMs,
-                boolean present, boolean qualityReady) {
+                boolean present, boolean qualityReady, boolean insideTarget, boolean sharpEnough) {
             this.snapshot = snapshot;
             this.detectorMs = detectorMs;
             this.trackingMs = trackingMs;
             this.present = present;
             this.qualityReady = qualityReady;
+            this.insideTarget = insideTarget;
+            this.sharpEnough = sharpEnough;
         }
     }
 

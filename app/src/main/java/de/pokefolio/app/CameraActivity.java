@@ -107,6 +107,7 @@ public final class CameraActivity extends ComponentActivity {
     private final TextRecognizer liveRoiRecognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS);
     private volatile long liveTextAt, liveTextGeneration;
     private long lastLiveTextAttempt;
+    private boolean fixedInside, fixedSharp, fixedStable, fixedReady;
     private final FastCardDetector fastCardDetector = new FastCardDetector();
     private volatile CardDetectionTracker.Snapshot liveDetection;
     private AutoCaptureGate autoCaptureGate;
@@ -438,12 +439,19 @@ public final class CameraActivity extends ComponentActivity {
             runOnUiThread(() -> {
                 if (!resumed || isFinishing() || captureInFlight
                         || android.os.SystemClock.uptimeMillis() - now > 350) return;
-                applyLiveDetection(snapshot);
                 boolean textReady = liveTextAt > 0 && now - liveTextAt >= 0 && now - liveTextAt < 1500;
-                boolean ready = autoCaptureGate.update(now, result.present, result.qualityReady && textReady);
+                fixedInside = result.insideTarget;
+                fixedSharp = result.sharpEnough;
+                fixedStable = snapshot.ready;
+                fixedReady = FixedCaptureFrame.ready(fixedInside, fixedSharp, fixedStable, textReady);
+                overlay.setFixedFrameState(fixedInside, fixedReady);
+                hint.setText(!fixedInside ? "Karte vollständig im Rahmen positionieren · Name oben"
+                        : !fixedSharp ? "Karte scharf stellen und gleichmäßig beleuchten"
+                        : !fixedStable ? "Kamera ruhig halten" : !textReady ? "Name oben · Set/Nummer unten sichtbar halten"
+                        : "Karte im Rahmen · Bereit");
+                boolean ready = autoCaptureGate.update(now, result.present, fixedReady);
                 shootButton.setEnabled(previewStreaming && !autoCaptureGate.waitingForRemoval());
                 if (autoCaptureGate.waitingForRemoval()) hint.setText(R.string.camera_remove_previous);
-                else if (snapshot.ready && !result.qualityReady) hint.setText(R.string.camera_quality_retry);
                 if (ready && autoCaptureEnabled) takePhoto(true);
             });
             FastCardDetector.Metrics metrics = fastCardDetector.metrics(now);
@@ -461,22 +469,6 @@ public final class CameraActivity extends ComponentActivity {
             image.close();
             liveAnalysisBusy.set(false);
         }
-    }
-
-    private void applyLiveDetection(CardDetectionTracker.Snapshot snapshot) {
-        if (snapshot == null || snapshot.quad == null) {
-            overlay.clearDetectedCard();
-            if (previewStreaming) hint.setText(R.string.camera_find_card);
-            return;
-        }
-        overlay.setDetectedCard(snapshot.quad, snapshot.confidence, snapshot.stability);
-        RectF guide = overlay.getCardRect();
-        float coverage = polygonBounds(snapshot.quad).width() * polygonBounds(snapshot.quad).height()
-                / Math.max(1f, guide.width() * guide.height());
-        if (coverage < 0.22f) hint.setText(R.string.camera_move_closer);
-        else if (snapshot.ready) hint.setText(R.string.camera_ready);
-        else if (snapshot.confidence >= 0.60f) hint.setText(R.string.camera_hold_still);
-        else hint.setText(R.string.camera_keep_card_visible);
     }
 
     private void checkLiveRoiText(Bitmap frame, CardDetectionTracker.Snapshot snapshot,
@@ -736,6 +728,10 @@ public final class CameraActivity extends ComponentActivity {
                     resultIntent.setData(uri);
                     resultIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
                     resultIntent.putExtra(EXTRA_NORMALIZED_CARD, true);
+                    resultIntent.putExtra("fixedInside", fixedInside);
+                    resultIntent.putExtra("fixedSharp", fixedSharp);
+                    resultIntent.putExtra("fixedStable", fixedStable);
+                    resultIntent.putExtra("fixedReady", fixedReady);
                     resultIntent.putExtra("cropBoundingBox", CardImageProcessor.cropBoundingBox(
                             preparation, oriented.getWidth(), oriented.getHeight()));
                     resultIntent.putExtra(EXTRA_CROP_METHOD, preparation.method);

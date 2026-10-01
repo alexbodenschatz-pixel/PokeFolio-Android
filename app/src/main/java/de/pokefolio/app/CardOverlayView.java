@@ -67,7 +67,7 @@ public final class CardOverlayView extends View {
     }
 
     private void drawRoiGuides(Canvas canvas) {
-        PointF[] quad = detectedQuad != null ? detectedQuad : new PointF[]{
+        PointF[] quad = new PointF[]{
                 new PointF(cardRect.left, cardRect.top), new PointF(cardRect.right, cardRect.top),
                 new PointF(cardRect.right, cardRect.bottom), new PointF(cardRect.left, cardRect.bottom)};
         Matrix map = new Matrix();
@@ -92,6 +92,14 @@ public final class CardOverlayView extends View {
 
     public RectF getCardRect() {
         return new RectF(cardRect);
+    }
+
+    public void setFixedFrameState(boolean inside, boolean ready) {
+        int color = ready ? Color.rgb(88, 215, 170)
+                : inside ? Color.rgb(255, 207, 84) : Color.rgb(255, 151, 66);
+        border.setColor(color);
+        corner.setColor(color);
+        invalidate();
     }
 
     public boolean contains(float x, float y) {
@@ -168,7 +176,7 @@ public final class CardOverlayView extends View {
         float topInset = Math.max(dp(92f), reservedTop);
         float bottomInset = Math.max(dp(116f), reservedBottom);
         float availableHeight = Math.max(0f, height - topInset - bottomInset);
-        float frameWidth = Math.min(width * 0.82f, availableHeight * CARD_ASPECT_RATIO);
+        float frameWidth = Math.min(width * 0.78f, availableHeight * CARD_ASPECT_RATIO);
         if (frameWidth <= 0f) {
             cardRect.setEmpty();
             canvas.drawColor(shade.getColor());
@@ -202,23 +210,6 @@ public final class CardOverlayView extends View {
         canvas.drawLine(x1, y2, x1, y2 - length, corner);
         canvas.drawLine(x2, y2, x2 - length, y2, corner);
         canvas.drawLine(x2, y2, x2, y2 - length, corner);
-
-        if (detectedQuad != null && detectedQuad.length == 4) {
-            // Orange: partial/weak. Yellow: complete but moving. Green: stable and ready.
-            int color = detectionConfidence < 0.55f
-                    ? Color.rgb(255, 151, 66)
-                    : stabilityScore < 0.82f
-                        ? Color.rgb(255, 207, 84)
-                        : Color.rgb(88, 215, 170);
-            detectedBorder.setColor(color);
-            Path polygon = new Path();
-            polygon.moveTo(detectedQuad[0].x, detectedQuad[0].y);
-            for (int index = 1; index < detectedQuad.length; index++) {
-                polygon.lineTo(detectedQuad[index].x, detectedQuad[index].y);
-            }
-            polygon.close();
-            canvas.drawPath(polygon, detectedBorder);
-        }
 
         if (focusVisible) {
             focus.setColor(focusSucceeded ? Color.rgb(88, 215, 170) : Color.WHITE);

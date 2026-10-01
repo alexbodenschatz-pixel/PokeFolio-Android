@@ -40,7 +40,7 @@ public final class CardCropInstrumentation extends Instrumentation {
         Bundle result = new Bundle();
         try {
             int syntheticCases = runCropCases();
-            int geometryCases = runPreviewMappingCase() + runSafeFallbackCase() + runClippedLiveHeaderCase() + runTrackingCase()
+            int geometryCases = runFixedOverlayCase() + runPreviewMappingCase() + runSafeFallbackCase() + runClippedLiveHeaderCase() + runTrackingCase()
                     + runFastDetectorCadenceCase() + runFastDetectorPerformanceCase()
                     + runExifOrientationCases()
                     + AndroidKeystoreCredentialInstrumentation.run(getTargetContext());
@@ -322,6 +322,27 @@ public final class CardCropInstrumentation extends Instrumentation {
         assertTrue(testCase.name + " no excessive bottom background", actualBottom <= expectedBottom + verticalTolerance);
         assertTrue(testCase.name + " no excessive left background", actualLeft >= expectedLeft - horizontalTolerance);
         assertTrue(testCase.name + " no excessive right background", actualRight <= expectedRight + horizontalTolerance);
+    }
+
+    private int runFixedOverlayCase() {
+        final Throwable[] failure = new Throwable[1];
+        runOnMainSync(() -> {
+            Bitmap first = Bitmap.createBitmap(1080, 1920, Bitmap.Config.ARGB_8888);
+            Bitmap moved = Bitmap.createBitmap(1080, 1920, Bitmap.Config.ARGB_8888);
+            try {
+                CardOverlayView overlay = new CardOverlayView(getTargetContext());
+                overlay.layout(0, 0, 1080, 1920);
+                overlay.draw(new Canvas(first));
+                android.graphics.RectF bounds = overlay.getCardRect();
+                overlay.setDetectedCard(quad(20, 50, 850, 80, 970, 1200, 90, 1400), .99f, .99f);
+                overlay.draw(new Canvas(moved));
+                assertTrue("fixed frame bounds ignore tracked corners", bounds.equals(overlay.getCardRect()));
+                assertTrue("fixed frame and ROI pixels never follow the card", first.sameAs(moved));
+            } catch (Throwable error) { failure[0] = error; }
+            finally { first.recycle(); moved.recycle(); }
+        });
+        if (failure[0] != null) throw new AssertionError("fixed overlay", failure[0]);
+        return 1;
     }
 
     private int runClippedLiveHeaderCase() {

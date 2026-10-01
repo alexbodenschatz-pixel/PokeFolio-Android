@@ -101,7 +101,7 @@ test('ein HTTP 400 der Setcode-Variante blockiert Passcode- und Namensfallback n
   assert.equal(result.resultCount, 2);
 });
 
-test('dynamischer Live-Rahmen analysiert latest-only und glättet vier physische Ecken', () => {
+test('starrer Live-Rahmen behält interne latest-only Stabilitätsprüfung ohne bewegliche Kontur', () => {
   const root = path.join(__dirname, '..');
   const camera = fs.readFileSync(path.join(root, 'app/src/main/java/de/pokefolio/app/CameraActivity.java'), 'utf8');
   const overlay = fs.readFileSync(path.join(root, 'app/src/main/java/de/pokefolio/app/CardOverlayView.java'), 'utf8');
@@ -110,7 +110,8 @@ test('dynamischer Live-Rahmen analysiert latest-only und glättet vier physische
   assert.match(camera, /ImageAnalysis\.STRATEGY_KEEP_ONLY_LATEST/);
   assert.match(camera, /\.addUseCase\(imageAnalysis\)/);
   assert.match(camera, /mapPreviewQuadToCrop/);
-  assert.match(overlay, /Path polygon/);
+  assert.doesNotMatch(overlay, /Path polygon/);
+  assert.match(overlay, /setFixedFrameState/);
   assert.match(tracker, /SMOOTHING_ALPHA/);
   assert.match(tracker, /stability >= 0\.82f/);
   assert.match(camera, /fastCardDetector\.shouldAnalyze/);

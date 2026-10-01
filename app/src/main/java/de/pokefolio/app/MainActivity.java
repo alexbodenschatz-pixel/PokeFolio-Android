@@ -150,7 +150,7 @@ public final class MainActivity extends Activity {
         settings.setSupportMultipleWindows(false);
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
         settings.setMediaPlaybackRequiresUserGesture(false);
-        settings.setUserAgentString(settings.getUserAgentString() + " PokeFolio/0.17.0-dev4");
+        settings.setUserAgentString(settings.getUserAgentString() + " PokeFolio/0.17.0-dev5");
 
         webView.addJavascriptInterface(new NativeBridge(), "PokeNative");
         webView.setWebViewClient(new WebViewClient() {
@@ -659,7 +659,7 @@ public final class MainActivity extends Activity {
             connection.setReadTimeout(8000);
             connection.setInstanceFollowRedirects(false);
             connection.setRequestProperty("Accept", "image/avif,image/webp,image/*");
-            connection.setRequestProperty("User-Agent", "PokeFolio/0.17.0-dev4 Android");
+            connection.setRequestProperty("User-Agent", "PokeFolio/0.17.0-dev5 Android");
             int status = connection.getResponseCode();
             if (status < 200 || status >= 300) {
                 throw new IOException("Kartenbild HTTP " + status);
@@ -1153,7 +1153,7 @@ public final class MainActivity extends Activity {
             connection.setRequestMethod("GET");
             connection.setRequestProperty("Accept", "application/json");
             connection.setRequestProperty("Cache-Control", "no-cache");
-            connection.setRequestProperty("User-Agent", "PokeFolio/0.17.0-dev4 Android");
+            connection.setRequestProperty("User-Agent", "PokeFolio/0.17.0-dev5 Android");
             status = connection.getResponseCode();
             InputStream stream = status >= 200 && status < 400
                     ? connection.getInputStream()
@@ -1496,6 +1496,9 @@ public final class MainActivity extends Activity {
         float confidence = data.getFloatExtra(CameraActivity.EXTRA_CROP_CONFIDENCE, 0f);
         boolean fallback = data.getBooleanExtra(CameraActivity.EXTRA_CROP_FALLBACK, false);
         output.put("normalized", true);
+        output.put("frameMode", "fixed");
+        for (String key : new String[]{"fixedInside", "fixedSharp", "fixedStable", "fixedReady"})
+            output.put(key, data.getBooleanExtra(key, false));
         String originalUri = data.getStringExtra("originalCaptureUri");
         if (originalUri != null && originalUri.startsWith("content://" + getPackageName()
                 + ".fileprovider/normalized_uploads/capture-source-")) {

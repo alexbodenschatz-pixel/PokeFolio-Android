@@ -92,6 +92,11 @@ function displayNormalizedCard(id, prepared) {
 function attachCropMetadata(hints, prepared) {
   return Object.assign({}, hints || {}, {
     cardCrop: {
+      frameMode: prepared && prepared.frameMode || 'upload',
+      fixedInside: Boolean(prepared && prepared.fixedInside),
+      fixedSharp: Boolean(prepared && prepared.fixedSharp),
+      fixedStable: Boolean(prepared && prepared.fixedStable),
+      fixedReady: Boolean(prepared && prepared.fixedReady),
       fourCornersDetected: Boolean(prepared && (prepared.fourCornersDetected
         || prepared.detectedQuad && prepared.detectedQuad.length === 4)),
       detectedAspectRatio: Number(prepared && prepared.detectedAspectRatio) || 0,
@@ -397,6 +402,12 @@ function renderRecognitionFeatures(hints) {
     ['Titelquelle', hints.titleSource || identity.source || 'keine validierte Kopfzeile'],
     ['Official Validation', hints.officialValidationStatus || 'Nicht verfügbar'],
     ['CARD CROP · 4 Ecken', crop.fourCornersDetected ? 'JA' : 'NEIN'],
+    ['Frame-Modus', crop.frameMode === 'fixed' ? 'starr' : 'Upload'],
+    ['Karte im Zielrahmen', crop.fixedInside ? 'JA' : 'NEIN'],
+    ['Schärfe/Beleuchtung ausreichend', crop.fixedSharp ? 'JA' : 'NEIN'],
+    ['Bewegung gering', crop.fixedStable ? 'JA' : 'NEIN'],
+    ['Aufnahme bereit', crop.fixedReady ? 'JA' : 'NEIN'],
+    ['Finaler Crop erfolgreich', crop.perspectiveCorrected && !crop.fallbackUsed ? 'JA' : 'Original-Fallback'],
     ['CARD CROP · Aspect Ratio final', Number(crop.normalizedAspectRatio || 63 / 88).toFixed(3)],
     ['CARD CROP · Quellkontur', crop.detectedAspectRatio
       ? crop.detectedAspectRatio.toFixed(3) : 'nicht sicher'],
