@@ -1260,7 +1260,12 @@
       const key = norm(entry.value);
       return (!primaryName || key !== norm(primaryName)) && !ignoredAdditionalKeys.has(key);
     })).slice(0, 6);
-    const resolvedTitle = nonPokemonTitle.title || identityName || localizedPokemonTitle.value;
+    const fullFormLine = lineEntries.find(line => line.rotation === dominantRotation && line.region === 'TOP_HEADER'
+      && /^(?:Mega|Alola|Galar|Hisui|Paldea|Shiny)[- ]/i.test(line.text)
+      && !/entwickelt|evolves|copyright|nintendo|creatures|illus|©/i.test(line.text));
+    const fullFormTitle = fullFormLine ? fullFormLine.text
+      .replace(/\b(?:KP|HP)\s*\d+|\b\d+\s*(?:KP|HP)\b/gi, '').trim() : '';
+    const resolvedTitle = fullFormTitle || nonPokemonTitle.title || identityName || localizedPokemonTitle.value;
     const resolvedTitleIsLocalized = Boolean(localizedPokemonTitle.value)
       && resolvedTitle === localizedPokemonTitle.value;
 
@@ -2562,6 +2567,10 @@
   }
 
   function confidenceDecision(candidates) {
+    if (candidates && candidates[0] && candidates[0].similarOnly) return {
+      status: 'low', autoAccept: false, identityConfirmed: false, identityClear: false,
+      bestScore: Math.min(.39, candidates[0].confidence || 0), secondScore: 0, margin: 0, state: 'NO_RELIABLE_MATCH'
+    };
     if (!candidates || !candidates.length) {
       return {status: 'none', autoAccept: false, bestScore: 0, secondScore: 0, margin: 0,
         level: confidenceLevel(0), state: 'NO_RELIABLE_MATCH', identityConfirmed: false,
@@ -2677,6 +2686,7 @@
       const score = Number(candidate && (candidate.finalConfidence != null
         ? candidate.finalConfidence : candidate.confidence)) || 0;
       const details = candidate && candidate.matchDetails || {};
+      if (candidate && candidate.similarOnly) return true;
       if (score < 0.45 || candidate && candidate.hardRejected) return false;
       return details.collector === 'match'
         || Number(details.name != null ? details.name : details.title) >= 0.76

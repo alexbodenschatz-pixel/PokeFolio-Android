@@ -122,10 +122,10 @@ test('real local PAL hit never invokes the remote provider', async () => {
   const result=await harness.search(hints('Kwaks','206/193','PAL'));
   assert.equal(result.candidates[0].id,'sv02-206'); assert.equal(harness.calls(),0);
 });
-test('MEP catalog miss invokes fallback once and preserves explicit miss diagnostics', async () => {
+test('MEP catalog miss tries exact retrieval before broader fallback and preserves explicit miss diagnostics', async () => {
   const harness=searchHarness(index); const input=hints('Alola-Kokowei','094','MEP');
   const result=await harness.search(input);
-  assert.equal(harness.calls(),1); assert.equal(input.catalogMiss,true); assert.equal(input.remoteFallback,true);
+  assert.equal(harness.calls(),2); assert.equal(input.catalogMiss,true); assert.equal(input.remoteFallback,true);
   assert.equal(result.earlyExit,'');
 });
 test('a remote result is reused locally on the next scan', async () => {

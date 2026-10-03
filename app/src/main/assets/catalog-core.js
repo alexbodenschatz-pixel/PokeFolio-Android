@@ -66,12 +66,52 @@
     }
     return 1 - row[b.length] / Math.max(a.length, b.length);
   }
+  function parseName(value) {
+    const displayName = String(value || '').normalize('NFKC').replace(/[‐‑–—]/g, '-')
+      .replace(/\b(?:KP|HP)\s*\d+|\b\d+\s*(?:KP|HP)\b/gi, '').trim();
+    const prefix = displayName.match(/^(Mega|Alola|Galar|Hisui|Paldea|Shiny|M)(?:[- ]|(?=[A-ZÄÖÜ]))/i);
+    const suffix = displayName.match(/(?:[- ]|^)(VSTAR|VMAX|TAG TEAM|GX|EX|ex|V)(?=\s*(?:δ|Delta Species)?\s*$)/);
+    const delta = /δ|delta\s*species/i.test(displayName);
+    const basePokemon = displayName.replace(/^(Mega|Alola|Galar|Hisui|Paldea|Shiny|M)[- ]/i, '')
+      .replace(/[- ](?:VSTAR|VMAX|TAG TEAM|GX|EX|ex|V)(?=\s*(?:δ|Delta Species)?\s*$)/, '')
+      .replace(/δ|delta\s*species/gi, '').trim();
+    return {displayName, normalizedFullName: normalizeName(displayName), basePokemon,
+      variantPrefix: prefix ? prefix[1].toLowerCase().replace(/^m$/, 'mega') : '',
+      variantSuffix: suffix ? suffix[1] : '', delta};
+  }
+  function variantMismatch(query, candidate) {
+    const regional = new Set(['alola','galar','hisui','paldea']);
+    const prefixConflict = query.variantPrefix !== candidate.variantPrefix
+      && (query.variantPrefix || candidate.variantPrefix && !regional.has(candidate.variantPrefix));
+    return Boolean(prefixConflict || query.variantSuffix !== candidate.variantSuffix || query.delta !== candidate.delta);
+  }
+  function fullName(hints, manual) {
+    if (manual) return manual;
+    const top = String(hints.ocrByRegion?.top || '').split('\n').map(line => line.trim())
+      .filter(line => !/entwickelt|evolves|copyright|nintendo|creatures|game freak|illus|fähigkeit|ability|©/i.test(line));
+    const variantTitle = top.find(line => /^(?:Mega|Alola|Galar|Hisui|Paldea|Shiny)[- ]/i.test(line));
+    return variantTitle || hints.mainTitle || hints.nameHints?.[0]?.value || '';
+  }
+  function constrain(candidate) {
+    if (!candidate.similarOnly) return candidate;
+    return {...candidate, confidence: Math.min(.39, Number(candidate.confidence) || 0),
+      identificationScore: Math.min(.39, Number(candidate.identificationScore) || 0),
+      finalConfidence: Math.min(.39, Number(candidate.finalConfidence ?? candidate.confidence) || 0)};
+  }
+  function guardCandidate(card, hints) {
+    const f = features(hints);
+    const number = f.number.split('/')[0];
+    const wrongSet = f.set && canonicalSetId(card) !== 'pokemon:' + f.language + ':' + f.set;
+    const wrongNumber = number && normalizeNumber(card.number).split('/')[0] !== number;
+    const wrongVariant = f.name && variantMismatch(f.parsedName, parseName(card.name));
+    return constrain({...card, similarOnly: Boolean(card.similarOnly || wrongSet || wrongNumber || wrongVariant)});
+  }
   function features(hints, manual) {
     const collector = (hints.collectorNumbers || [])[0] || {};
     const footer = (hints.bottomRoiText || hints.bottomMetadataText || '')
       + '\n' + (hints.regionTexts && hints.regionTexts.BOTTOM_METADATA || '');
     const set = normalizeSet((hints.pokemonSetCodes || [])[0]?.value || hints.setCode || '');
-    return {name: normalizeName(manual || hints.mainTitle || hints.nameHints?.[0]?.value),
+    return {name: normalizeName(fullName(hints, manual)), parsedName: parseName(fullName(hints, manual)),
       number: normalizeNumber(collector.number || hints.pokemonNumber || ''),
       total: normalizeNumber(collector.total || ''), set: setId(set.code),
       code: set.code, language: set.language || hints.language || 'de', footer};
@@ -79,7 +119,7 @@
   class Index {
     constructor(cards = []) {
       this.cards = new Map(); this.byNumber = new Map(); this.byName = new Map();
-      this.bySetNumber = new Map(); this.bySet = new Map(); this.add(cards);
+      this.bySetNumber = new Map(); this.bySet = new Map(); this.byBaseName = new Map(); this.add(cards);
     }
     add(cards) {
       const put = (map, key, id) => { if (!key) return; if (!map.has(key)) map.set(key, new Set()); map.get(key).add(id); };
@@ -89,12 +129,13 @@
         const old = this.cards.get(id);
         if (old) {
           for (const [map, key] of [[this.byNumber, normalizeNumber(old.number).split('/')[0]],
-            [this.byName, normalizeName(old.name)], [this.bySet, canonicalSetId(old)],
+            [this.byName, normalizeName(old.name)], [this.byBaseName, normalizeName(parseName(old.name).basePokemon)], [this.bySet, canonicalSetId(old)],
             [this.bySetNumber, canonicalSetId(old) + ':' + normalizeNumber(old.number).split('/')[0]]]) map.get(key)?.delete(id);
         }
-        const merged = {...old, ...card}; this.cards.set(id, merged);
+        const merged = {...old, ...card, imageSmall: card.imageSmall || old?.imageSmall, imageLarge: card.imageLarge || old?.imageLarge}; this.cards.set(id, merged);
         const number = normalizeNumber(merged.number).split('/')[0];
         const set = canonicalSetId(merged);
+        put(this.byBaseName, normalizeName(parseName(merged.name).basePokemon), id);
         put(this.byNumber, number, id); put(this.byName, normalizeName(merged.name), id);
         put(this.bySet, set, id); put(this.bySetNumber, set + ':' + number, id);
       }
@@ -105,10 +146,13 @@
       const set = 'pokemon:' + f.language + ':' + f.set;
       const number = f.number.split('/')[0];
       const collect = matches => { for (const id of matches || []) ids.add(id); };
-      if (f.set && number) collect(this.bySetNumber.get(set + ':' + number));
-      if (number) collect(this.byNumber.get(number));
-      if (f.name) {
+      const exactIds = f.set && number ? this.bySetNumber.get(set + ':' + number) : null;
+      const exactCount = exactIds?.size || 0;
+      if (exactCount) collect(exactIds);
+      if (!exactCount && number) collect(this.byNumber.get(number));
+      if (!exactCount && f.name) {
         collect(this.byName.get(f.name));
+        collect(this.byBaseName.get(normalizeName(f.parsedName.basePokemon)));
         // Fuzzy work visits unique names, never the entire card catalog.
         const exactName = this.byName.has(f.name);
         for (const [name, matches] of this.byName) {
@@ -127,13 +171,21 @@
         const title = similarity(f.name, card.name);
         const total = !f.total || !card.printedTotal || normalizeNumber(card.printedTotal) === f.total;
         const exact = n && s && total;
+        const form = parseName(card.name);
+        const variantConflict = !!f.name && variantMismatch(f.parsedName, form);
+        const baseScore = similarity(f.parsedName.basePokemon, form.basePokemon);
+        const contradictions = [f.set && !s ? 'SET' : '', number && !n ? 'NUMBER' : '',
+          !total ? 'TOTAL' : '', variantConflict ? 'VARIANT' : ''].filter(Boolean);
+        const similarOnly = contradictions.length > 0;
         let score = exact ? (title >= .70 ? .98 : f.name ? .78 : .94)
           : n && title >= .70 && total ? .90 : title >= .70 ? .55 + .18 * title : n ? .32 : 0;
-        if (!score) continue;
+        if (similarOnly) score = Math.max(0, Math.min(.39, Math.max(score, baseScore >= .70 ? .25 + baseScore * .14 : 0)) - (variantConflict ? .12 : 0) - (number && !n ? .02 : 0));
+        if (!score || !exact && title < .50 && baseScore < .70) continue;
         const stage = exact ? 'set+number' : n && title >= .70 ? 'name+number' : title >= .70 ? 'name' : 'number';
         ranked.push({...card, confidence: score, identificationScore: score,
-          localMatchStage: stage, matchDetails: {collector: n ? 'match' : 'unknown',
-            set: s ? 'match' : 'unknown', name: title, hp: 'unknown'}, localCatalog: true});
+          localMatchStage: stage, similarOnly, identityContradictions: contradictions, parsedName: form,
+          matchDetails: {collector: n ? 'match' : number ? 'mismatch' : 'unknown',
+            set: s ? 'match' : f.set ? 'mismatch' : 'unknown', variant: variantConflict ? 'mismatch' : 'match', name: title, hp: 'unknown'}, localCatalog: true});
       }
       ranked.sort((a,b) => b.confidence - a.confidence);
       const unique = new Map();
@@ -142,9 +194,9 @@
         if (!unique.has(key)) unique.set(key, card);
       }
       const candidates = [...unique.values()].slice(0, 80);
-      return {candidates, lookupMs, rankingMs: performance.now() - rankingStarted, features: f, stage: candidates[0]?.localMatchStage || 'catalog-miss',
+      return {candidates, exactCount, fuzzyCount: exactCount ? 0 : candidates.length, lookupMs, rankingMs: performance.now() - rankingStarted, features: f, stage: candidates[0]?.localMatchStage || 'catalog-miss',
         strong: candidates[0]?.confidence >= .94 && (!candidates[1] || candidates[0].confidence - candidates[1].confidence >= .06)};
     }
   }
-  return {Index, normalizeName, normalizeNumber, normalizeSet, setId, registerSets, canonicalSetId, features, similarity};
+  return {Index, normalizeName, normalizeNumber, normalizeSet, setId, registerSets, canonicalSetId, features, similarity, parseName, fullName, variantMismatch, constrain, guardCandidate};
 });

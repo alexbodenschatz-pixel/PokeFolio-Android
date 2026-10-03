@@ -46,7 +46,7 @@ test('zeigt die getrennte Begründung für Name, Nummer, Artwork, KP und Set', (
   assert.match(app, /<span>Attacke<\/span>/);
   assert.match(app, /<span>Schaden<\/span>/);
   assert.match(app, /<span>Sprache<\/span>/);
-  assert.match(app, /% Kartenidentität/);
+  assert.match(app, /Kartenidentität/);
   assert.match(app, /Druckvariante/);
   assert.match(app, />Identität<\/span>/);
   assert.match(app, />Druckvariante<\/span>/);

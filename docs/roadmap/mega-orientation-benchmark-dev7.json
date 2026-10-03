@@ -1,0 +1,78 @@
+{
+  "environment": "Windows Node v24.19.0",
+  "runs": 200,
+  "warmup": 20,
+  "scope": "Local index + ranking only, not Android or OCR",
+  "result": [
+    {
+      "name": "Mega-Dragoran ex",
+      "number": "091",
+      "set": "MEP",
+      "exactCount": 0,
+      "candidates": 41,
+      "artworkUrls": 28,
+      "top5": [
+        {
+          "id": "me02.5-152",
+          "name": "Mega-Dragoran-ex",
+          "score": 0.37,
+          "similarOnly": true,
+          "artwork": true
+        },
+        {
+          "id": "me02.5-271",
+          "name": "Mega-Dragoran-ex",
+          "score": 0.37,
+          "similarOnly": true,
+          "artwork": true
+        },
+        {
+          "id": "me02.5-290",
+          "name": "Mega-Dragoran-ex",
+          "score": 0.37,
+          "similarOnly": true,
+          "artwork": true
+        },
+        {
+          "id": "me02.5-295",
+          "name": "Mega-Dragoran-ex",
+          "score": 0.37,
+          "similarOnly": true,
+          "artwork": true
+        },
+        {
+          "id": "ex15-91",
+          "name": "Dragoran-ex δ",
+          "score": 0.27,
+          "similarOnly": true,
+          "artwork": false
+        }
+      ],
+      "medianMs": 0.8352999999999611,
+      "minMs": 0.8010000000000161,
+      "maxMs": 1.203000000000003,
+      "p95Ms": 1.0214000000000283
+    },
+    {
+      "name": "Moruda",
+      "number": "039",
+      "set": "PBL",
+      "exactCount": 1,
+      "candidates": 1,
+      "artworkUrls": 1,
+      "top5": [
+        {
+          "id": "me05-039",
+          "name": "Moruda",
+          "score": 0.98,
+          "similarOnly": false,
+          "artwork": true
+        }
+      ],
+      "medianMs": 0.008699999999976171,
+      "minMs": 0.006900000000030104,
+      "maxMs": 0.06439999999997781,
+      "p95Ms": 0.012099999999975353
+    }
+  ]
+}

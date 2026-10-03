@@ -45,11 +45,20 @@
     };
   }
 
+  function normalizeImageUrl(value, large) {
+    if (typeof value !== 'string' || !/^https:\/\//i.test(value)) return '';
+    const url = value.replace(/\/$/, '');
+    if (/^https:\/\/assets\.tcgdex\.net\//i.test(url) && !/\.(?:png|webp|jpe?g|avif)(?:[?#]|$)/i.test(url))
+      return url + (large ? '/high.webp' : '/low.webp');
+    return url;
+  }
   function imageUrls(candidate, preferLarge = false) {
-    const urls = preferLarge
-      ? [candidate && candidate.imageLarge, candidate && candidate.imageSmall]
-      : [candidate && candidate.imageSmall, candidate && candidate.imageLarge];
-    return [...new Set(urls.filter(value => typeof value === 'string' && /^https:\/\//i.test(value)))];
+    const card = candidate || {};
+    const small = card.imageSmall || card.images?.small || card.image;
+    const large = card.imageLarge || card.images?.large || card.image;
+    const urls = preferLarge ? [normalizeImageUrl(large, true), normalizeImageUrl(small, false)]
+      : [normalizeImageUrl(small, false), normalizeImageUrl(large, true)];
+    return [...new Set(urls.filter(Boolean))];
   }
 
   async function compareWithFallback(candidate, compare, preferLarge = false) {
@@ -61,5 +70,5 @@
     throw lastError || new Error('Kein Referenzbild verfügbar.');
   }
 
-  return {normalizeLanguage, languagePriority, selectLocalizedImage, imageUrls, compareWithFallback};
+  return {normalizeLanguage, languagePriority, selectLocalizedImage, normalizeImageUrl, imageUrls, compareWithFallback};
 });

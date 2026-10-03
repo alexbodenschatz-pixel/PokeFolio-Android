@@ -335,7 +335,9 @@ function setRecState(kind, title, text) {
   $('#recognitionText').textContent = text || '';
 }
 
+let displayedRecognitionHints = null;
 function renderRecognitionFeatures(hints) {
+  displayedRecognitionHints = hints;
   const details = $('#recognitionFeatures');
   const list = $('#recognitionFeatureList');
   if (!hints) {
@@ -356,7 +358,15 @@ function renderRecognitionFeatures(hints) {
   ];
   const rows = [
     ['Frame Crop', crop.method === 'fixed-frame-camerax' ? 'OK · CameraX' : crop.method || 'Upload'],
-    ['Normalized Name', hints.normalizedName || 'noch offen'],
+    ['Raw Name', hints.ocrByRegion?.top || ''],
+    ['Normalized Full Name', hints.parsedFullName?.normalizedFullName || hints.normalizedName || ''],
+    ['Base Pokémon', hints.parsedFullName?.basePokemon || ''],
+    ['Variant Prefix', hints.parsedFullName?.variantPrefix || 'keiner'],
+    ['Variant Suffix', hints.parsedFullName?.variantSuffix || 'keiner'],
+    ['Exact Set+Number Candidates', hints.exactSetNumberCandidates ?? 'offen'],
+    ['Fuzzy Name Candidates', hints.fuzzyNameCandidates ?? 'offen'],
+    ['Artwork URL', candidates.some(card => card.imageSmall || card.imageLarge) ? 'vorhanden' : 'nicht vorhanden'],
+    ['Artwork Loaded', candidates.some(card => card.artworkLoaded) ? 'JA' : 'NEIN'],
     ['Local candidates', hints.localCandidates == null ? 'noch offen' : hints.localCandidates],
     ['Lokaler Katalog', `${hints.catalogSetCount || 0} Sets · ${hints.catalogSize || 0} deutsche Karten`],
     ['Catalog-Miss', hints.catalogMiss ? 'JA · gedruckte Identität fehlt' : 'NEIN'],
@@ -2066,6 +2076,10 @@ async function pokemonSearch(hints, manual = '', runToken) {
   if (knownCards.length) await index.add(knownCards);
   const local = await index.lookup(query, manual);
   hints.normalizedName = local.features.name;
+  hints.parsedFullName = local.features.parsedName;
+  hints.mainTitle = local.features.parsedName.displayName || hints.mainTitle;
+  hints.exactSetNumberCandidates = local.exactCount;
+  hints.fuzzyNameCandidates = local.fuzzyCount;
   hints.localCandidates = local.candidates.length;
   hints.matchStage = local.stage;
   hints.remoteFallback = false;
@@ -2080,7 +2094,7 @@ async function pokemonSearch(hints, manual = '', runToken) {
     status: emptyLookupStatus()});
   if (local.candidates.some(card => card.confidence >= .70) && !hints.catalogMiss) return result(local.candidates);
   hints.remoteFallback = true;
-  if (hints.catalogMiss) setRecState('busy', 'Karte erkannt, Datensatz im lokalen Katalog nicht vorhanden',
+  if (hints.catalogMiss) setRecState('busy', `Karte erkannt – Datensatz ${local.features.code} ${local.features.number.padStart(3, '0')} im lokalen Katalog nicht vorhanden`,
     'Prüfe die vorhandene Online-Datenquelle. Erkannte Merkmale bleiben erhalten.');
   const remoteStarted = performance.now();
   if (language !== 'de') {
@@ -2095,6 +2109,20 @@ async function pokemonSearch(hints, manual = '', runToken) {
   const number = f.number.split('/')[0];
   if (providerSet && number) {
     for (const n of new Set([number, number.padStart(3, '0')])) urls.add('https://api.tcgdex.net/v2/de/cards/' + providerSet.id + '-' + n);
+  }
+  if (urls.size) {
+    const exactStatus = await Api.settleSearchVariants([...urls], nativeGetOnce, {attempts: 1, logger: message => console.warn(message)});
+    const exactCards = exactStatus.values.filter(response => response.value?.id).map(response => pokemonCardFromTcgdex(response.value, 'de'));
+    if (exactCards.length) {
+      await cachePokemonCards(exactCards);
+      const exact = await index.lookup(query, manual);
+      hints.catalogMiss = !exact.exactCount; hints.exactSetNumberCandidates = exact.exactCount;
+      hints.matchStage = exact.stage;
+      if (hints.recognitionPerformance) hints.recognitionPerformance.remoteMs = performance.now() - remoteStarted;
+      return {...result(exact.candidates), earlyExit: exact.strong ? 'REMOTE_SET_NUMBER' : '',
+        status: {primarySource: 'tcgdex-de', primary: exactStatus, fallback: emptyLookupStatus().fallback}};
+    }
+    urls.clear();
   }
   const title = manual || hints.mainTitle || hints.nameHints?.[0]?.value || '';
   if (title) urls.add('https://api.tcgdex.net/v2/de/cards?name=' + encodeURIComponent(title));
@@ -2546,7 +2574,11 @@ async function enrichWithVisualSimilarity(list, preparedCard, runToken) {
   // structured candidate pool, then only the strongest Top-K receive a detailed image pass.
   // Same-name cards often number in the dozens. Comparing only the first API page fragment
   // made the correct rare artwork unreachable and produced identical text-only scores.
-  const visualLimit = Math.min(80, list.length);
+  const allCandidates = list;
+  list = list.filter(card => !card.similarOnly && ((card.matchDetails?.collector === 'match'
+    && card.matchDetails?.set === 'match') || Number(card.identificationScore || card.confidence) >= .85)).slice(0, 3);
+  if (!list.length) return allCandidates;
+  const visualLimit = list.length;
   let consecutiveFailures = 0;
   const coarse = await mapWithConcurrency(list.slice(0, visualLimit), 4, async candidate => {
     if (runToken !== undefined && runToken !== recognitionRun) return candidate;
@@ -2583,7 +2615,7 @@ async function enrichWithVisualSimilarity(list, preparedCard, runToken) {
       return candidate;
     }
   });
-  return Recognition.deduplicateCandidates(detailed)
+  return Recognition.deduplicateCandidates(detailed.concat(allCandidates.filter(card => !list.some(selected => selected.id === card.id))))
     .sort((left, right) => (right.identificationScore || right.confidence || 0)
       - (left.identificationScore || left.confidence || 0));
 }
@@ -2703,6 +2735,38 @@ function candidateBreakdown(candidate) {
   </details>`;
 }
 
+const artworkHydration = new Map();
+async function hydrateCandidateArtwork(candidate, run) {
+  if (candidate.similarOnly || candidate.imageSmall || candidate.imageLarge || !candidate.localCatalog) return;
+  const key = (candidate.language || 'de') + ':' + candidate.id;
+  if (artworkHydration.has(key)) return;
+  artworkHydration.set(key, true);
+  const id = String(candidate.id).replace(/^tcgdex:/, '');
+  if (!/^[a-zA-Z0-9.-]+$/.test(id)) return;
+  try {
+    for (const language of [...new Set([candidate.language || 'de', 'en'])]) {
+      const detail = await nativeGetOnce('https://api.tcgdex.net/v2/' + language + '/cards/' + encodeURIComponent(id));
+      if (!detail.image) continue;
+      candidate.imageSmall = tcgdexImageUrl(detail.image, 'low');
+      candidate.imageLarge = tcgdexImageUrl(detail.image, 'high');
+      candidate.imageLanguage = language;
+      candidate.referenceLanguageFallback = language !== candidate.language;
+      candidate.rarity = candidate.rarity || detail.rarity || '';
+      await cachePokemonCards([candidate]);
+      if (run === recognitionRun && candidates.includes(candidate)) renderCandidates(false);
+      return;
+    }
+  } catch (error) { console.warn('Optionales Referenzbild nicht verfügbar', candidate.id, error.message); }
+}
+window.candidateImageLoaded = image => {
+  const card = candidates.find(card => String(card.id) === image.dataset.cardId);
+  if (card) card.artworkLoaded = true;
+  image.hidden = false;
+  const placeholder = image.parentElement?.querySelector('.candidate-image-placeholder');
+  if (placeholder) placeholder.classList.remove('visible');
+  if (displayedRecognitionHints) renderRecognitionFeatures(displayedRecognitionHints);
+};
+
 function renderCandidates(showEmpty = false) {
   const box = $('#candidateList');
   const comparison = $('#matchComparison');
@@ -2717,16 +2781,17 @@ function renderCandidates(showEmpty = false) {
   }
 
   const shown = candidates.slice(0, 5);
+  shown.filter(card => !card.similarOnly).slice(0, 3).forEach(card => { void hydrateCandidateArtwork(card, recognitionRun); });
   candidateFocusIndex = clamp(candidateFocusIndex, 0, shown.length - 1);
   const focused = shown[candidateFocusIndex];
   const decision = Recognition.confidenceDecision(candidates);
-  const confident = decision.identityConfirmed;
+  const confident = decision.identityConfirmed && !focused.similarOnly;
   const plausible = Recognition.hasPlausibleCandidate(candidates);
   empty.hidden = true;
   comparison.hidden = false;
   $('#scanReference').hidden = !previewUrls.has('front');
   if (previewUrls.has('front')) $('#comparisonScanImg').src = previewUrls.get('front');
-  const focusedImage = focused.imageLarge || focused.imageSmall || '';
+  const focusedImage = PokeReference.imageUrls(focused, true)[0] || '';
   const focusedImageLanguage = focused.imageLanguage ? languageLabel(focused.imageLanguage) : '';
   $('#comparisonHeadline').textContent = `${focused.name || 'Karte'}${focused.number ? ' · ' + focused.number : ''}`;
   $('#bestReferenceImg').hidden = !focusedImage;
@@ -2734,14 +2799,16 @@ function renderCandidates(showEmpty = false) {
   if (focusedImage) {
     $('#bestReferenceImg').dataset.referenceUrls = JSON.stringify(PokeReference.imageUrls(focused, true).slice(1));
     $('#bestReferenceImg').onerror = () => window.candidateImageFailed($('#bestReferenceImg'));
+    $('#bestReferenceImg').dataset.cardId = String(focused.id);
+    $('#bestReferenceImg').onload = () => window.candidateImageLoaded($('#bestReferenceImg'));
     $('#bestReferenceImg').src = focusedImage;
   }
   $('#bestReferenceLanguage').textContent = focused.referenceLanguageFallback
     ? `Referenzbild: ${focusedImageLanguage || 'andere Sprache'}`
-    : focusedImageLanguage ? `Referenzbild: ${focusedImageLanguage}` : 'Kein Referenzbild verfügbar';
-  $('#matchesTitle').textContent = decision.state === Variants.STATES.IDENTITY_CONFIRMED_VARIANT_UNCERTAIN
+    : focusedImageLanguage ? `Referenzbild: ${focusedImageLanguage}` : 'Referenzbild derzeit nicht verfügbar';
+  $('#matchesTitle').textContent = shown.every(card => card.similarOnly) ? 'Ähnliche Karten' : decision.state === Variants.STATES.IDENTITY_CONFIRMED_VARIANT_UNCERTAIN
     ? 'Karte erkannt – Variante noch nicht eindeutig'
-    : confident ? 'Karte erkannt'
+    : confident ? 'Passende Karten'
     : plausible ? 'Mögliche Treffer' : 'Keine eindeutige Karte gefunden';
   $('#matchesSubtitle').textContent = decision.state === Variants.STATES.IDENTITY_CONFIRMED_VARIANT_UNCERTAIN
     ? 'Identität stimmt; bitte nur noch die Druckvariante auswählen'
@@ -2764,19 +2831,21 @@ function renderCandidates(showEmpty = false) {
     ? '<span class="official-validation">✓ Kartendaten offiziell bestätigt</span>' : '';
   const strip = shown.map((candidate, index) => {
     const confidence = Math.round(clamp(Number(candidate.identificationScore) || Number(candidate.confidence) || 0, 0, 1) * 100);
-    const imageUrl = candidate.imageSmall || candidate.imageLarge || '';
+    const imageUrl = PokeReference.imageUrls(candidate)[0] || '';
     const confidenceClass = confidence >= 80 ? 'strong' : confidence >= 65 ? 'possible' : 'uncertain';
-    return `<button type="button" class="candidate-thumb ${confidenceClass}${index === candidateFocusIndex ? ' active' : ''}" onclick="focusCandidate(${index})" aria-label="${esc(candidate.name)} mit ${confidence} Prozent anzeigen">
-      <span><span class="candidate-image-placeholder${imageUrl ? '' : ' visible'}"><b>Kartenbild</b><small>nicht verfügbar</small></span>${imageUrl ? `<img loading="lazy" decoding="async" src="${esc(imageUrl)}" data-reference-urls="${esc(JSON.stringify(PokeReference.imageUrls(candidate).slice(1)))}" alt="${esc(candidate.name)}" onerror="candidateImageFailed(this)">` : ''}</span>
+    const groupLabel = index === 0 || Boolean(candidate.similarOnly) !== Boolean(shown[index-1].similarOnly)
+      ? `<b class="candidate-group-label">${candidate.similarOnly ? 'Ähnliche Karten' : 'Passende Karten'}</b>` : '';
+    return `${groupLabel}<button type="button" class="candidate-thumb ${confidenceClass}${index === candidateFocusIndex ? ' active' : ''}" onclick="focusCandidate(${index})" aria-label="${esc(candidate.name)} mit ${confidence} Prozent anzeigen">
+      <span><span class="candidate-image-placeholder${imageUrl ? '' : ' visible'}"><b>Kartenbild</b><small>nicht verfügbar</small></span>${imageUrl ? `<img loading="lazy" decoding="async" src="${esc(imageUrl)}" data-reference-urls="${esc(JSON.stringify(PokeReference.imageUrls(candidate).slice(1)))}" alt="${esc(candidate.name)}" data-card-id="${esc(candidate.id)}" onload="candidateImageLoaded(this)" onerror="candidateImageFailed(this)">` : ''}</span>
       <b>${esc(candidate.name || 'Unbekannt')}</b><small>${confidence} %</small>
     </button>`;
   }).join('');
   box.innerHTML = `<div class="candidate-strip" role="list">${strip}</div>
     <article class="candidate-card candidate-primary${focusedConfidence >= 80 ? ' high-confidence' : ''}${focusedSelected ? ' selected' : ''}">
       <div class="candidate-content">
-        <div class="candidate-title"><span class="best-badge">${candidateFocusIndex === 0 && confident ? 'Bester Treffer' : 'Möglicher Treffer'}</span><b>${esc(focused.name || 'Unbekannte Karte')}</b><small>${esc(focused.set || 'Set unbekannt')}</small></div>
+        <div class="candidate-title"><span class="best-badge">${focused.similarOnly ? 'Ähnliche Karte' : candidateFocusIndex === 0 && confident ? 'Bester Treffer' : 'Möglicher Treffer'}</span><b>${esc(focused.name || 'Unbekannte Karte')}</b><small>${esc(focused.set || 'Set unbekannt')}</small></div>
         <dl class="candidate-meta"><div><dt>Nummer</dt><dd>${esc(focused.number || '–')}</dd></div><div><dt>Sprache</dt><dd>${esc(languageLabel(focused.language))}</dd></div><div><dt>Variante</dt><dd>${esc(Collection.variantLabel(focused.printingVariant || 'unknown'))}</dd></div><div><dt>Raw-Preis</dt><dd>${price}</dd></div></dl>
-        <b class="confidence-label ${esc(focusedLevel.key)}">${focusedConfidence} % Kartenidentität · ${esc(focusedLevel.label)}</b>
+        <b class="confidence-label ${esc(focusedLevel.key)}">${focusedConfidence} % ${focused.similarOnly ? 'Ähnlichkeit' : 'Kartenidentität'} · ${esc(focusedLevel.label)}</b>
         <div class="confidence-track" aria-label="Trefferwahrscheinlichkeit ${focusedConfidence} Prozent"><span style="width:${focusedConfidence}%"></span></div>
         ${focused.tcg === 'pokemon' ? candidateBreakdown(focused) : ''}
         <div class="candidate-reasons">${reasons || '<span>Bild und Kartendaten prüfen</span>'}</div>
@@ -3860,7 +3929,7 @@ async function runRecognition(manual = false) {
       hints.recognitionPerformance.firstResultMs = normalizedCapture && normalizedCapture.captureStartedEpochMs
         ? Date.now() - normalizedCapture.captureStartedEpochMs : performance.now() - recognitionStartedAt;
       renderRecognitionFeatures(hints);
-      setRecState('busy', hints.catalogMiss ? 'Karte erkannt, Datensatz im lokalen Katalog nicht vorhanden' : 'Kandidaten gefunden',
+      setRecState('busy', hints.catalogMiss ? `Karte erkannt – Datensatz ${hints.pokemonSetCodes?.[0]?.value || ''} ${String(hints.collectorNumbers?.[0]?.number || '').padStart(3,'0')} im lokalen Katalog nicht vorhanden` : 'Kandidaten gefunden',
         hints.catalogMiss ? 'Andere Ausgaben als mögliche Treffer; die gelesene Set-/Nummerkombination fehlt.' : 'Name, Set und Nummer sind verfügbar.');
     }
     if (run !== recognitionRun) return null;
@@ -3944,16 +4013,8 @@ async function runRecognition(manual = false) {
       : (lookup.candidates || []).length;
     if (run !== recognitionRun) return null;
     let foundCandidates = mergeLocalOfflineCandidates(lookup.candidates, learningScan);
-    if (!hasExactStructuredIdentity(kind, foundCandidates, lookup)
-      && foundCandidates.some(candidate => candidate.imageSmall || candidate.imageLarge)) {
-      setRecState('busy', 'Vergleiche Kartenbilder …', 'Artwork und Bildstruktur werden lokal mit den besten Treffern abgeglichen.');
-      const artworkStartedAt = performance.now();
-      foundCandidates = await enrichWithVisualSimilarity(foundCandidates, prepared, run);
-      hints.recognitionPerformance.artworkMs = performance.now() - artworkStartedAt;
-      hints.recognitionPerformance.artworkFallbackMs = hints.recognitionPerformance.artworkMs;
-      if (run !== recognitionRun) return null;
-    }
     foundCandidates = applyLocalLearning(foundCandidates, learningScan);
+    if (kind === 'pokemon') foundCandidates = foundCandidates.map(card => PokeCatalog.guardCandidate(card, hints));
     foundCandidates = resolveCandidateVariants(foundCandidates);
     if (kind === 'pokemon') foundCandidates = Recognition.filterPlausibleCandidates(foundCandidates);
     else if (kind === 'yugioh') foundCandidates = Recognition.rankYuGiOhCandidates(foundCandidates, hints, '', 7)
@@ -3988,6 +4049,15 @@ async function runRecognition(manual = false) {
     candidateFocusIndex = 0;
     recordScanHistory(candidates.length ? 'MATCHES' : 'NO_MATCH', candidates[0], hints);
     renderCandidates(!candidates.length);
+    if (kind === 'pokemon' && candidates.some(card => !card.similarOnly)) {
+      const textCandidates = candidates;
+      enrichWithVisualSimilarity(textCandidates, prepared, run).then(updated => {
+        if (run !== recognitionRun || candidates !== textCandidates) return;
+        candidates = textCandidates.map(card => PokeCatalog.guardCandidate(updated.find(item => item.id === card.id) || card, hints));
+        hints.bestArtworkScore = candidates[0]?.artworkScore ?? null;
+        renderCandidates(false); renderRecognitionFeatures(hints);
+      }).catch(error => console.warn('Optionaler Bildvergleich', error.message));
+    }
 
     if (!candidates.length) {
       recognition = null;
@@ -4004,7 +4074,7 @@ async function runRecognition(manual = false) {
         || 'keine eindeutigen Merkmale';
       setRecState(
         'warn',
-        hints.catalogMiss ? 'Karte erkannt, Datensatz im lokalen Katalog nicht vorhanden' : 'Keine passenden Kartenkandidaten gefunden',
+        hints.catalogMiss ? `Karte erkannt – Datensatz ${hints.pokemonSetCodes?.[0]?.value || ''} ${String(hints.collectorNumbers?.[0]?.number || '').padStart(3,'0')} im lokalen Katalog nicht vorhanden` : 'Keine passenden Kartenkandidaten gefunden',
         `Gelesen: ${hint}. Starte die Erkennung erneut, nimm ein neues Bild auf oder gib den Namen manuell ein.`
       );
       return null;
@@ -4013,7 +4083,7 @@ async function runRecognition(manual = false) {
     const best = candidates[0];
     if (hints.catalogMiss) {
       recognition = null;
-      setRecState('warn', 'Karte erkannt, Datensatz im lokalen Katalog nicht vorhanden',
+      setRecState('warn', `Karte erkannt – Datensatz ${hints.pokemonSetCodes?.[0]?.value || ''} ${String(hints.collectorNumbers?.[0]?.number || '').padStart(3,'0')} im lokalen Katalog nicht vorhanden`,
         'Die gelesene Kombination aus Name, Set und Nummer fehlt auch nach dem Online-Lookup. Andere Ausgaben sind nur mögliche Alternativen.');
       return best;
     }
@@ -4093,6 +4163,7 @@ $('#manualSearch').onclick = async () => {
       if (run !== recognitionRun) return;
     }
     foundCandidates = applyLocalLearning(foundCandidates, learningScan);
+    if (kind === 'pokemon') foundCandidates = foundCandidates.map(card => PokeCatalog.guardCandidate(card, hints));
     foundCandidates = resolveCandidateVariants(foundCandidates);
     candidates = kind === 'pokemon' ? Recognition.filterPlausibleCandidates(foundCandidates)
       : kind === 'yugioh' ? Recognition.rankYuGiOhCandidates(foundCandidates, hints, query, 7)

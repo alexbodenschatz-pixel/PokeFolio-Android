@@ -150,7 +150,7 @@ public final class MainActivity extends Activity {
         settings.setSupportMultipleWindows(false);
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
         settings.setMediaPlaybackRequiresUserGesture(false);
-        settings.setUserAgentString(settings.getUserAgentString() + " PokeFolio/0.17.0-dev6");
+        settings.setUserAgentString(settings.getUserAgentString() + " PokeFolio/0.17.0-dev7");
 
         webView.addJavascriptInterface(new NativeBridge(), "PokeNative");
         webView.setWebViewClient(new WebViewClient() {
@@ -158,6 +158,26 @@ public final class MainActivity extends Activity {
             public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
                 applyWebViewSafeArea();
+            }
+
+            @Override
+            public android.webkit.WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+                Uri uri = request.getUrl();
+                if (!"https".equalsIgnoreCase(uri.getScheme()) || uri.getHost() == null
+                        || !allowedImageHosts.contains(uri.getHost().toLowerCase(Locale.ROOT))
+                        || !String.valueOf(uri.getPath()).matches("(?i).*\\.(?:png|jpe?g|webp|avif)$")) return null;
+                Bitmap bitmap = null;
+                try {
+                    bitmap = downloadReferenceBitmap(uri.toString());
+                    ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+                    bitmap.compress(Bitmap.CompressFormat.PNG, 100, bytes);
+                    return new android.webkit.WebResourceResponse("image/png", null,
+                            new java.io.ByteArrayInputStream(bytes.toByteArray()));
+                } catch (Exception error) {
+                    android.webkit.WebResourceResponse response = new android.webkit.WebResourceResponse("image/png", null,
+                            new java.io.ByteArrayInputStream(new byte[0]));
+                    response.setStatusCodeAndReasonPhrase(404, "Artwork unavailable"); return response;
+                } finally { if (bitmap != null) bitmap.recycle(); }
             }
 
             @Override
@@ -647,6 +667,45 @@ public final class MainActivity extends Activity {
     }
 
     private Bitmap downloadReferenceBitmap(String urlString) throws IOException {
+        URL checked = new URL(urlString);
+        if (!"https".equalsIgnoreCase(checked.getProtocol()) || !allowedImageHosts.contains(checked.getHost().toLowerCase(Locale.ROOT)))
+            throw new SecurityException("Nicht erlaubte Kartenbildquelle.");
+        synchronized (urlString.intern()) {
+            File directory = new File(getCacheDir(), "reference-artwork-v1");
+            if (!directory.exists()) directory.mkdirs();
+            String key;
+            try {
+                byte[] digest = java.security.MessageDigest.getInstance("SHA-256").digest(urlString.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                StringBuilder name = new StringBuilder(); for (byte b : digest) name.append(String.format(Locale.ROOT, "%02x", b & 255));
+                key = name.toString();
+            } catch (java.security.NoSuchAlgorithmException error) { throw new IOException(error); }
+            File cached = new File(directory, key + ".png");
+            if (cached.isFile()) {
+                Bitmap bitmap = BitmapFactory.decodeFile(cached.getAbsolutePath());
+                if (bitmap != null) { cached.setLastModified(System.currentTimeMillis()); return bitmap; }
+                cached.delete();
+            }
+            Bitmap bitmap = downloadReferenceBitmapUncached(urlString);
+            File temporary = new File(directory, key + ".tmp");
+            try {
+                try (java.io.FileOutputStream stream = new java.io.FileOutputStream(temporary)) {
+                    if (!bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)) throw new IOException("Artwork cache encoding failed");
+                }
+                if (!temporary.renameTo(cached)) temporary.delete();
+                File[] files = directory.listFiles((dir, name) -> name.endsWith(".png"));
+                if (files != null) {
+                    Arrays.sort(files, java.util.Comparator.comparingLong(File::lastModified));
+                    long size = 0; for (File file : files) size += file.length();
+                    for (int i = 0; i < files.length && (files.length - i > 200 || size > 96L * 1024 * 1024); i++) {
+                        long removed = files[i].length(); if (files[i].delete()) size -= removed;
+                    }
+                }
+            } catch (IOException error) { temporary.delete(); Log.w(TAG, "Optional artwork cache unavailable", error); }
+            return bitmap;
+        }
+    }
+
+    private Bitmap downloadReferenceBitmapUncached(String urlString) throws IOException {
         URL url = new URL(urlString);
         String host = url.getHost().toLowerCase(Locale.US);
         if (!"https".equalsIgnoreCase(url.getProtocol()) || !allowedImageHosts.contains(host)) {
@@ -659,7 +718,7 @@ public final class MainActivity extends Activity {
             connection.setReadTimeout(8000);
             connection.setInstanceFollowRedirects(false);
             connection.setRequestProperty("Accept", "image/avif,image/webp,image/*");
-            connection.setRequestProperty("User-Agent", "PokeFolio/0.17.0-dev6 Android");
+            connection.setRequestProperty("User-Agent", "PokeFolio/0.17.0-dev7 Android");
             int status = connection.getResponseCode();
             if (status < 200 || status >= 300) {
                 throw new IOException("Kartenbild HTTP " + status);
@@ -757,6 +816,15 @@ public final class MainActivity extends Activity {
             if ("PRIMARY_IDENTIFIER".equals(mode) && ("pokemon".equals(profile) || "auto".equals(profile))) {
                 recognizeFastNameBottom(requestId, output, bitmap, ocrLanguage, recognitionStarted);
                 bitmap = null;
+                return;
+            }
+
+            if ("FULL".equals(mode) && ("pokemon".equals(profile) || "auto".equals(profile))) {
+                List<CardImageProcessor.OcrVariant> followup = CardImageProcessor.createProfileOcrVariants(bitmap, 0, profile, ocrLanguage);
+                bitmap.recycle(); bitmap = null;
+                output.put("orientationConfident", false); output.put("orientationSource", "EXIF");
+                recognizeVariant(requestId, output, createTextRecognizer(ocrLanguage), followup, 0,
+                        new JSONArray(), new LinkedHashSet<>(), System.nanoTime(), recognitionStarted, 0, 0f);
                 return;
             }
 
@@ -1047,8 +1115,11 @@ public final class MainActivity extends Activity {
 
     private void recognizeFastNameBottom(String requestId, JSONObject output, Bitmap source,
                                          String language, long started) throws Exception {
+        recognizeFastNameBottom(requestId, output, source, language, started, 0, null);
+    }
+    private void recognizeFastNameBottom(String requestId, JSONObject output, Bitmap source,
+                                         String language, long started, int rotation, JSONObject baseline) throws Exception {
         List<CardImageProcessor.OcrVariant> variants = CardImageProcessor.createFastNameBottomVariants(source);
-        source.recycle();
         TextRecognizer nameRecognizer = createTextRecognizer(language);
         TextRecognizer bottomRecognizer = createTextRecognizer(language);
         long ocrStarted = System.nanoTime();
@@ -1066,7 +1137,7 @@ public final class MainActivity extends Activity {
                 for (int i = 0; i < 2; i++) {
                     CardImageProcessor.OcrVariant variant = variants.get(i);
                     JSONObject pass = new JSONObject();
-                    pass.put("variant", variant.name); pass.put("region", variant.region);
+                    pass.put("variant", variant.name.replace("-0", "-" + rotation)); pass.put("region", variant.region);
                     pass.put("width", variant.bitmap.getWidth()); pass.put("height", variant.bitmap.getHeight());
                     JSONArray lines = new JSONArray();
                     if (tasks.get(i).isSuccessful()) {
@@ -1088,8 +1159,23 @@ public final class MainActivity extends Activity {
                 }
                 output.put("requestId", requestId); output.put("ok", true);
                 output.put("passes", passes); output.put("text", fullText.toString());
-                output.put("orientation", 0); output.put("orientationConfident", false);
-                output.put("orientationSource", "Sensor/EXIF"); output.put("orientationMs", 0);
+                String topText = passes.getJSONObject(0).optString("text");
+                String bottomText = passes.getJSONObject(1).optString("text");
+                if (rotation == 0 && CardRoiLayout.reversedStructure(topText, bottomText)) {
+                    output.put("orientation", 0); output.put("orientationConfident", false);
+                    output.put("orientationSource", "EXIF");
+                    output.put("orientationScore", CardRoiLayout.orientationScore(topText, bottomText));
+                    Bitmap reversed = CardImageProcessor.rotateForAnalysis(source, 180);
+                    recognizeFastNameBottom(requestId, new JSONObject(), reversed, language, started, 180, output);
+                    return;
+                }
+                if (rotation == 180 && (CardRoiLayout.orientationScore(topText, bottomText) < 8
+                        || CardRoiLayout.orientationScore(topText, bottomText) - baseline.optInt("orientationScore") < 6)) {
+                    baseline.put("totalOcrMs", elapsedMs(started)); sendJs("onNativeOcrResult", baseline); return;
+                }
+                output.put("orientation", rotation); output.put("orientationConfident", rotation == 180);
+                output.put("orientationSource", rotation == 180 ? "HEADER_FOOTER_CORRECTION" : "EXIF");
+                output.put("language", language); output.put("orientationMs", rotation == 180 ? elapsedMs(started) : 0);
                 output.put("nameOcrMs", times[0]); output.put("bottomOcrMs", times[1]);
                 output.put("detailedOcrMs", elapsedMs(ocrStarted));
                 output.put("totalOcrMs", elapsedMs(started));
@@ -1099,6 +1185,7 @@ public final class MainActivity extends Activity {
             } finally {
                 nameRecognizer.close(); bottomRecognizer.close();
                 for (CardImageProcessor.OcrVariant variant : variants) variant.bitmap.recycle();
+                if (!source.isRecycled()) source.recycle();
             }
             sendJs("onNativeOcrResult", output);
         });
@@ -1218,7 +1305,7 @@ public final class MainActivity extends Activity {
             connection.setRequestMethod("GET");
             connection.setRequestProperty("Accept", "application/json");
             connection.setRequestProperty("Cache-Control", "no-cache");
-            connection.setRequestProperty("User-Agent", "PokeFolio/0.17.0-dev6 Android");
+            connection.setRequestProperty("User-Agent", "PokeFolio/0.17.0-dev7 Android");
             status = connection.getResponseCode();
             InputStream stream = status >= 200 && status < 400
                     ? connection.getInputStream()

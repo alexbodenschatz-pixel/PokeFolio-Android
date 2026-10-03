@@ -24,6 +24,22 @@ final class CardRoiLayout {
                 || value.matches("\\d{3}") || value.matches(".*\\b[A-Z]{2,5}\\s+(?:DE|EN|FR|IT|ES)\\b.*");
     }
 
+    static boolean footerText(String text) {
+        return plausibleBottom(text) || String.valueOf(text).matches("(?iu).*(?:copyright|nintendo|creatures|game freak|illus|©).*");
+    }
+    static int orientationScore(String top, String bottom) {
+        boolean name = false, footer = false, wrongTop = false, wrongBottom = false;
+        for (String line : top.split("\\n")) { name |= plausibleName(line) && !footerText(line); wrongTop |= footerText(line); }
+        for (String line : bottom.split("\\n")) { footer |= footerText(line); wrongBottom |= plausibleName(line) && !footerText(line) || line.matches("(?iu).*\\b(?:KP|HP)\\s*\\d+.*"); }
+        return (name ? 4 : 0) + (footer ? 4 : 0) - (wrongTop ? 4 : 0) - (wrongBottom ? 4 : 0);
+    }
+    static boolean reversedStructure(String top, String bottom) {
+        boolean headerBelow = false, footerAbove = false;
+        for (String line : bottom.split("\\n")) headerBelow |= plausibleName(line) && !footerText(line) || line.matches("(?iu).*(?:\\d+\\s*(?:KP|HP)|(?:KP|HP)\\s*\\d+).*");
+        for (String line : top.split("\\n")) footerAbove |= footerText(line);
+        return headerBelow && footerAbove && orientationScore(top, bottom) <= 0;
+    }
+
     static final class Evidence {
         boolean name, number;
         void add(String text, float y) {
