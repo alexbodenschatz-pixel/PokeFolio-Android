@@ -44,6 +44,10 @@ import androidx.camera.core.UseCaseGroup;
 import androidx.camera.core.ViewPort;
 import androidx.camera.lifecycle.ProcessCameraProvider;
 import androidx.camera.view.PreviewView;
+import androidx.camera.view.transform.OutputTransform;
+import androidx.camera.view.transform.FileTransformFactory;
+import androidx.exifinterface.media.ExifInterface;
+import android.graphics.BitmapFactory;
 import androidx.core.content.ContextCompat;
 import androidx.core.graphics.Insets;
 import androidx.core.view.ViewCompat;
@@ -68,6 +72,7 @@ import com.google.mlkit.vision.text.TextRecognizer;
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions;
 
 /** Native CameraX scanner with a card-sized region of interest. */
+@androidx.annotation.OptIn(markerClass = androidx.camera.view.TransformExperimental.class)
 public final class CameraActivity extends ComponentActivity {
     public static final String EXTRA_BULK_MODE = "de.pokefolio.app.extra.BULK_MODE";
     public static final String EXTRA_REMOVAL_CONFIRMED = "de.pokefolio.app.extra.REMOVAL_CONFIRMED";
@@ -435,7 +440,7 @@ public final class CameraActivity extends ComponentActivity {
             CardDetectionTracker.Snapshot snapshot = result.snapshot;
             liveDetection = snapshot;
             if (!result.qualityReady) { liveTextAt = 0; liveTextGeneration++; }
-            else if (autoCaptureEnabled) checkLiveRoiText(upright, snapshot, viewWidth, viewHeight, now);
+            else if (autoCaptureEnabled) checkLiveRoiText(upright, new RectF(left, top, right, bottom), now);
             runOnUiThread(() -> {
                 if (!resumed || isFinishing() || captureInFlight
                         || android.os.SystemClock.uptimeMillis() - now > 350) return;
@@ -471,17 +476,18 @@ public final class CameraActivity extends ComponentActivity {
         }
     }
 
-    private void checkLiveRoiText(Bitmap frame, CardDetectionTracker.Snapshot snapshot,
-                                  int viewWidth, int viewHeight, long now) {
-        if (snapshot.quad == null || now - lastLiveTextAttempt < 700 || !liveTextBusy.compareAndSet(false, true)) return;
+    private void checkLiveRoiText(Bitmap frame, RectF fixedFrame, long now) {
+        if (now - lastLiveTextAttempt < 700 || !liveTextBusy.compareAndSet(false, true)) return;
         lastLiveTextAttempt = now;
         final long generation = liveTextGeneration;
         Bitmap probe = null;
         try {
-            PointF[] quad = new PointF[4];
-            for (int i = 0; i < 4; i++) quad[i] = new PointF(
-                    snapshot.quad[i].x / viewWidth * frame.getWidth(),
-                    snapshot.quad[i].y / viewHeight * frame.getHeight());
+            // Presence OCR uses the fixed frame too, never the moving detected quad.
+            fixedFrame.inset(-fixedFrame.width() * .03f, -fixedFrame.height() * .03f);
+            fixedFrame.intersect(0, 0, frame.getWidth(), frame.getHeight());
+            PointF[] quad = new PointF[]{new PointF(fixedFrame.left, fixedFrame.top),
+                    new PointF(fixedFrame.right, fixedFrame.top), new PointF(fixedFrame.right, fixedFrame.bottom),
+                    new PointF(fixedFrame.left, fixedFrame.bottom)};
             probe = CardImageProcessor.createLiveRoiProbe(frame, quad);
             if (probe == null) { liveTextBusy.set(false); return; }
             final Bitmap ownedProbe = probe;
@@ -555,6 +561,11 @@ public final class CameraActivity extends ComponentActivity {
 
     private void focusFrameCenter() {
         RectF frame = overlay.getCardRect();
+        int[] overlayLocation = new int[2];
+        int[] previewLocation = new int[2];
+        overlay.getLocationInWindow(overlayLocation);
+        previewView.getLocationInWindow(previewLocation);
+        frame.offset(overlayLocation[0] - previewLocation[0], overlayLocation[1] - previewLocation[1]);
         if (camera != null && !frame.isEmpty()) {
             focusAt(frame.centerX(), frame.centerY());
         }
@@ -627,13 +638,25 @@ public final class CameraActivity extends ComponentActivity {
         if (imageCapture == null || !resumed || captureInFlight || !shootButton.isEnabled()) {
             return;
         }
+        OutputTransform currentTransform = previewView.getOutputTransform();
+        if (currentTransform == null) {
+            showCaptureGuidance("Kameravorschau noch nicht bereit. Bitte kurz warten.");
+            return;
+        }
+        final OutputTransform capturePreviewTransform = currentTransform;
         shootButton.setEnabled(false);
         captureInFlight = true;
         final boolean removalConfirmed = autoCaptureGate.removalConfirmed();
         final long captureStartedAt = android.os.SystemClock.uptimeMillis();
+        final long captureStartedEpochMs = System.currentTimeMillis();
         autoCaptureGate.captured(captureStartedAt);
         shootButton.setText(R.string.processing_card);
         RectF frame = overlay.getCardRect();
+        int[] overlayLocation = new int[2];
+        int[] previewLocation = new int[2];
+        overlay.getLocationInWindow(overlayLocation);
+        previewView.getLocationInWindow(previewLocation);
+        frame.offset(overlayLocation[0] - previewLocation[0], overlayLocation[1] - previewLocation[1]);
         int previewWidth = previewView.getWidth();
         int previewHeight = previewView.getHeight();
         CardDetectionTracker.Snapshot capturedLiveDetection = liveDetection;
@@ -659,34 +682,28 @@ public final class CameraActivity extends ComponentActivity {
                 Bitmap region = null;
                 CardImageProcessor.VisualPreparation preparation = null;
                 try {
+                    long cropStarted = android.os.SystemClock.uptimeMillis();
                     oriented = CardImageProcessor.decodeAndOrient(temporary, 3200);
-                    // The guide is not a physical card boundary. Preserve the full still
-                    // photograph until its own four outer edges have been validated.
-                    CardImageProcessor.PreviewCrop previewCrop = new CardImageProcessor.PreviewCrop(
-                            oriented, new RectF(0, 0, oriented.getWidth(), oriented.getHeight()));
+                    FileTransformFactory fileFactory = new FileTransformFactory();
+                    fileFactory.setUsingExifOrientation(true);
+                    OutputTransform captureTransform = fileFactory.getOutputTransform(temporary);
+                    BitmapFactory.Options dimensions = new BitmapFactory.Options();
+                    dimensions.inJustDecodeBounds = true;
+                    BitmapFactory.decodeFile(temporary.getAbsolutePath(), dimensions);
+                    int exifRotation = new ExifInterface(temporary).getRotationDegrees();
+                    boolean swapped = exifRotation == 90 || exifRotation == 270;
+                    RectF sensorFrame = FixedFrameCrop.map(frame, capturePreviewTransform, captureTransform,
+                            swapped ? dimensions.outHeight : dimensions.outWidth,
+                            swapped ? dimensions.outWidth : dimensions.outHeight,
+                            oriented.getWidth(), oriented.getHeight());
+                    CardImageProcessor.PreviewCrop previewCrop = FixedFrameCrop.extract(oriented, sensorFrame);
                     region = previewCrop.bitmap;
-                    PointF[] liveQuadInRegion = CardImageProcessor.mapPreviewQuadToCrop(
-                            capturedPreviewQuad,
-                            previewWidth,
-                            previewHeight,
-                            oriented.getWidth(),
-                            oriented.getHeight(),
-                            previewCrop);
-                    preparation = CardImageProcessor.prepareCapturedCardDetailed(
-                            region, liveQuadInRegion, capturedLiveConfidence);
-                    if (automatic && !preparation.fallbackUsed && (!preparation.reliable || !preparation.fourCornersDetected
-                            || !preparation.borderComplete)) {
-                        showCaptureGuidance("Kartenrand unsicher. Karte ausrichten oder manuell aufnehmen.");
-                        return;
-                    }
-                    if (!preparation.fallbackUsed && preparation.fourCornersDetected && preparation.cardCoverage < 0.14f) {
-                        showCaptureGuidance("Karte näher an die Kamera halten");
-                        return;
-                    }
-                    if (!preparation.fallbackUsed && preparation.fourCornersDetected && !preparation.borderComplete) {
-                        showCaptureGuidance("Karte etwas weiter von der Kamera entfernen");
-                        return;
-                    }
+                    PointF[] liveQuadInRegion = null;
+                    // Authoritative fixed frame: no second detector, translation or recrop.
+                    preparation = new CardImageProcessor.VisualPreparation(region, true,
+                            "fixed-frame-camerax", 1f, 1f, false, null,
+                            region.getWidth() / (float) region.getHeight(), .03f, 0f,
+                            false, false, true);
                     Log.i(TAG, "CARD_CROP overlay=" + frame
                             + " preview=" + previewWidth + "x" + previewHeight
                             + " capture=" + oriented.getWidth() + "x" + oriented.getHeight()
@@ -707,24 +724,15 @@ public final class CameraActivity extends ComponentActivity {
                             + " borderComplete=" + preparation.borderComplete
                             + " fallback=" + preparation.fallbackUsed
                             + " method=" + preparation.method);
-                    if (isDebugBuild()) {
-                        writeDebugStages(oriented, region, preparation);
-                    }
+                    long cropProcessingMs = android.os.SystemClock.uptimeMillis() - cropStarted;
                     Uri uri = writeCardToGallery(preparation.bitmap);
 
                     Intent resultIntent = new Intent();
-                    // Keep an EXIF-normalized source for a single post-OCR crop fallback.
-                    // Only a URI crosses the Activity boundary, never a large bitmap parcel.
-                    try {
-                        File directory = new File(getCacheDir(), "normalized-uploads");
-                        if (!directory.exists() && !directory.mkdirs()) throw new java.io.IOException("Cache unavailable");
-                        File original = File.createTempFile("capture-source-", ".jpg", directory);
-                        try (java.io.FileOutputStream stream = new java.io.FileOutputStream(original)) {
-                            if (!oriented.compress(Bitmap.CompressFormat.JPEG, 88, stream)) throw new java.io.IOException("Source encoding failed");
-                        }
-                        resultIntent.putExtra("originalCaptureUri", androidx.core.content.FileProvider.getUriForFile(
-                                CameraActivity.this, getPackageName() + ".fileprovider", original).toString());
-                    } catch (Exception error) { Log.w(TAG, "Optional source fallback unavailable", error); }
+                    // No full-photo fallback is exposed: the fixed frame is authoritative.
+                    resultIntent.putExtra("cropProcessingMs", cropProcessingMs);
+                    resultIntent.putExtra("captureStartedEpochMs", captureStartedEpochMs);
+                    resultIntent.putExtra("cropWidth", region.getWidth());
+                    resultIntent.putExtra("cropHeight", region.getHeight());
                     resultIntent.setData(uri);
                     resultIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
                     resultIntent.putExtra(EXTRA_NORMALIZED_CARD, true);
@@ -732,8 +740,8 @@ public final class CameraActivity extends ComponentActivity {
                     resultIntent.putExtra("fixedSharp", fixedSharp);
                     resultIntent.putExtra("fixedStable", fixedStable);
                     resultIntent.putExtra("fixedReady", fixedReady);
-                    resultIntent.putExtra("cropBoundingBox", CardImageProcessor.cropBoundingBox(
-                            preparation, oriented.getWidth(), oriented.getHeight()));
+                    resultIntent.putExtra("cropBoundingBox", new float[]{previewCrop.sourceRect.left, previewCrop.sourceRect.top,
+                                    previewCrop.sourceRect.right, previewCrop.sourceRect.bottom});
                     resultIntent.putExtra(EXTRA_CROP_METHOD, preparation.method);
                     resultIntent.putExtra(EXTRA_CROP_CONFIDENCE, preparation.confidence);
                     resultIntent.putExtra(EXTRA_CROP_COVERAGE, preparation.cardCoverage);

@@ -12,6 +12,10 @@ import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.PointF;
 import android.graphics.Rect;
+import android.graphics.RectF;
+import android.util.Size;
+import androidx.camera.view.transform.OutputTransform;
+import androidx.camera.view.transform.FileTransformFactory;
 import android.graphics.Shader;
 import android.net.Uri;
 import android.os.Bundle;
@@ -26,6 +30,7 @@ import java.io.File;
 import java.io.FileOutputStream;
 
 /** Device-side regression suite for the native crop without a third-party test framework. */
+@androidx.annotation.OptIn(markerClass = androidx.camera.view.TransformExperimental.class)
 public final class CardCropInstrumentation extends Instrumentation {
     private static final String TAG = "PokeFolioCropTest";
 
@@ -40,7 +45,7 @@ public final class CardCropInstrumentation extends Instrumentation {
         Bundle result = new Bundle();
         try {
             int syntheticCases = runCropCases();
-            int geometryCases = runFixedOverlayCase() + runPreviewMappingCase() + runSafeFallbackCase() + runClippedLiveHeaderCase() + runTrackingCase()
+            int geometryCases = runAuthoritativeFrameCases() + runFixedOverlayCase() + runPreviewMappingCase() + runSafeFallbackCase() + runClippedLiveHeaderCase() + runTrackingCase()
                     + runFastDetectorCadenceCase() + runFastDetectorPerformanceCase()
                     + runExifOrientationCases()
                     + AndroidKeystoreCredentialInstrumentation.run(getTargetContext());
@@ -54,6 +59,56 @@ public final class CardCropInstrumentation extends Instrumentation {
             result.putString("stream", "\nCardCropInstrumentation FAILED: " + error + "\n");
             finish(Activity.RESULT_CANCELED, result);
         }
+    }
+
+    /** Saved-file transforms, all EXIF orientations, letterboxing, mirroring and decode scaling. */
+    private int runAuthoritativeFrameCases() throws Exception {
+        int cases = 0;
+        for (int orientation = 1; orientation <= 8; orientation++) {
+            Bitmap raw = Bitmap.createBitmap(800, 1200, Bitmap.Config.ARGB_8888);
+            raw.eraseColor(Color.BLUE);
+            File file = File.createTempFile("fixed-frame-transform-", ".jpg", getTargetContext().getCacheDir());
+            try {
+                try (FileOutputStream stream = new FileOutputStream(file)) { raw.compress(Bitmap.CompressFormat.JPEG, 95, stream); }
+                ExifInterface exif = new ExifInterface(file);
+                exif.setAttribute(ExifInterface.TAG_ORIENTATION, String.valueOf(orientation)); exif.saveAttributes();
+                FileTransformFactory factory = new FileTransformFactory(); factory.setUsingExifOrientation(true);
+                OutputTransform capture = factory.getOutputTransform(file);
+                int width = orientation >= 5 ? 1200 : 800;
+                int height = orientation >= 5 ? 800 : 1200;
+                for (boolean mirror : new boolean[]{false, true}) {
+                    Matrix previewMatrix = new Matrix(capture.getMatrix());
+                    previewMatrix.postScale(.5f, .5f);
+                    previewMatrix.postTranslate(25, 30);
+                    if (mirror) previewMatrix.postScale(-1, 1, 25 + width * .25f, 30 + height * .25f);
+                    OutputTransform preview = new OutputTransform(previewMatrix, new Size(800, 1200));
+                    RectF frame = new RectF(25 + width * .1f, 30 + height * .1f,
+                            25 + width * .4f, 30 + height * .4f);
+                    RectF mapped = FixedFrameCrop.map(frame, preview, capture, width, height, width/2, height/2);
+                    assertTrue("fixed frame left EXIF=" + orientation, Math.abs(mapped.left - width * .091f) < 1);
+                    assertTrue("fixed frame top EXIF=" + orientation, Math.abs(mapped.top - height * .091f) < 1);
+                    assertTrue("fixed frame right EXIF=" + orientation, Math.abs(mapped.right - width * .409f) < 1);
+                    assertTrue("fixed frame bottom EXIF=" + orientation, Math.abs(mapped.bottom - height * .409f) < 1);
+                    cases++;
+                }
+                // Crop is exactly the mapped rectangle: header/footer markers and surrounding
+                // pixels remain untouched. No detector can choose a different subject.
+                Bitmap source = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+                source.eraseColor(Color.BLUE);
+                Canvas canvas = new Canvas(source); Paint paint = new Paint(); paint.setColor(Color.RED);
+                canvas.drawRect(width*.2f, height*.2f, width*.8f, height*.28f, paint);
+                paint.setColor(Color.GREEN); canvas.drawRect(width*.2f, height*.72f, width*.8f, height*.8f, paint);
+                CardImageProcessor.PreviewCrop crop = FixedFrameCrop.extract(source,
+                        new RectF(width*.18f, height*.18f, width*.82f, height*.82f));
+                assertTrue("name marker preserved", crop.bitmap.getPixel(crop.bitmap.getWidth()/2,
+                        Math.round(height*.24f - crop.sourceRect.top)) == Color.RED);
+                assertTrue("number marker preserved", crop.bitmap.getPixel(crop.bitmap.getWidth()/2,
+                        Math.round(height*.76f - crop.sourceRect.top)) == Color.GREEN);
+                assertTrue("safety margin preserved", crop.bitmap.getPixel(0,0) == Color.BLUE);
+                crop.bitmap.recycle(); source.recycle(); cases++;
+            } finally { raw.recycle(); file.delete(); }
+        }
+        return cases;
     }
 
     private int runExifOrientationCases() throws Exception {

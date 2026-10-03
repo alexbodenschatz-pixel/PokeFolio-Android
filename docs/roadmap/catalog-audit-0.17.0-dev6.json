@@ -1,0 +1,1033 @@
+{
+  "source": "https://api.tcgdex.net/v2/de",
+  "date": "2026-10-02",
+  "sets": 144,
+  "cards": 18980,
+  "setsWithoutOfficialCode": [
+    "basep",
+    "exu",
+    "dpp",
+    "hgssp",
+    "xya",
+    "sma",
+    "swshp"
+  ],
+  "coverage": [
+    {
+      "id": "base1",
+      "name": "Grundset",
+      "officialCode": "BS",
+      "loaded": 102,
+      "providerTotal": 102
+    },
+    {
+      "id": "base2",
+      "name": "Dschungel",
+      "officialCode": "JU",
+      "loaded": 64,
+      "providerTotal": 64
+    },
+    {
+      "id": "basep",
+      "name": "Wizards Black Star Promos",
+      "officialCode": null,
+      "loaded": 24,
+      "providerTotal": 53
+    },
+    {
+      "id": "base3",
+      "name": "Fossil",
+      "officialCode": "FO",
+      "loaded": 62,
+      "providerTotal": 62
+    },
+    {
+      "id": "base5",
+      "name": "Team Rocket",
+      "officialCode": "RO",
+      "loaded": 83,
+      "providerTotal": 83
+    },
+    {
+      "id": "neo1",
+      "name": "Neo Genesis",
+      "officialCode": "N1",
+      "loaded": 111,
+      "providerTotal": 111
+    },
+    {
+      "id": "neo2",
+      "name": "Neo Entdeckung",
+      "officialCode": "N2",
+      "loaded": 75,
+      "providerTotal": 75
+    },
+    {
+      "id": "neo3",
+      "name": "Neo Revelation",
+      "officialCode": "N3",
+      "loaded": 66,
+      "providerTotal": 66
+    },
+    {
+      "id": "neo4",
+      "name": "Neo Destiny",
+      "officialCode": "N4",
+      "loaded": 113,
+      "providerTotal": 113
+    },
+    {
+      "id": "ecard1",
+      "name": "Expedition",
+      "officialCode": "EX",
+      "loaded": 165,
+      "providerTotal": 165
+    },
+    {
+      "id": "ecard2",
+      "name": "Aquapolis",
+      "officialCode": "AQ",
+      "loaded": 186,
+      "providerTotal": 186
+    },
+    {
+      "id": "ecard3",
+      "name": "Skyridge",
+      "officialCode": "SK",
+      "loaded": 182,
+      "providerTotal": 182
+    },
+    {
+      "id": "ex1",
+      "name": "EX Rubin & Saphir",
+      "officialCode": "RS",
+      "loaded": 109,
+      "providerTotal": 109
+    },
+    {
+      "id": "ex2",
+      "name": "EX Sandsturm",
+      "officialCode": "SS",
+      "loaded": 100,
+      "providerTotal": 100
+    },
+    {
+      "id": "ex3",
+      "name": "EX Drache",
+      "officialCode": "DR",
+      "loaded": 100,
+      "providerTotal": 100
+    },
+    {
+      "id": "ex4",
+      "name": "EX Team Magma vs Team Aqua",
+      "officialCode": "MA",
+      "loaded": 97,
+      "providerTotal": 97
+    },
+    {
+      "id": "ex6",
+      "name": "EX Feuerrot & Blattgrün",
+      "officialCode": "RG",
+      "loaded": 116,
+      "providerTotal": 116
+    },
+    {
+      "id": "ex8",
+      "name": "EX Deoxys",
+      "officialCode": "DX",
+      "loaded": 108,
+      "providerTotal": 108
+    },
+    {
+      "id": "ex9",
+      "name": "EX Smaragd",
+      "officialCode": "EM",
+      "loaded": 107,
+      "providerTotal": 107
+    },
+    {
+      "id": "exu",
+      "name": "EX Verborgene Mächte Icognito",
+      "officialCode": null,
+      "loaded": 28,
+      "providerTotal": 28
+    },
+    {
+      "id": "ex10",
+      "name": "EX Verborgene Mächte",
+      "officialCode": "UF",
+      "loaded": 117,
+      "providerTotal": 117
+    },
+    {
+      "id": "ex11",
+      "name": "EX Delta Species",
+      "officialCode": "DS",
+      "loaded": 114,
+      "providerTotal": 114
+    },
+    {
+      "id": "ex12",
+      "name": "EX Legend Maker",
+      "officialCode": "LM",
+      "loaded": 93,
+      "providerTotal": 93
+    },
+    {
+      "id": "ex13",
+      "name": "EX Holon Phantoms",
+      "officialCode": "HP",
+      "loaded": 111,
+      "providerTotal": 111
+    },
+    {
+      "id": "ex14",
+      "name": "EX Crystal Guardians",
+      "officialCode": "CG",
+      "loaded": 100,
+      "providerTotal": 100
+    },
+    {
+      "id": "ex15",
+      "name": "EX Dragon Frontiers",
+      "officialCode": "DF",
+      "loaded": 101,
+      "providerTotal": 101
+    },
+    {
+      "id": "ex16",
+      "name": "EX Power Keepers",
+      "officialCode": "PK",
+      "loaded": 108,
+      "providerTotal": 108
+    },
+    {
+      "id": "dpp",
+      "name": "Promo DP",
+      "officialCode": null,
+      "loaded": 56,
+      "providerTotal": 56
+    },
+    {
+      "id": "dp1",
+      "name": "Diamant & Perl",
+      "officialCode": "DP",
+      "loaded": 130,
+      "providerTotal": 130
+    },
+    {
+      "id": "dp2",
+      "name": "Geheimnisvolle Schätze",
+      "officialCode": "MT",
+      "loaded": 124,
+      "providerTotal": 124
+    },
+    {
+      "id": "dp3",
+      "name": "Rätselhafte Wunder",
+      "officialCode": "SW",
+      "loaded": 132,
+      "providerTotal": 132
+    },
+    {
+      "id": "dp4",
+      "name": "Epische Begegnungen",
+      "officialCode": "GE",
+      "loaded": 106,
+      "providerTotal": 106
+    },
+    {
+      "id": "dp5",
+      "name": "Majestätischer Morgen",
+      "officialCode": "MD",
+      "loaded": 100,
+      "providerTotal": 100
+    },
+    {
+      "id": "dp6",
+      "name": "Erwachte Legenden",
+      "officialCode": "LA",
+      "loaded": 146,
+      "providerTotal": 146
+    },
+    {
+      "id": "dp7",
+      "name": "Sturmtief",
+      "officialCode": "SF",
+      "loaded": 106,
+      "providerTotal": 106
+    },
+    {
+      "id": "pl1",
+      "name": "Platin",
+      "officialCode": "PL",
+      "loaded": 133,
+      "providerTotal": 133
+    },
+    {
+      "id": "pl2",
+      "name": "Aufstieg der Rivalen",
+      "officialCode": "RR",
+      "loaded": 120,
+      "providerTotal": 120
+    },
+    {
+      "id": "pl3",
+      "name": "Ultimative Sieger",
+      "officialCode": "SV",
+      "loaded": 153,
+      "providerTotal": 153
+    },
+    {
+      "id": "pl4",
+      "name": "Arceus",
+      "officialCode": "AR",
+      "loaded": 111,
+      "providerTotal": 111
+    },
+    {
+      "id": "hgss1",
+      "name": "HeartGold SoulSilver",
+      "officialCode": "HS",
+      "loaded": 124,
+      "providerTotal": 124
+    },
+    {
+      "id": "hgssp",
+      "name": "Promo HGSS",
+      "officialCode": null,
+      "loaded": 0,
+      "providerTotal": 25
+    },
+    {
+      "id": "hgss2",
+      "name": "Entfesselt",
+      "officialCode": "UL",
+      "loaded": 96,
+      "providerTotal": 96
+    },
+    {
+      "id": "hgss3",
+      "name": "Unerschrocken",
+      "officialCode": "UND",
+      "loaded": 91,
+      "providerTotal": 91
+    },
+    {
+      "id": "hgss4",
+      "name": "Triumph",
+      "officialCode": "TRI",
+      "loaded": 103,
+      "providerTotal": 103
+    },
+    {
+      "id": "col1",
+      "name": "Ruf der Legenden",
+      "officialCode": "COL",
+      "loaded": 106,
+      "providerTotal": 106
+    },
+    {
+      "id": "bw1",
+      "name": "Schwarz & Weiß",
+      "officialCode": "BLW",
+      "loaded": 115,
+      "providerTotal": 115
+    },
+    {
+      "id": "bwp",
+      "name": "SW Promokarten",
+      "officialCode": "BWP",
+      "loaded": 0,
+      "providerTotal": 101
+    },
+    {
+      "id": "bw2",
+      "name": "Aufstreben der Mächtigen",
+      "officialCode": "EP",
+      "loaded": 98,
+      "providerTotal": 98
+    },
+    {
+      "id": "bw3",
+      "name": "Königliche Siege",
+      "officialCode": "NVI",
+      "loaded": 102,
+      "providerTotal": 102
+    },
+    {
+      "id": "bw4",
+      "name": "Kommende Schicksale",
+      "officialCode": "NXD",
+      "loaded": 103,
+      "providerTotal": 103
+    },
+    {
+      "id": "bw5",
+      "name": "Erforscher der Finsternis",
+      "officialCode": "DEX",
+      "loaded": 111,
+      "providerTotal": 111
+    },
+    {
+      "id": "bw6",
+      "name": "Hoheit der Drachen",
+      "officialCode": "DRX",
+      "loaded": 128,
+      "providerTotal": 128
+    },
+    {
+      "id": "dv1",
+      "name": "Drachengruft",
+      "officialCode": "DRV",
+      "loaded": 0,
+      "providerTotal": 20
+    },
+    {
+      "id": "bw7",
+      "name": "Überschrittene Schwellen",
+      "officialCode": "BCR",
+      "loaded": 153,
+      "providerTotal": 153
+    },
+    {
+      "id": "bw8",
+      "name": "Plasma-Sturm",
+      "officialCode": "PLS",
+      "loaded": 138,
+      "providerTotal": 138
+    },
+    {
+      "id": "bw9",
+      "name": "Plasma-Frost",
+      "officialCode": "PLF",
+      "loaded": 122,
+      "providerTotal": 122
+    },
+    {
+      "id": "bw10",
+      "name": "Plasma-Blaster",
+      "officialCode": "PLB",
+      "loaded": 105,
+      "providerTotal": 105
+    },
+    {
+      "id": "xyp",
+      "name": "XY Promokarten",
+      "officialCode": "XYP",
+      "loaded": 0,
+      "providerTotal": 211
+    },
+    {
+      "id": "xy0",
+      "name": "Willkommen in Kalos",
+      "officialCode": "KSS",
+      "loaded": 39,
+      "providerTotal": 39
+    },
+    {
+      "id": "xy1",
+      "name": "XY",
+      "officialCode": "XY",
+      "loaded": 146,
+      "providerTotal": 146
+    },
+    {
+      "id": "xya",
+      "name": "Gelbes-A-Alternativkarten",
+      "officialCode": null,
+      "loaded": 0,
+      "providerTotal": 6
+    },
+    {
+      "id": "xy2",
+      "name": "Flammenmeer",
+      "officialCode": "FLF",
+      "loaded": 110,
+      "providerTotal": 110
+    },
+    {
+      "id": "xy3",
+      "name": "Fliegende Fäuste",
+      "officialCode": "FFI",
+      "loaded": 114,
+      "providerTotal": 114
+    },
+    {
+      "id": "xy4",
+      "name": "Phantomkräfte",
+      "officialCode": "PHF",
+      "loaded": 124,
+      "providerTotal": 124
+    },
+    {
+      "id": "xy5",
+      "name": "Protoshock",
+      "officialCode": "PRC",
+      "loaded": 164,
+      "providerTotal": 164
+    },
+    {
+      "id": "xy6",
+      "name": "Drachenleuchten",
+      "officialCode": "ROS",
+      "loaded": 112,
+      "providerTotal": 112
+    },
+    {
+      "id": "xy7",
+      "name": "Ewiger Anfang",
+      "officialCode": "AOR",
+      "loaded": 101,
+      "providerTotal": 101
+    },
+    {
+      "id": "xy8",
+      "name": "TURBOstart",
+      "officialCode": "BKT",
+      "loaded": 165,
+      "providerTotal": 165
+    },
+    {
+      "id": "xy9",
+      "name": "TURBOfieber",
+      "officialCode": "BKP",
+      "loaded": 126,
+      "providerTotal": 126
+    },
+    {
+      "id": "g1",
+      "name": "Generationen",
+      "officialCode": "GEN",
+      "loaded": 117,
+      "providerTotal": 117
+    },
+    {
+      "id": "xy10",
+      "name": "Schicksalsschmiede",
+      "officialCode": "FCO",
+      "loaded": 129,
+      "providerTotal": 129
+    },
+    {
+      "id": "xy11",
+      "name": "Dampfkessel",
+      "officialCode": "STS",
+      "loaded": 116,
+      "providerTotal": 116
+    },
+    {
+      "id": "xy12",
+      "name": "Evolution",
+      "officialCode": "EVO",
+      "loaded": 113,
+      "providerTotal": 113
+    },
+    {
+      "id": "smp",
+      "name": "SM Promokarten",
+      "officialCode": "SMP",
+      "loaded": 240,
+      "providerTotal": 248
+    },
+    {
+      "id": "sm1",
+      "name": "Sonne & Mond",
+      "officialCode": "SUM",
+      "loaded": 172,
+      "providerTotal": 172
+    },
+    {
+      "id": "sm2",
+      "name": "Stunde der Wächter",
+      "officialCode": "GRI",
+      "loaded": 169,
+      "providerTotal": 169
+    },
+    {
+      "id": "sm3",
+      "name": "Nacht in Flammen",
+      "officialCode": "BUS",
+      "loaded": 169,
+      "providerTotal": 169
+    },
+    {
+      "id": "sm3.5",
+      "name": "Schimmernde Legenden",
+      "officialCode": "SLG",
+      "loaded": 78,
+      "providerTotal": 78
+    },
+    {
+      "id": "sm4",
+      "name": "Aufziehen der Sturmröte",
+      "officialCode": "CIN",
+      "loaded": 125,
+      "providerTotal": 125
+    },
+    {
+      "id": "sm5",
+      "name": "Ultra-Prisma",
+      "officialCode": "UPR",
+      "loaded": 173,
+      "providerTotal": 173
+    },
+    {
+      "id": "sm6",
+      "name": "Grauen Der Lichtfinsternis",
+      "officialCode": "FLI",
+      "loaded": 146,
+      "providerTotal": 146
+    },
+    {
+      "id": "sm7",
+      "name": "Sturm Am Firmament",
+      "officialCode": "CES",
+      "loaded": 183,
+      "providerTotal": 183
+    },
+    {
+      "id": "sm7.5",
+      "name": "Majestät Der Drachen",
+      "officialCode": "DRM",
+      "loaded": 78,
+      "providerTotal": 78
+    },
+    {
+      "id": "sm8",
+      "name": "Echo des Donners",
+      "officialCode": "LOT",
+      "loaded": 236,
+      "providerTotal": 236
+    },
+    {
+      "id": "sm9",
+      "name": "Teams Sind Trumpf",
+      "officialCode": "TEU",
+      "loaded": 196,
+      "providerTotal": 196
+    },
+    {
+      "id": "det1",
+      "name": "Meisterdetektiv Pikachu",
+      "officialCode": "DET",
+      "loaded": 18,
+      "providerTotal": 18
+    },
+    {
+      "id": "sm10",
+      "name": "Kräfte im Einklang",
+      "officialCode": "UNB",
+      "loaded": 234,
+      "providerTotal": 234
+    },
+    {
+      "id": "sm11",
+      "name": "Bund der Gleichgesinnten",
+      "officialCode": "UNM",
+      "loaded": 258,
+      "providerTotal": 258
+    },
+    {
+      "id": "sm115",
+      "name": "Verborgenes Schicksal",
+      "officialCode": "HIF",
+      "loaded": 69,
+      "providerTotal": 69
+    },
+    {
+      "id": "sma",
+      "name": "Verborgenes Schicksal Glitzer-Tresor",
+      "officialCode": null,
+      "loaded": 94,
+      "providerTotal": 94
+    },
+    {
+      "id": "sm12",
+      "name": "Welten im Wandel",
+      "officialCode": "CEC",
+      "loaded": 271,
+      "providerTotal": 271
+    },
+    {
+      "id": "swshp",
+      "name": "SCSC Promokarten",
+      "officialCode": null,
+      "loaded": 301,
+      "providerTotal": 307
+    },
+    {
+      "id": "swsh1",
+      "name": "Schwert & Schild",
+      "officialCode": "SSH",
+      "loaded": 216,
+      "providerTotal": 216
+    },
+    {
+      "id": "swsh2",
+      "name": "Clash der Rebellen",
+      "officialCode": "RCL",
+      "loaded": 209,
+      "providerTotal": 209
+    },
+    {
+      "id": "swsh3",
+      "name": "Flammende Finsternis",
+      "officialCode": "DAA",
+      "loaded": 201,
+      "providerTotal": 201
+    },
+    {
+      "id": "swsh3.5",
+      "name": "Weg des Champs",
+      "officialCode": "CPA",
+      "loaded": 80,
+      "providerTotal": 80
+    },
+    {
+      "id": "swsh4",
+      "name": "Farbenschock",
+      "officialCode": "VIV",
+      "loaded": 203,
+      "providerTotal": 203
+    },
+    {
+      "id": "swsh4.5sv",
+      "name": "Glänzendes Schicksal Glitzer-Tresor",
+      "officialCode": "SHF:SV",
+      "loaded": 122,
+      "providerTotal": 122
+    },
+    {
+      "id": "swsh4.5",
+      "name": "Glänzendes Schicksal",
+      "officialCode": "SHF",
+      "loaded": 73,
+      "providerTotal": 73
+    },
+    {
+      "id": "swsh5",
+      "name": "Kampfstile",
+      "officialCode": "BST",
+      "loaded": 183,
+      "providerTotal": 183
+    },
+    {
+      "id": "swsh6",
+      "name": "Schaurige Herrschaft",
+      "officialCode": "CRE",
+      "loaded": 233,
+      "providerTotal": 233
+    },
+    {
+      "id": "swsh7",
+      "name": "Drachenwandel",
+      "officialCode": "EVS",
+      "loaded": 237,
+      "providerTotal": 237
+    },
+    {
+      "id": "cel25",
+      "name": "Celebrations",
+      "officialCode": "CEL",
+      "loaded": 25,
+      "providerTotal": 25
+    },
+    {
+      "id": "cel25cc",
+      "name": "Celebrations Klassische Kollektion",
+      "officialCode": "CEL:CC",
+      "loaded": 0,
+      "providerTotal": 25
+    },
+    {
+      "id": "swsh8",
+      "name": "Fusionsangriff",
+      "officialCode": "FST",
+      "loaded": 284,
+      "providerTotal": 284
+    },
+    {
+      "id": "swsh9tg",
+      "name": "Strahlende Sterne Trainer-Galerie",
+      "officialCode": "BRS:TG",
+      "loaded": 30,
+      "providerTotal": 30
+    },
+    {
+      "id": "swsh9",
+      "name": "Strahlende Sterne",
+      "officialCode": "BRS",
+      "loaded": 186,
+      "providerTotal": 186
+    },
+    {
+      "id": "swsh10tg",
+      "name": "Astralglanz Trainer-Galerie",
+      "officialCode": "ASR:TG",
+      "loaded": 30,
+      "providerTotal": 30
+    },
+    {
+      "id": "swsh10",
+      "name": "Astralglanz",
+      "officialCode": "ASR",
+      "loaded": 216,
+      "providerTotal": 216
+    },
+    {
+      "id": "swsh10.5",
+      "name": "Pokémon GO",
+      "officialCode": "PGO",
+      "loaded": 88,
+      "providerTotal": 88
+    },
+    {
+      "id": "swsh11",
+      "name": "Verlorener Ursprung",
+      "officialCode": "LOR",
+      "loaded": 217,
+      "providerTotal": 217
+    },
+    {
+      "id": "swsh11tg",
+      "name": "Verlorener Ursprung Trainer-Galerie",
+      "officialCode": "LOR:TG",
+      "loaded": 30,
+      "providerTotal": 30
+    },
+    {
+      "id": "swsh12tg",
+      "name": "Silberne Sturmwinde Trainer-Galerie",
+      "officialCode": "SIT:TG",
+      "loaded": 30,
+      "providerTotal": 30
+    },
+    {
+      "id": "swsh12",
+      "name": "Silberne Sturmwinde",
+      "officialCode": "SIT",
+      "loaded": 215,
+      "providerTotal": 215
+    },
+    {
+      "id": "swsh12.5gg",
+      "name": "Zenit der Könige Galar-Galerie",
+      "officialCode": "CRZ:GG",
+      "loaded": 70,
+      "providerTotal": 70
+    },
+    {
+      "id": "swsh12.5",
+      "name": "Zenit der Könige",
+      "officialCode": "CRZ",
+      "loaded": 160,
+      "providerTotal": 160
+    },
+    {
+      "id": "sv01",
+      "name": "Karmesin & Purpur",
+      "officialCode": "SVI",
+      "loaded": 258,
+      "providerTotal": 258
+    },
+    {
+      "id": "sve",
+      "name": "Karmesin & Purpur Energie",
+      "officialCode": "SVE",
+      "loaded": 24,
+      "providerTotal": 24
+    },
+    {
+      "id": "svp",
+      "name": "SVP Black Star Promos",
+      "officialCode": "SVP",
+      "loaded": 198,
+      "providerTotal": 225
+    },
+    {
+      "id": "sv02",
+      "name": "Entwicklungen in Paldea",
+      "officialCode": "PAL",
+      "loaded": 279,
+      "providerTotal": 279
+    },
+    {
+      "id": "sv03",
+      "name": "Obsidian Flammen",
+      "officialCode": "OBF",
+      "loaded": 230,
+      "providerTotal": 230
+    },
+    {
+      "id": "sv03.5",
+      "name": "151",
+      "officialCode": "MEW",
+      "loaded": 207,
+      "providerTotal": 207
+    },
+    {
+      "id": "sv04",
+      "name": "Paradoxrift",
+      "officialCode": "PAR",
+      "loaded": 266,
+      "providerTotal": 266
+    },
+    {
+      "id": "sv04.5",
+      "name": "Paldeas Schicksale",
+      "officialCode": "PAF",
+      "loaded": 245,
+      "providerTotal": 245
+    },
+    {
+      "id": "sv05",
+      "name": "Gewalten der Zeit",
+      "officialCode": "TEF",
+      "loaded": 218,
+      "providerTotal": 218
+    },
+    {
+      "id": "sv06",
+      "name": "Maskerade im Zwielicht",
+      "officialCode": "TWM",
+      "loaded": 226,
+      "providerTotal": 226
+    },
+    {
+      "id": "sv06.5",
+      "name": "Nebel der Sagen",
+      "officialCode": "SFA",
+      "loaded": 99,
+      "providerTotal": 99
+    },
+    {
+      "id": "sv07",
+      "name": "Stellarkrone",
+      "officialCode": "SCR",
+      "loaded": 175,
+      "providerTotal": 175
+    },
+    {
+      "id": "sv08",
+      "name": "Stürmische Funken",
+      "officialCode": "SSP",
+      "loaded": 252,
+      "providerTotal": 252
+    },
+    {
+      "id": "sv08.5",
+      "name": "Prismatische Entwicklungen",
+      "officialCode": "PRE",
+      "loaded": 180,
+      "providerTotal": 180
+    },
+    {
+      "id": "sv09",
+      "name": "Reisegefährten",
+      "officialCode": "JTG",
+      "loaded": 190,
+      "providerTotal": 190
+    },
+    {
+      "id": "sv10",
+      "name": "Ewige Rivalen",
+      "officialCode": "DRI",
+      "loaded": 244,
+      "providerTotal": 244
+    },
+    {
+      "id": "sv10.5w",
+      "name": "Weiße Flammen",
+      "officialCode": "WHT",
+      "loaded": 173,
+      "providerTotal": 173
+    },
+    {
+      "id": "sv10.5b",
+      "name": "Schwarze Blitze",
+      "officialCode": "BLK",
+      "loaded": 172,
+      "providerTotal": 172
+    },
+    {
+      "id": "mee",
+      "name": "Mega-Entwicklung Energie",
+      "officialCode": "MEE",
+      "loaded": 16,
+      "providerTotal": 16
+    },
+    {
+      "id": "mep",
+      "name": "MEP Black Star Promos",
+      "officialCode": "MEP",
+      "loaded": 80,
+      "providerTotal": 80
+    },
+    {
+      "id": "me01",
+      "name": "Mega-Entwicklung",
+      "officialCode": "MEG",
+      "loaded": 188,
+      "providerTotal": 188
+    },
+    {
+      "id": "me02",
+      "name": "Fatale Flammen",
+      "officialCode": "PFL",
+      "loaded": 130,
+      "providerTotal": 130
+    },
+    {
+      "id": "me02.5",
+      "name": "Erhabene Helden",
+      "officialCode": "ASC",
+      "loaded": 295,
+      "providerTotal": 295
+    },
+    {
+      "id": "me03",
+      "name": "Optimale Ordnung",
+      "officialCode": "POR",
+      "loaded": 124,
+      "providerTotal": 124
+    },
+    {
+      "id": "me04",
+      "name": "Wachsendes Chaos",
+      "officialCode": "CRI",
+      "loaded": 122,
+      "providerTotal": 122
+    },
+    {
+      "id": "me05",
+      "name": "Dunkelnacht",
+      "officialCode": "PBL",
+      "loaded": 120,
+      "providerTotal": 120
+    },
+    {
+      "id": "30th-c",
+      "name": "30 Jahre: Klassische Sammlung",
+      "officialCode": "30C",
+      "loaded": 30,
+      "providerTotal": 30
+    },
+    {
+      "id": "30th",
+      "name": "30 Jahre",
+      "officialCode": "30C",
+      "loaded": 161,
+      "providerTotal": 161
+    }
+  ],
+  "missingRequestedCards": [
+    "mep-094"
+  ],
+  "verifiedCards": [
+    "sv02-073",
+    "sv02-206"
+  ],
+  "note": "Provider totals may count variants; differences are diagnostics, not proof of missing numbered cards."
+}

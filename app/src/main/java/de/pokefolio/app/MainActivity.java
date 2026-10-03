@@ -150,7 +150,7 @@ public final class MainActivity extends Activity {
         settings.setSupportMultipleWindows(false);
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
         settings.setMediaPlaybackRequiresUserGesture(false);
-        settings.setUserAgentString(settings.getUserAgentString() + " PokeFolio/0.17.0-dev5");
+        settings.setUserAgentString(settings.getUserAgentString() + " PokeFolio/0.17.0-dev6");
 
         webView.addJavascriptInterface(new NativeBridge(), "PokeNative");
         webView.setWebViewClient(new WebViewClient() {
@@ -659,7 +659,7 @@ public final class MainActivity extends Activity {
             connection.setReadTimeout(8000);
             connection.setInstanceFollowRedirects(false);
             connection.setRequestProperty("Accept", "image/avif,image/webp,image/*");
-            connection.setRequestProperty("User-Agent", "PokeFolio/0.17.0-dev5 Android");
+            connection.setRequestProperty("User-Agent", "PokeFolio/0.17.0-dev6 Android");
             int status = connection.getResponseCode();
             if (status < 200 || status >= 300) {
                 throw new IOException("Kartenbild HTTP " + status);
@@ -752,6 +752,12 @@ public final class MainActivity extends Activity {
             bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.length, options);
             if (bitmap == null) {
                 throw new IllegalArgumentException("Das Bild konnte nicht dekodiert werden.");
+            }
+
+            if ("PRIMARY_IDENTIFIER".equals(mode) && ("pokemon".equals(profile) || "auto".equals(profile))) {
+                recognizeFastNameBottom(requestId, output, bitmap, ocrLanguage, recognitionStarted);
+                bitmap = null;
+                return;
             }
 
             List<CardImageProcessor.OcrVariant> orientationVariants =
@@ -1039,6 +1045,65 @@ public final class MainActivity extends Activity {
         return TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS);
     }
 
+    private void recognizeFastNameBottom(String requestId, JSONObject output, Bitmap source,
+                                         String language, long started) throws Exception {
+        List<CardImageProcessor.OcrVariant> variants = CardImageProcessor.createFastNameBottomVariants(source);
+        source.recycle();
+        TextRecognizer nameRecognizer = createTextRecognizer(language);
+        TextRecognizer bottomRecognizer = createTextRecognizer(language);
+        long ocrStarted = System.nanoTime();
+        final float[] times = new float[2];
+        com.google.android.gms.tasks.Task<Text> nameTask = nameRecognizer.process(InputImage.fromBitmap(variants.get(0).bitmap, 0))
+                .continueWith(bridgeExecutor, task -> { times[0] = elapsedMs(ocrStarted); return task.getResult(); });
+        com.google.android.gms.tasks.Task<Text> bottomTask = bottomRecognizer.process(InputImage.fromBitmap(variants.get(1).bitmap, 0))
+                .continueWith(bridgeExecutor, task -> { times[1] = elapsedMs(ocrStarted); return task.getResult(); });
+        com.google.android.gms.tasks.Tasks.whenAllComplete(nameTask, bottomTask)
+                .addOnCompleteListener(bridgeExecutor, done -> {
+            try {
+                JSONArray passes = new JSONArray();
+                StringBuilder fullText = new StringBuilder();
+                java.util.List<com.google.android.gms.tasks.Task<Text>> tasks = java.util.Arrays.asList(nameTask, bottomTask);
+                for (int i = 0; i < 2; i++) {
+                    CardImageProcessor.OcrVariant variant = variants.get(i);
+                    JSONObject pass = new JSONObject();
+                    pass.put("variant", variant.name); pass.put("region", variant.region);
+                    pass.put("width", variant.bitmap.getWidth()); pass.put("height", variant.bitmap.getHeight());
+                    JSONArray lines = new JSONArray();
+                    if (tasks.get(i).isSuccessful()) {
+                        Text text = tasks.get(i).getResult();
+                        pass.put("text", text.getText()); fullText.append(text.getText()).append('\n');
+                        for (Text.TextBlock block : text.getTextBlocks()) for (Text.Line line : block.getLines()) {
+                            JSONObject item = new JSONObject(); item.put("text", line.getText());
+                            Rect box = line.getBoundingBox();
+                            if (box != null) {
+                                item.put("x", box.left / (double) variant.bitmap.getWidth());
+                                item.put("y", box.top / (double) variant.bitmap.getHeight());
+                                item.put("w", box.width() / (double) variant.bitmap.getWidth());
+                                item.put("h", box.height() / (double) variant.bitmap.getHeight());
+                            }
+                            lines.put(item);
+                        }
+                    } else pass.put("text", "");
+                    pass.put("lines", lines); passes.put(pass);
+                }
+                output.put("requestId", requestId); output.put("ok", true);
+                output.put("passes", passes); output.put("text", fullText.toString());
+                output.put("orientation", 0); output.put("orientationConfident", false);
+                output.put("orientationSource", "Sensor/EXIF"); output.put("orientationMs", 0);
+                output.put("nameOcrMs", times[0]); output.put("bottomOcrMs", times[1]);
+                output.put("detailedOcrMs", elapsedMs(ocrStarted));
+                output.put("totalOcrMs", elapsedMs(started));
+                // Auto profile is classified from both ROIs by the existing JS classifier.
+            } catch (Exception error) {
+                try { output.put("ok", false); output.put("error", "ROI-Erkennung fehlgeschlagen"); } catch (Exception ignored) { }
+            } finally {
+                nameRecognizer.close(); bottomRecognizer.close();
+                for (CardImageProcessor.OcrVariant variant : variants) variant.bitmap.recycle();
+            }
+            sendJs("onNativeOcrResult", output);
+        });
+    }
+
     private void recognizeVariant(
             String requestId,
             JSONObject output,
@@ -1153,7 +1218,7 @@ public final class MainActivity extends Activity {
             connection.setRequestMethod("GET");
             connection.setRequestProperty("Accept", "application/json");
             connection.setRequestProperty("Cache-Control", "no-cache");
-            connection.setRequestProperty("User-Agent", "PokeFolio/0.17.0-dev5 Android");
+            connection.setRequestProperty("User-Agent", "PokeFolio/0.17.0-dev6 Android");
             status = connection.getResponseCode();
             InputStream stream = status >= 200 && status < 400
                     ? connection.getInputStream()
@@ -1496,6 +1561,9 @@ public final class MainActivity extends Activity {
         float confidence = data.getFloatExtra(CameraActivity.EXTRA_CROP_CONFIDENCE, 0f);
         boolean fallback = data.getBooleanExtra(CameraActivity.EXTRA_CROP_FALLBACK, false);
         output.put("normalized", true);
+        output.put("captureToCropMs", data.getLongExtra(CameraActivity.EXTRA_CAPTURE_TO_CROP_MS, 0));
+        output.put("cropProcessingMs", data.getLongExtra("cropProcessingMs", 0));
+        output.put("captureStartedEpochMs", data.getLongExtra("captureStartedEpochMs", 0));
         output.put("frameMode", "fixed");
         for (String key : new String[]{"fixedInside", "fixedSharp", "fixedStable", "fixedReady"})
             output.put(key, data.getBooleanExtra(key, false));
@@ -1528,8 +1596,8 @@ public final class MainActivity extends Activity {
         output.put("borderComplete", data.getBooleanExtra(
                 CameraActivity.EXTRA_CROP_BORDER_COMPLETE, false));
         output.put("reliable", !fallback && confidence >= 0.72f);
-        output.put("width", CardImageProcessor.NORMALIZED_WIDTH);
-        output.put("height", CardImageProcessor.NORMALIZED_HEIGHT);
+        output.put("width", data.getIntExtra("cropWidth", CardImageProcessor.NORMALIZED_WIDTH));
+        output.put("height", data.getIntExtra("cropHeight", CardImageProcessor.NORMALIZED_HEIGHT));
     }
 
     @Override

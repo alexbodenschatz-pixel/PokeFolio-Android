@@ -1,0 +1,42 @@
+{
+  "environment": "Windows development host / Node v24.19.0",
+  "scope": "Index only. No Android camera, OCR, disk cache, worker messaging or network timing.",
+  "cards": 18980,
+  "initMs": 57.2457,
+  "results": [
+    {
+      "name": "Kwaks",
+      "number": "206",
+      "set": "PAL",
+      "runs": 200,
+      "lookupMeanMs": 0.18712950000000014,
+      "rankingMeanMs": 0.13384199999999907
+    },
+    {
+      "name": "Britzigel",
+      "number": "073",
+      "set": "PAL",
+      "runs": 200,
+      "lookupMeanMs": 0.1682009999999994,
+      "rankingMeanMs": 0.5203169999999995
+    },
+    {
+      "name": "Alola-Kokowei",
+      "number": "094",
+      "set": "MEP",
+      "runs": 200,
+      "lookupMeanMs": 0.1641235000000026,
+      "rankingMeanMs": 0.6609689999999995
+    },
+    {
+      "name": "Britzgel",
+      "number": "073",
+      "set": "PAL",
+      "runs": 200,
+      "lookupMeanMs": 3.1348914999999984,
+      "rankingMeanMs": 0.5001894999999934
+    }
+  ],
+  "androidBeforeMeanMs": null,
+  "androidAfterMeanMs": null
+}

@@ -17,7 +17,7 @@ test('lädt die lokale Lernschicht getrennt vor der App', () => {
 });
 
 test('prüft lokale Referenzen nach Crop und vor dem Onlineabruf', () => {
-  const buildLocal = app.indexOf("learningScan = await buildLearningScan(prepared, hints, kind, 'single')");
+  const buildLocal = app.indexOf("const learningScanPromise = buildLearningScan(prepared, hints, kind, 'single')");
   const online = app.indexOf("lookup = await lookupCandidates(kind, hints, '', run)", buildLocal);
   assert.ok(buildLocal >= 0 && online > buildLocal);
   assert.match(app, /createLearningFingerprint\(prepared\.dataUrl, prepared\)/);

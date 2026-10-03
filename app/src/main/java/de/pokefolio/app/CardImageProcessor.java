@@ -553,6 +553,24 @@ public final class CardImageProcessor {
      * Four inexpensive whole-card probes used only to determine upright orientation. Full
      * regional OCR is intentionally not created here.
      */
+    /** Fast path: exactly one original-color crop per authoritative ROI. */
+    static List<OcrVariant> createFastNameBottomVariants(Bitmap source) {
+        List<OcrVariant> variants = new ArrayList<>();
+        float[][] zones = {{CardRoiLayout.NAME_TOP, CardRoiLayout.NAME_BOTTOM},
+                {CardRoiLayout.BOTTOM_TOP, CardRoiLayout.BOTTOM_BOTTOM}};
+        for (int i = 0; i < zones.length; i++) {
+            int left = Math.round(source.getWidth() * CardRoiLayout.LEFT);
+            int top = Math.round(source.getHeight() * zones[i][0]);
+            int width = Math.max(2, Math.round(source.getWidth() * (CardRoiLayout.RIGHT - CardRoiLayout.LEFT)));
+            int height = Math.max(2, Math.round(source.getHeight() * (zones[i][1] - zones[i][0])));
+            Bitmap crop = Bitmap.createBitmap(source, left, top, width, height);
+            Bitmap scaled = scaleDown(crop, 1500);
+            variants.add(new OcrVariant(i == 0 ? "kopfzeile-fast-0" : "unterkante-fast-0", scaled));
+            if (crop != scaled) crop.recycle();
+        }
+        return variants;
+    }
+
     public static List<OcrVariant> createOrientationOcrVariants(Bitmap source) {
         Bitmap base = scaleDown(source, 920);
         List<OcrVariant> variants = new ArrayList<>();

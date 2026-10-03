@@ -1,6 +1,6 @@
 package de.pokefolio.app;
 
-/** Acceptance geometry relative to the immovable target, never used as a destructive crop. */
+/** Acceptance geometry relative to the immovable target, also shared by the authoritative capture crop. */
 final class FixedCaptureFrame {
     private FixedCaptureFrame() { }
     static boolean containsCard(float[] xy) {
@@ -15,7 +15,8 @@ final class FixedCaptureFrame {
             int next = (i+1)%4;
             area += x*xy[2*next+1] - y*xy[2*next];
         }
-        return Math.abs(area)/2 >= .50 && maxX-minX >= .65f && maxY-minY >= .65f;
+        return Math.abs(area)/2 >= .65 && maxX-minX >= .82f && maxY-minY >= .82f
+                && minX <= .12f && minY <= .12f && maxX >= .88f && maxY >= .88f;
     }
     static boolean ready(boolean inside, boolean sharp, boolean stable, boolean text) {
         return inside && sharp && stable && text;

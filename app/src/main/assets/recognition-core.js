@@ -907,7 +907,12 @@
   }
 
   function extractHints(input) {
-    const passes = collectPasses(input);
+    const normalizeFooter = value => String(value || '')
+      .replace(/\b([A-Z]{3})[ -]?(DE|EN|FR|IT|ES|PT)\.?\b/gi, '$1 $2')
+      .replace(/\b([0-9O]{1,3})\s*[|／]\s*(\d{1,3})\b/g, (_, n, total) => n.replace(/O/g, '0') + '/' + total);
+    const passes = collectPasses(input).map(pass => ocrRegion(pass, pass.variant || '') === 'BOTTOM_METADATA'
+      ? {...pass, text: normalizeFooter(pass.text), lines: (pass.lines || []).map(line => ({...line, text: normalizeFooter(line.text)}))}
+      : pass);
     const textPasses = [];
     const lineEntries = [];
     const collectorVotes = new Map();
@@ -1100,6 +1105,10 @@
       const upper = text.toUpperCase();
       const footerUpper = normalizedLines.filter(line => line.region === 'BOTTOM_METADATA'
         || line.region === 'WHOLE_CARD' && line.y >= 0.84).map(line => line.text).join(' ').toUpperCase();
+      const printedSetPattern = /\b([A-Z]{2,5})\s+(DE|EN|FR|IT|ES|PT)\b/g;
+      for (const printed of footerUpper.matchAll(printedSetPattern)) {
+        addVote(setCodeVotes, printed[1], printed[1], 2.5);
+      }
       const setPattern = /\b((?:SV|SWSH|SM|XY|BW|HGSS|DP|PL|EX)[A-Z0-9-]{1,8})\b/g;
       let setMatch;
       while ((setMatch = setPattern.exec(footerUpper)) !== null) {

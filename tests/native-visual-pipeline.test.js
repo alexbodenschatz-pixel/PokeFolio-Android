@@ -112,8 +112,8 @@ test('bewahrt beim Kamera- und Konturzuschnitt Sicherheitsränder an allen Karte
   assert.match(processor, /safetyMarginForConfidence/);
   assert.match(processor, /factor = 1f \+ fraction \* 2f/);
   assert.doesNotMatch(camera, /cropPreviewRegionDetailed\(/);
-  assert.match(camera, /new RectF\(0, 0, oriented\.getWidth\(\), oriented\.getHeight\(\)\)/);
-  assert.match(camera, /prepareCapturedCardDetailed\(\s*region,\s*liveQuadInRegion,\s*capturedLiveConfidence\s*\)/);
+  assert.match(camera, /FixedFrameCrop.map/);
+  assert.doesNotMatch(camera, /prepareCapturedCardDetailed/);
   assert.match(styles, /\.photo-card img\{[^}]*object-fit:contain/);
   assert.match(styles, /\.bulk-result-image img\{[^}]*object-fit:contain/);
 });
@@ -134,8 +134,8 @@ test('entzerrt nur belastbare Vierpunktkonturen und diagnostiziert den finalen C
   assert.match(processor, /detection\.borderCompleteness >= 0\.50f/);
   assert.doesNotMatch(processor, /cropLikelyCardBounds\(scaled\)/);
   assert.match(processor, /safeCaptureQuad\(detection\.quad/);
-  assert.match(camera, /Karte näher an die Kamera halten/);
-  assert.match(camera, /Karte etwas weiter von der Kamera entfernen/);
+  assert.match(camera, /fixed-frame-camerax/);
+  assert.match(camera, /fileFactory.setUsingExifOrientation\(true\)/);
   assert.match(app, /fourCornersDetected/);
   assert.match(app, /normalizedAspectRatio/);
   assert.match(app, /correctPreparedOrientation/);

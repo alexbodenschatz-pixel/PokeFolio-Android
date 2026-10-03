@@ -22,6 +22,11 @@ public class FixedCaptureFrameTest {
     @Test public void missingNameOrFooterPreventsCapture() {
         assertFalse(FixedCaptureFrame.ready(true,true,true,false));
     }
+    @Test public void smallOrOffsetCardCannotMoveTextOutsideFixedRois() {
+        assertFalse(FixedCaptureFrame.containsCard(box(.15f,.15f,.70f)));
+        assertFalse(FixedCaptureFrame.containsCard(box(.01f,.01f,.83f)));
+        assertTrue(FixedCaptureFrame.containsCard(box(.06f,.06f,.88f)));
+    }
     @Test public void tinyBackgroundRectangleIsRejected() {
         assertFalse(FixedCaptureFrame.containsCard(box(.3f,.3f,.35f)));
         assertFalse(FixedCaptureFrame.containsCard(null));

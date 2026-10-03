@@ -109,7 +109,7 @@ test('starrer Live-Rahmen behält interne latest-only Stabilitätsprüfung ohne 
   const detector = fs.readFileSync(path.join(root, 'app/src/main/java/de/pokefolio/app/FastCardDetector.java'), 'utf8');
   assert.match(camera, /ImageAnalysis\.STRATEGY_KEEP_ONLY_LATEST/);
   assert.match(camera, /\.addUseCase\(imageAnalysis\)/);
-  assert.match(camera, /mapPreviewQuadToCrop/);
+  assert.match(camera, /FixedFrameCrop.map/);
   assert.doesNotMatch(overlay, /Path polygon/);
   assert.match(overlay, /setFixedFrameState/);
   assert.match(tracker, /SMOOTHING_ALPHA/);

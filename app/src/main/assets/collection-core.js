@@ -5,7 +5,8 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
 
-  const SCHEMA_VERSION = 6;
+  const SCHEMA_VERSION = 7;
+  const Catalog = typeof module === "object" && module.exports ? require("./catalog-core.js") : globalThis.PokeCatalog;
   const DEFAULT_VARIANT = 'normal';
 
   function text(value) {
@@ -206,6 +207,7 @@
     const normalized = {
       ...source,
       id,
+      canonicalSetId: Catalog.canonicalSetId({...source, language: normalizedLanguage(source), lang: normalizedLanguage(source)}),
       lang: normalizedLanguage(source),
       language: normalizedLanguage(source),
       printingVariant: normalizedVariant(source),
@@ -263,7 +265,8 @@
     let mergedCount = 0;
     input.forEach((raw, index) => {
       const entry = normalizeEntry(raw, index);
-      if (entry.quantity !== Number(raw && raw.quantity)
+      if (entry.canonicalSetId !== text(raw && raw.canonicalSetId)
+          || entry.quantity !== Number(raw && raw.quantity)
           || entry.collectionKey !== text(raw && raw.collectionKey)
           || entry.printingVariant !== text(raw && raw.printingVariant)
           || entry.lang !== text(raw && raw.lang)) {
@@ -375,7 +378,8 @@
     if (state.quantity === 'threeplus' && quantity < 3) return false;
     if (state.tcg && state.tcg !== 'all' && keyPart(card.tcg) !== keyPart(state.tcg)) return false;
     if (state.language && state.language !== 'all' && normalizedLanguage(card) !== state.language) return false;
-    if (state.set && state.set !== 'all' && normalizedSet(card) !== keyPart(state.set)) return false;
+    if (state.set && state.set !== 'all' && normalizedSet(card) !== keyPart(state.set)
+      && Catalog.canonicalSetId(card) !== Catalog.canonicalSetId({...card, set: '', setId: state.set})) return false;
     if (state.cardType && state.cardType !== 'all' && keyPart(card.cardType) !== keyPart(state.cardType)) return false;
     if (state.variant && state.variant !== 'all' && normalizedVariant(card) !== normalizedVariant({variant: state.variant})) return false;
     const hasGrading = Boolean(
@@ -431,7 +435,7 @@
     const collection = migrateCollection(rawCollection).collection;
     const groups = new Map();
     collection.forEach(card => {
-      const setKey = [keyPart(card.tcg), normalizedSet(card), normalizedLanguage(card)].join('|');
+      const setKey = Catalog.canonicalSetId(card);
       if (!groups.has(setKey)) {
         groups.set(setKey, {
           key: setKey,
@@ -462,7 +466,7 @@
       group.cards.push(card);
     });
     return [...groups.values()].map(group => {
-      const ownedNumbers = new Set(group.cards.map(card => normalizedNumber(card)).filter(Boolean)).size;
+      const ownedNumbers = new Set(group.cards.map(card => Catalog.normalizeNumber(card.number).split('/')[0]).filter(Boolean)).size;
       return {
         ...group,
         ownedNumbers,

@@ -11,10 +11,11 @@ test('live frame and label zones never use tracked corners for drawing', () => {
   assert.doesNotMatch(rois,/detectedQuad/);
   assert.match(drawing,/width \* 0\.78f/);
 });
-test('fixed guide is not a destructive post-capture crop', () => {
+test('fixed frame is the only post-capture geometry with CameraX mapping', () => {
   const camera = fs.readFileSync(path.join(root,'CameraActivity.java'),'utf8');
   assert.doesNotMatch(camera,/cropPreviewRegionDetailed\(/);
-  assert.match(camera,/new RectF\(0, 0, oriented\.getWidth\(\), oriented\.getHeight\(\)\)/);
-  assert.match(camera,/prepareCapturedCardDetailed/);
+  assert.match(camera,/FixedFrameCrop.map\(frame, capturePreviewTransform, captureTransform/);
+  assert.doesNotMatch(camera,/prepareCapturedCardDetailed/);
+  assert.match(camera,/FixedFrameCrop.extract/);
   assert.match(camera,/FixedCaptureFrame.ready/);
 });
