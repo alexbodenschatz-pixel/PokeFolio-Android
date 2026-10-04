@@ -92,7 +92,8 @@ test('footer OCR reads PALDE and the card number without promoting HP or damage'
     {variant:'kopfzeile-fast-0',region:'TOP_HEADER',text:'Britzigel\n170 KP'},
     {variant:'unterkante-fast-0',region:'BOTTOM_METADATA',text:'PALDE\nO73|193'},
     {variant:'mitteltext-0',region:'MIDDLE_TEXT',text:'220 Schaden'}]});
-  assert.equal(result.collectorNumbers[0].number,'73');
+  assert.equal(Catalog.normalizeNumber(result.collectorNumbers[0].number),'73');
+  assert.equal(result.collectorNumbers[0].normalizedValue,'073/193');
   assert.equal(result.pokemonSetCodes[0].value,'PAL');
   assert.equal(result.language,'de');
 });
@@ -122,16 +123,19 @@ test('real local PAL hit never invokes the remote provider', async () => {
   const result=await harness.search(hints('Kwaks','206/193','PAL'));
   assert.equal(result.candidates[0].id,'sv02-206'); assert.equal(harness.calls(),0);
 });
-test('MEP catalog miss tries exact retrieval before broader fallback and preserves explicit miss diagnostics', async () => {
+test('MEP catalog miss renders locally before deferred exact-only remote retrieval', async () => {
   const harness=searchHarness(index); const input=hints('Alola-Kokowei','094','MEP');
   const result=await harness.search(input);
-  assert.equal(harness.calls(),2); assert.equal(input.catalogMiss,true); assert.equal(input.remoteFallback,true);
+  assert.equal(harness.calls(),0); assert.equal(input.catalogMiss,true); assert.equal(input.remoteFallback,false);
+  await result.enrich();
+  assert.equal(harness.calls(),1); assert.equal(input.remoteFallback,true);
   assert.equal(result.earlyExit,'');
 });
 test('a remote result is reused locally on the next scan', async () => {
   const local=new Catalog.Index();
   const harness=searchHarness(local,[{id:'mep-094',name:'Alola-Kokowei',localId:'094',set:{id:'mep'}}]);
-  await harness.search(hints('Alola-Kokowei','094','MEP'));
+  const first = await harness.search(hints('Alola-Kokowei','094','MEP'));
+  await first.enrich();
   const second=await harness.search(hints('Alola-Kokowei','094','MEP'));
   assert.equal(harness.calls(),1); assert.equal(second.earlyExit,'LOCAL_SET_NUMBER');
 });

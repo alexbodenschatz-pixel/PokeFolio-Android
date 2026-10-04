@@ -2,10 +2,11 @@
   const names = typeof module === 'object' && module.exports
     ? require('./pokemon-names.js')
     : root.PokeNames;
-  const api = factory(names || {entries: []});
+  const catalog = typeof module === 'object' && module.exports ? require('./catalog-core.js') : root.PokeCatalog;
+  const api = factory(names || {entries: []}, catalog);
   if (typeof module === 'object' && module.exports) module.exports = api;
   root.PokeRecognition = api;
-})(typeof globalThis !== 'undefined' ? globalThis : this, function (PokemonNames) {
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (PokemonNames, Catalog) {
   'use strict';
 
   const bannedNameTerms = [
@@ -1269,7 +1270,7 @@
     const resolvedTitleIsLocalized = Boolean(localizedPokemonTitle.value)
       && resolvedTitle === localizedPokemonTitle.value;
 
-    return {
+    return Catalog.repairHints({
       rawText: completeText,
       fullCardName: derivePokemonIdentity(lineEntries.filter(line => line.region === 'WHOLE_CARD'),
         new Map(), dominantRotation).baseName || '',
@@ -1328,7 +1329,7 @@
         ? [...regulationVotes.values()].sort((left, right) => right.votes - left.votes)[0].value : '',
       stageHints: stageTerms,
       artistHint: artistMatch ? artistMatch[1].trim() : ''
-    };
+    });
   }
 
   function findYuGiOhSetCode(text) {

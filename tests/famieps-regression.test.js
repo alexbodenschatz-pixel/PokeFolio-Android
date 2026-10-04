@@ -65,10 +65,10 @@ test('Referenzbild in der Oberfläche versucht Alternative und zeigt erst danach
   const fs = require('node:fs');
   const vm = require('node:vm');
   const source = fs.readFileSync(require('node:path').join(__dirname, '../app/src/main/assets/app.js'), 'utf8');
-  const ctx = vm.createContext({window: {}});
+  const ctx = vm.createContext({window: {}, recognitionRun: 1, candidates: [], displayedRecognitionHints: null});
   vm.runInContext(source.slice(source.indexOf('window.candidateImageFailed ='), source.indexOf('window.openCandidateImage =')), ctx);
   let placeholder = false;
-  const image = {hidden: false, dataset: {referenceUrls: '["https://example.com/high.webp"]'},
+  const image = {hidden: false, dataset: {scanId: '1', referenceUrls: '["https://example.com/high.webp"]'},
     parentElement: {querySelector: () => ({classList: {add: () => { placeholder = true; }}})}};
   ctx.window.candidateImageFailed(image);
   assert.equal(image.src, 'https://example.com/high.webp');

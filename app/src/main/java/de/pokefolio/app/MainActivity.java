@@ -150,7 +150,7 @@ public final class MainActivity extends Activity {
         settings.setSupportMultipleWindows(false);
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
         settings.setMediaPlaybackRequiresUserGesture(false);
-        settings.setUserAgentString(settings.getUserAgentString() + " PokeFolio/0.17.0-dev7");
+        settings.setUserAgentString(settings.getUserAgentString() + " PokeFolio/0.17.0-dev8");
 
         webView.addJavascriptInterface(new NativeBridge(), "PokeNative");
         webView.setWebViewClient(new WebViewClient() {
@@ -287,6 +287,16 @@ public final class MainActivity extends Activity {
     }
 
     public final class NativeBridge {
+        @JavascriptInterface
+        public boolean isReferenceImageCached(String urlString) {
+            try {
+                URL url = new URL(urlString);
+                if (!"https".equalsIgnoreCase(url.getProtocol()) || !allowedImageHosts.contains(url.getHost().toLowerCase(Locale.ROOT))) return false;
+                File cached = referenceCacheFile(urlString);
+                return cached.isFile() && cached.length() > 0;
+            } catch (Exception error) { return false; }
+        }
+
         @JavascriptInterface
         public void recognizeCard(String dataUrl, String requestId, String language) {
             bridgeExecutor.execute(() -> startCardRecognition(
@@ -666,6 +676,15 @@ public final class MainActivity extends Activity {
         return bitmap;
     }
 
+    private File referenceCacheFile(String urlString) throws IOException {
+        try {
+            byte[] digest = java.security.MessageDigest.getInstance("SHA-256").digest(urlString.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            StringBuilder name = new StringBuilder();
+            for (byte b : digest) name.append(String.format(Locale.ROOT, "%02x", b & 255));
+            return new File(new File(getCacheDir(), "reference-artwork-v1"), name + ".png");
+        } catch (java.security.NoSuchAlgorithmException error) { throw new IOException(error); }
+    }
+
     private Bitmap downloadReferenceBitmap(String urlString) throws IOException {
         URL checked = new URL(urlString);
         if (!"https".equalsIgnoreCase(checked.getProtocol()) || !allowedImageHosts.contains(checked.getHost().toLowerCase(Locale.ROOT)))
@@ -673,13 +692,8 @@ public final class MainActivity extends Activity {
         synchronized (urlString.intern()) {
             File directory = new File(getCacheDir(), "reference-artwork-v1");
             if (!directory.exists()) directory.mkdirs();
-            String key;
-            try {
-                byte[] digest = java.security.MessageDigest.getInstance("SHA-256").digest(urlString.getBytes(java.nio.charset.StandardCharsets.UTF_8));
-                StringBuilder name = new StringBuilder(); for (byte b : digest) name.append(String.format(Locale.ROOT, "%02x", b & 255));
-                key = name.toString();
-            } catch (java.security.NoSuchAlgorithmException error) { throw new IOException(error); }
-            File cached = new File(directory, key + ".png");
+            File cached = referenceCacheFile(urlString);
+            String key = cached.getName().replace(".png", "");
             if (cached.isFile()) {
                 Bitmap bitmap = BitmapFactory.decodeFile(cached.getAbsolutePath());
                 if (bitmap != null) { cached.setLastModified(System.currentTimeMillis()); return bitmap; }
@@ -718,7 +732,7 @@ public final class MainActivity extends Activity {
             connection.setReadTimeout(8000);
             connection.setInstanceFollowRedirects(false);
             connection.setRequestProperty("Accept", "image/avif,image/webp,image/*");
-            connection.setRequestProperty("User-Agent", "PokeFolio/0.17.0-dev7 Android");
+            connection.setRequestProperty("User-Agent", "PokeFolio/0.17.0-dev8 Android");
             int status = connection.getResponseCode();
             if (status < 200 || status >= 300) {
                 throw new IOException("Kartenbild HTTP " + status);
@@ -1305,7 +1319,7 @@ public final class MainActivity extends Activity {
             connection.setRequestMethod("GET");
             connection.setRequestProperty("Accept", "application/json");
             connection.setRequestProperty("Cache-Control", "no-cache");
-            connection.setRequestProperty("User-Agent", "PokeFolio/0.17.0-dev7 Android");
+            connection.setRequestProperty("User-Agent", "PokeFolio/0.17.0-dev8 Android");
             status = connection.getResponseCode();
             InputStream stream = status >= 200 && status < 400
                     ? connection.getInputStream()

@@ -1,0 +1,68 @@
+{
+  "environment": "v24.19.0 Windows desktop",
+  "scope": "OCR text parsing + local lookup + ranking ONLY. Not Android capture/OCR/render latency.",
+  "runs": 200,
+  "warmup": 20,
+  "results": [
+    {
+      "version": "dev7",
+      "name": "Mega",
+      "parsedName": "Dragoran",
+      "hp": "",
+      "set": "OMEP",
+      "collector": "",
+      "variant": "",
+      "exact": 0,
+      "score": 0.39,
+      "medianMs": 1.3034000000000106,
+      "minMs": 1.241700000000037,
+      "maxMs": 1.8214000000000397,
+      "p95Ms": 1.5575999999999794
+    },
+    {
+      "version": "dev7",
+      "name": "Moruda",
+      "parsedName": "Moruda",
+      "hp": "140",
+      "set": "PBL",
+      "collector": "",
+      "variant": "mega",
+      "exact": 0,
+      "score": 0.73,
+      "medianMs": 1.1050000000000182,
+      "minMs": 1.0185999999999922,
+      "maxMs": 1.4851999999999634,
+      "p95Ms": 1.3152999999999793
+    },
+    {
+      "version": "dev8",
+      "name": "Mega",
+      "parsedName": "Mega-Dragoran ex",
+      "hp": "370",
+      "set": "MEP",
+      "collector": "091",
+      "variant": "mega",
+      "exact": 0,
+      "score": 0.37,
+      "medianMs": 1.3927999999999656,
+      "minMs": 1.2555999999999585,
+      "maxMs": 2.6989000000000942,
+      "p95Ms": 1.6674000000000433
+    },
+    {
+      "version": "dev8",
+      "name": "Moruda",
+      "parsedName": "Moruda",
+      "hp": "140",
+      "set": "PBL",
+      "collector": "039",
+      "variant": "",
+      "exact": 1,
+      "score": 0.98,
+      "medianMs": 0.2679000000000542,
+      "minMs": 0.25320000000010623,
+      "maxMs": 0.5890999999999167,
+      "p95Ms": 0.39180000000010295
+    }
+  ]
+}

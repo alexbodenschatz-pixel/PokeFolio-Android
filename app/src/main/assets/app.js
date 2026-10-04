@@ -345,6 +345,7 @@ function renderRecognitionFeatures(hints) {
     list.innerHTML = '';
     return;
   }
+  const artworkCandidate = candidates[candidateFocusIndex] || {};
   const identity = hints.pokemonIdentity || {};
   const collector = hints.collectorNumbers && hints.collectorNumbers[0];
   const setCode = hints.pokemonSetCodes && hints.pokemonSetCodes[0];
@@ -359,21 +360,28 @@ function renderRecognitionFeatures(hints) {
   const rows = [
     ['Frame Crop', crop.method === 'fixed-frame-camerax' ? 'OK · CameraX' : crop.method || 'Upload'],
     ['Raw Name', hints.ocrByRegion?.top || ''],
+    ['Parsed Name', hints.mainTitle || 'nicht erkannt'],
+    ['Catalog Identity', hints.finalCanonicalIdentity || 'keine'],
     ['Normalized Full Name', hints.parsedFullName?.normalizedFullName || hints.normalizedName || ''],
     ['Base Pokémon', hints.parsedFullName?.basePokemon || ''],
     ['Variant Prefix', hints.parsedFullName?.variantPrefix || 'keiner'],
     ['Variant Suffix', hints.parsedFullName?.variantSuffix || 'keiner'],
     ['Exact Set+Number Candidates', hints.exactSetNumberCandidates ?? 'offen'],
     ['Fuzzy Name Candidates', hints.fuzzyNameCandidates ?? 'offen'],
-    ['Artwork URL', candidates.some(card => card.imageSmall || card.imageLarge) ? 'vorhanden' : 'nicht vorhanden'],
-    ['Artwork Loaded', candidates.some(card => card.artworkLoaded) ? 'JA' : 'NEIN'],
+    ['Artwork Candidate ID', artworkCandidate.id || 'keiner'],
+    ['Artwork URL', artworkCandidate.artworkUrl || PokeReference.imageUrls(artworkCandidate)[0] || 'nicht vorhanden'],
+    ['Artwork Loaded', artworkCandidate.artworkLoaded ? 'JA' : 'NEIN'],
+    ['Artwork Error', artworkCandidate.artworkError || 'keiner'],
+    ['Cache Hit', artworkCandidate.cacheHit == null ? 'nicht gemessen' : artworkCandidate.cacheHit ? 'JA' : 'NEIN'],
+    ['Set Correction', hints.setCorrection || 'keine'],
+    ['OCR Identity', [hints.mainTitle, hints.pokemonSetCodes?.[0]?.value, hints.collectorNumbers?.[0]?.normalizedValue].filter(Boolean).join(' / ')],
     ['Local candidates', hints.localCandidates == null ? 'noch offen' : hints.localCandidates],
     ['Lokaler Katalog', `${hints.catalogSetCount || 0} Sets · ${hints.catalogSize || 0} deutsche Karten`],
     ['Catalog-Miss', hints.catalogMiss ? 'JA · gedruckte Identität fehlt' : 'NEIN'],
     ['Remote fallback', hints.remoteFallback ? 'JA' : 'NEIN'],
     ['Match stage', hints.matchStage || 'noch offen'],
     ...[['OCR Name', 'nameOcrMs'], ['OCR Bottom', 'bottomOcrMs'], ['Local Lookup', 'localLookupMs'],
-      ['Ranking', 'rankingMs'], ['Remote', 'remoteMs'], ['TOTAL FIRST RESULT', 'firstResultMs']]
+      ['Ranking', 'rankingMs'], ['Remote', 'remoteMs'], ['FAST PATH COMPUTE', 'fastPathComputeMs'], ['LOCAL RESULT READY', 'localResultReadyMs'], ['FIRST RESULT RENDERED', 'firstResultRenderedMs'], ['TOTAL BACKGROUND', 'backgroundMs'], ['Artwork Load', 'artworkMs'], ['TOTAL FIRST RESULT', 'firstResultMs']]
       .map(([label, key]) => [label, perf[key] == null ? 'nicht ausgeführt/gemessen' : Number(perf[key]).toFixed(1) + ' ms']),
     ['Schrift', hints.script || 'nicht sicher erkannt'],
     ['Lokalisierter Name', hints.localizedName || 'nicht erkannt'],
@@ -415,7 +423,7 @@ function renderRecognitionFeatures(hints) {
     ['OCR-Sicherheit Titel', Number.isFinite(titleConfidence) ? Math.round(titleConfidence * 100) + ' %' : '0 %'],
     ['OCR-Sicherheit Name', Number.isFinite(confidence) ? Math.round(confidence * 100) + ' %' : '0 %'],
     ['Number Confidence', collector ? Math.round(Math.min(1, collector.votes / 3) * 100) + ' %' : '0 %'],
-    ['Set Confidence', setCode ? Math.round(Math.min(1, setCode.votes / 3) * 100) + ' %' : '0 %'],
+    ['Set Confidence', setCode ? Math.round((setCode.confidence ?? Math.min(1, setCode.votes / 3)) * 100) + ' %' : '0 %'],
     ['Rotation', String(hints.appliedRotation || 0) + '°'],
     ['Rotationsquelle', hints.rotationSource || 'Sensor/EXIF'],
     ['Namensquelle', identity.source || 'keine validierte Pokémon-Kopfzeile'],
@@ -457,7 +465,19 @@ function renderRecognitionFeatures(hints) {
     ,['PERF · Gesamt', Number.isFinite(Number(perf.totalRecognitionMs || perf.totalMs))
       ? Number(perf.totalRecognitionMs || perf.totalMs).toFixed(1) + ' ms' : 'läuft']
   ];
-  list.innerHTML = rows.map(([name, value]) => `<dt>${esc(name)}</dt><dd>${esc(value)}</dd>`).join('');
+  const sections = {
+    HEADER: ['Raw Name', 'Parsed Name', 'Normalized Full Name', 'Base Pokémon', 'Variant Prefix', 'Variant Suffix', 'KP/HP'],
+    BOTTOM: ['Bottom OCR', 'Regulation Mark', 'Set', 'Set Correction', 'Set Confidence', 'Kartensprache', 'Collector Number'],
+    LOOKUP: ['Exact Set+Number Candidates', 'Catalog-Miss', 'Fuzzy Name Candidates', 'Candidate Retrieval', 'Remote fallback'],
+    IDENTITY: ['OCR Identity', 'Catalog Identity', 'Final Identity', 'Ranking-Scores'],
+    ARTWORK: ['Artwork Candidate ID', 'Artwork URL', 'Artwork Loaded', 'Cache Hit', 'Artwork Error'],
+    PERFORMANCE: ['PERF · Crop', 'OCR Name', 'OCR Bottom', 'PERF · Nummernparser', 'Local Lookup', 'Ranking', 'FAST PATH COMPUTE', 'LOCAL RESULT READY', 'FIRST RESULT RENDERED', 'Remote', 'Artwork Load', 'TOTAL BACKGROUND', 'PERF · Name-/Full-OCR-Fallback']
+  };
+  const selectedRows = new Set(Object.values(sections).flat());
+  const rowHtml = ([name, value]) => `<dt>${esc(name)}</dt><dd>${esc(value)}</dd>`;
+  list.innerHTML = Object.entries(sections).map(([section, names]) => `<dt><b>${section}</b></dt><dd></dd>`
+    + names.map(name => rows.find(row => row[0] === name)).filter(Boolean).map(rowHtml).join('')).join('')
+    + rows.filter(row => !selectedRows.has(row[0])).map(rowHtml).join('');
   details.hidden = false;
 }
 
@@ -1523,7 +1543,7 @@ function nativeBulkIdentifierOcr(dataUrl, language, profile = bulkSelectedTcg ||
 
 const primaryOcrCache = new Map();
 function nativePrimaryIdentifierOcr(dataUrl, language, profile = selectedTcg || 'auto') {
-  const key = language + ':' + profile + ':' + dataUrl;
+  const key = recognitionRun + ':NAME_BOTTOM:' + language + ':' + profile + ':' + dataUrl;
   if (primaryOcrCache.has(key)) return primaryOcrCache.get(key).then(result => ({...result, ocrCacheHit: true, nameOcrMs: 0, bottomOcrMs: 0, detailedOcrMs: 0, totalOcrMs: 0}));
   const result = nativePrimaryIdentifierOcrUncached(dataUrl, language, profile)
     .catch(error => { primaryOcrCache.delete(key); throw error; });
@@ -2060,7 +2080,7 @@ async function cachePokemonCards(cards) {
     localStorage.setItem('pf_catalog_cache_v1', JSON.stringify([...entries.values()].slice(-1500)));
   } catch (error) { console.warn('Katalogcache konnte nicht gespeichert werden', error.message); }
 }
-async function pokemonSearch(hints, manual = '', runToken) {
+async function pokemonSearch(hints, manual = '', runToken, remoteOnly = false) {
   const started = performance.now();
   const language = Number(hints.languageConfidence) >= .70 ? hints.language : activeRecognitionLanguage();
   const query = {...hints, language: language || 'de'};
@@ -2075,6 +2095,7 @@ async function pokemonSearch(hints, manual = '', runToken) {
   }));
   if (knownCards.length) await index.add(knownCards);
   const local = await index.lookup(query, manual);
+  if (runToken !== undefined && runToken !== recognitionRun) return {candidates: [], status: emptyLookupStatus()};
   hints.normalizedName = local.features.name;
   hints.parsedFullName = local.features.parsedName;
   hints.mainTitle = local.features.parsedName.displayName || hints.mainTitle;
@@ -2087,12 +2108,15 @@ async function pokemonSearch(hints, manual = '', runToken) {
   hints.catalogSetCount = PokeCatalogData.sets.length;
   hints.localSignatureComplete = Boolean(local.features.name && local.features.number && local.features.set);
   hints.catalogMiss = hints.localSignatureComplete
-    && !local.candidates.some(card => card.localMatchStage === 'set+number');
+    && local.exactCount === 0;
   if (hints.recognitionPerformance) { hints.recognitionPerformance.localLookupMs = local.lookupMs; hints.recognitionPerformance.rankingMs = local.rankingMs; }
   const result = candidates => ({candidates, earlyExit: local.strong ? 'LOCAL_SET_NUMBER' : '',
     diagnostics: {retrievalStrategy: 'LOCAL_INDEX/' + local.stage, beforeFiltering: candidates.length, afterFiltering: candidates.length},
     status: emptyLookupStatus()});
   if (local.candidates.some(card => card.confidence >= .70) && !hints.catalogMiss) return result(local.candidates);
+  if (!hints.catalogMiss) return result(local.candidates);
+  if (!remoteOnly) return {...result(local.candidates), enrich: () => pokemonSearch(hints, manual, runToken, true)};
+  if (runToken !== undefined && runToken !== recognitionRun) return result([]);
   hints.remoteFallback = true;
   if (hints.catalogMiss) setRecState('busy', `Karte erkannt – Datensatz ${local.features.code} ${local.features.number.padStart(3, '0')} im lokalen Katalog nicht vorhanden`,
     'Prüfe die vorhandene Online-Datenquelle. Erkannte Merkmale bleiben erhalten.');
@@ -2112,6 +2136,7 @@ async function pokemonSearch(hints, manual = '', runToken) {
   }
   if (urls.size) {
     const exactStatus = await Api.settleSearchVariants([...urls], nativeGetOnce, {attempts: 1, logger: message => console.warn(message)});
+    if (runToken !== undefined && runToken !== recognitionRun) return result([]);
     const exactCards = exactStatus.values.filter(response => response.value?.id).map(response => pokemonCardFromTcgdex(response.value, 'de'));
     if (exactCards.length) {
       await cachePokemonCards(exactCards);
@@ -2123,6 +2148,11 @@ async function pokemonSearch(hints, manual = '', runToken) {
         status: {primarySource: 'tcgdex-de', primary: exactStatus, fallback: emptyLookupStatus().fallback}};
     }
     urls.clear();
+  }
+  // A validated catalog miss gets exact requests only; fuzzy local cards are already available.
+  if (hints.catalogMiss) {
+    if (hints.recognitionPerformance) hints.recognitionPerformance.remoteMs = performance.now() - remoteStarted;
+    return result(local.candidates);
   }
   const title = manual || hints.mainTitle || hints.nameHints?.[0]?.value || '';
   if (title) urls.add('https://api.tcgdex.net/v2/de/cards?name=' + encodeURIComponent(title));
@@ -2138,7 +2168,7 @@ async function pokemonSearch(hints, manual = '', runToken) {
   await cachePokemonCards(remoteCards);
   const resolved = await index.lookup(query, manual);
   hints.matchStage = resolved.stage;
-  hints.catalogMiss = hints.localSignatureComplete && !resolved.candidates.some(card => card.localMatchStage === 'set+number');
+  hints.catalogMiss = hints.localSignatureComplete && resolved.exactCount === 0;
   if (hints.recognitionPerformance) hints.recognitionPerformance.remoteMs = performance.now() - remoteStarted;
   return {...result(resolved.candidates), earlyExit: resolved.strong ? 'REMOTE_SET_NUMBER' : '',
     status: {primarySource: 'tcgdex-de', primary: status, fallback: emptyLookupStatus().fallback}};
@@ -2246,7 +2276,8 @@ async function pokemonSearchRemote(hints, manual = '', runToken) {
       return details.cardType !== 'mismatch'
         && (details.collector === 'match' || details.name >= 0.82);
     }
-    const identity = hints.pokemonIdentity || {};
+    const artworkCandidate = candidates[candidateFocusIndex] || {};
+  const identity = hints.pokemonIdentity || {};
     if (identity.speciesId && (identity.reliable || identity.nameConfidence >= 0.88)) {
       return details.name >= 0.88
         && (identity.variantConfidence < 0.82 || details.variant !== 'mismatch')
@@ -2738,14 +2769,18 @@ function candidateBreakdown(candidate) {
 const artworkHydration = new Map();
 async function hydrateCandidateArtwork(candidate, run) {
   if (candidate.similarOnly || candidate.imageSmall || candidate.imageLarge || !candidate.localCatalog) return;
-  const key = (candidate.language || 'de') + ':' + candidate.id;
+  const key = run + ':' + (candidate.language || 'de') + ':' + candidate.id;
   if (artworkHydration.has(key)) return;
   artworkHydration.set(key, true);
+  while (artworkHydration.size > 80) artworkHydration.delete(artworkHydration.keys().next().value);
   const id = String(candidate.id).replace(/^tcgdex:/, '');
   if (!/^[a-zA-Z0-9.-]+$/.test(id)) return;
   try {
     for (const language of [...new Set([candidate.language || 'de', 'en'])]) {
-      const detail = await nativeGetOnce('https://api.tcgdex.net/v2/' + language + '/cards/' + encodeURIComponent(id));
+      let detail;
+      try { detail = await nativeGetOnce('https://api.tcgdex.net/v2/' + language + '/cards/' + encodeURIComponent(id)); }
+      catch (error) { continue; }
+      if (run !== recognitionRun) return;
       if (!detail.image) continue;
       candidate.imageSmall = tcgdexImageUrl(detail.image, 'low');
       candidate.imageLarge = tcgdexImageUrl(detail.image, 'high');
@@ -2759,8 +2794,14 @@ async function hydrateCandidateArtwork(candidate, run) {
   } catch (error) { console.warn('Optionales Referenzbild nicht verfügbar', candidate.id, error.message); }
 }
 window.candidateImageLoaded = image => {
+  if (String(recognitionRun) !== image.dataset.scanId) return;
   const card = candidates.find(card => String(card.id) === image.dataset.cardId);
-  if (card) card.artworkLoaded = true;
+  if (card) {
+    card.artworkState = {...card.artworkState, [image.currentSrc || image.src]: {loaded: true, error: ''}};
+    if (image.id === 'bestReferenceImg') { card.artworkLoaded = true; card.artworkError = ''; card.artworkUrl = image.currentSrc || image.src; }
+  }
+  if (image.id === 'bestReferenceImg' && displayedRecognitionHints?.recognitionPerformance && image.dataset.loadStarted) displayedRecognitionHints.recognitionPerformance.artworkMs = performance.now() - Number(image.dataset.loadStarted);
+  if (image.id === 'bestReferenceImg') $('#bestReferenceLanguage').textContent = 'Referenzbild: ' + languageLabel(card?.imageLanguage || card?.language || 'de');
   image.hidden = false;
   const placeholder = image.parentElement?.querySelector('.candidate-image-placeholder');
   if (placeholder) placeholder.classList.remove('visible');
@@ -2791,17 +2832,29 @@ function renderCandidates(showEmpty = false) {
   comparison.hidden = false;
   $('#scanReference').hidden = !previewUrls.has('front');
   if (previewUrls.has('front')) $('#comparisonScanImg').src = previewUrls.get('front');
-  const focusedImage = PokeReference.imageUrls(focused, true)[0] || '';
-  const focusedImageLanguage = focused.imageLanguage ? languageLabel(focused.imageLanguage) : '';
+  const catalogReferenceMissing = displayedRecognitionHints?.catalogMiss && focused.similarOnly;
+  const focusedImage = catalogReferenceMissing ? '' : PokeReference.imageUrls(focused, true)[0] || '';
+  const focusedImageLanguage = focusedImage ? languageLabel(focused.imageLanguage || focused.language || 'de') : '';
   $('#comparisonHeadline').textContent = `${focused.name || 'Karte'}${focused.number ? ' · ' + focused.number : ''}`;
+  $('#bestReferenceImg').dataset.scanId = String(recognitionRun);
   $('#bestReferenceImg').hidden = !focusedImage;
+  if (!focusedImage) {
+    $('#bestReferenceImg').removeAttribute('src');
+    $('#bestReferencePlaceholder').textContent = catalogReferenceMissing
+      ? 'Kein Referenzbild für ' + displayedRecognitionHints.pokemonSetCodes?.[0]?.value + ' ' + displayedRecognitionHints.pokemonNumber + ' verfügbar' : 'Referenzbild derzeit nicht verfügbar';
+  }
   $('#bestReferencePlaceholder').classList.toggle('visible', !focusedImage);
   if (focusedImage) {
     $('#bestReferenceImg').dataset.referenceUrls = JSON.stringify(PokeReference.imageUrls(focused, true).slice(1));
     $('#bestReferenceImg').onerror = () => window.candidateImageFailed($('#bestReferenceImg'));
     $('#bestReferenceImg').dataset.cardId = String(focused.id);
     $('#bestReferenceImg').onload = () => window.candidateImageLoaded($('#bestReferenceImg'));
-    $('#bestReferenceImg').src = focusedImage;
+    if ($('#bestReferenceImg').getAttribute('src') !== focusedImage) {
+      focused.artworkLoaded = false; focused.artworkError = ''; focused.artworkUrl = focusedImage;
+      focused.cacheHit = window.PokeNative?.isReferenceImageCached ? PokeNative.isReferenceImageCached(focusedImage) : null;
+      $('#bestReferenceImg').dataset.loadStarted = String(performance.now());
+      $('#bestReferenceImg').src = focusedImage;
+    }
   }
   $('#bestReferenceLanguage').textContent = focused.referenceLanguageFallback
     ? `Referenzbild: ${focusedImageLanguage || 'andere Sprache'}`
@@ -2836,7 +2889,7 @@ function renderCandidates(showEmpty = false) {
     const groupLabel = index === 0 || Boolean(candidate.similarOnly) !== Boolean(shown[index-1].similarOnly)
       ? `<b class="candidate-group-label">${candidate.similarOnly ? 'Ähnliche Karten' : 'Passende Karten'}</b>` : '';
     return `${groupLabel}<button type="button" class="candidate-thumb ${confidenceClass}${index === candidateFocusIndex ? ' active' : ''}" onclick="focusCandidate(${index})" aria-label="${esc(candidate.name)} mit ${confidence} Prozent anzeigen">
-      <span><span class="candidate-image-placeholder${imageUrl ? '' : ' visible'}"><b>Kartenbild</b><small>nicht verfügbar</small></span>${imageUrl ? `<img loading="lazy" decoding="async" src="${esc(imageUrl)}" data-reference-urls="${esc(JSON.stringify(PokeReference.imageUrls(candidate).slice(1)))}" alt="${esc(candidate.name)}" data-card-id="${esc(candidate.id)}" onload="candidateImageLoaded(this)" onerror="candidateImageFailed(this)">` : ''}</span>
+      <span><span class="candidate-image-placeholder${imageUrl ? '' : ' visible'}"><b>Kartenbild</b><small>nicht verfügbar</small></span>${imageUrl ? `<img loading="lazy" decoding="async" src="${esc(imageUrl)}" data-reference-urls="${esc(JSON.stringify(PokeReference.imageUrls(candidate).slice(1)))}" alt="${esc(candidate.name)}" data-card-id="${esc(candidate.id)}" data-scan-id="${recognitionRun}" onload="candidateImageLoaded(this)" onerror="candidateImageFailed(this)">` : ''}</span>
       <b>${esc(candidate.name || 'Unbekannt')}</b><small>${confidence} %</small>
     </button>`;
   }).join('');
@@ -2881,12 +2934,20 @@ window.rejectCandidate = index => {
 };
 
 window.candidateImageFailed = image => {
+  if (String(recognitionRun) !== image.dataset.scanId) return;
   const remaining = JSON.parse(image.dataset.referenceUrls || '[]');
   if (remaining.length) {
     image.dataset.referenceUrls = JSON.stringify(remaining.slice(1));
     image.src = remaining[0];
     return;
   }
+  const card = candidates.find(card => String(card.id) === image.dataset.cardId);
+  if (card) {
+    card.artworkState = {...card.artworkState, [image.currentSrc || image.src]: {loaded: false, error: 'nicht verfügbar'}};
+    if (image.id === 'bestReferenceImg') { card.artworkLoaded = false; card.artworkError = 'Referenzbild derzeit nicht verfügbar'; card.artworkUrl = image.currentSrc || image.src; }
+  }
+  if (image.id === 'bestReferenceImg') $('#bestReferenceLanguage').textContent = 'Referenzbild derzeit nicht verfügbar';
+  if (displayedRecognitionHints) renderRecognitionFeatures(displayedRecognitionHints);
   image.hidden = true;
   const placeholder = image.parentElement && image.parentElement.querySelector('.candidate-image-placeholder');
   if (placeholder) placeholder.classList.add('visible');
@@ -2937,6 +2998,7 @@ function renderBulkFeatures(hints) {
     list.innerHTML = '';
     return;
   }
+  const artworkCandidate = candidates[candidateFocusIndex] || {};
   const identity = hints.pokemonIdentity || {};
   const collector = hints.collectorNumbers && hints.collectorNumbers[0];
   const setCode = hints.pokemonSetCodes && hints.pokemonSetCodes[0];
@@ -2964,7 +3026,19 @@ function renderBulkFeatures(hints) {
     ['Collection Write', bulkPerformance ? Number(bulkPerformance.collectionWriteMs || 0).toFixed(1) + ' ms' : 'noch offen'],
     ['Gesamt', bulkPerformance ? Number(bulkPerformance.totalBulkRecognitionMs || 0).toFixed(1) + ' ms' : 'läuft']
   ];
-  list.innerHTML = rows.map(([name, value]) => `<dt>${esc(name)}</dt><dd>${esc(value)}</dd>`).join('');
+  const sections = {
+    HEADER: ['Raw Name', 'Parsed Name', 'Normalized Full Name', 'Base Pokémon', 'Variant Prefix', 'Variant Suffix', 'KP/HP'],
+    BOTTOM: ['Bottom OCR', 'Regulation Mark', 'Set', 'Set Correction', 'Set Confidence', 'Kartensprache', 'Collector Number'],
+    LOOKUP: ['Exact Set+Number Candidates', 'Catalog-Miss', 'Fuzzy Name Candidates', 'Candidate Retrieval', 'Remote fallback'],
+    IDENTITY: ['OCR Identity', 'Catalog Identity', 'Final Identity', 'Ranking-Scores'],
+    ARTWORK: ['Artwork Candidate ID', 'Artwork URL', 'Artwork Loaded', 'Cache Hit', 'Artwork Error'],
+    PERFORMANCE: ['PERF · Crop', 'OCR Name', 'OCR Bottom', 'PERF · Nummernparser', 'Local Lookup', 'Ranking', 'FAST PATH COMPUTE', 'LOCAL RESULT READY', 'FIRST RESULT RENDERED', 'Remote', 'Artwork Load', 'TOTAL BACKGROUND', 'PERF · Name-/Full-OCR-Fallback']
+  };
+  const selectedRows = new Set(Object.values(sections).flat());
+  const rowHtml = ([name, value]) => `<dt>${esc(name)}</dt><dd>${esc(value)}</dd>`;
+  list.innerHTML = Object.entries(sections).map(([section, names]) => `<dt><b>${section}</b></dt><dd></dd>`
+    + names.map(name => rows.find(row => row[0] === name)).filter(Boolean).map(rowHtml).join('')).join('')
+    + rows.filter(row => !selectedRows.has(row[0])).map(rowHtml).join('');
   box.hidden = false;
 }
 
@@ -3183,6 +3257,13 @@ function renderBulkCandidates() {
 }
 
 window.bulkCandidateImageFailed = image => {
+  const card = candidates.find(card => String(card.id) === image.dataset.cardId);
+  if (card) {
+    card.artworkState = {...card.artworkState, [image.currentSrc || image.src]: {loaded: false, error: 'nicht verfügbar'}};
+    if (image.id === 'bestReferenceImg') { card.artworkLoaded = false; card.artworkError = 'Referenzbild derzeit nicht verfügbar'; card.artworkUrl = image.currentSrc || image.src; }
+  }
+  if (image.id === 'bestReferenceImg') $('#bestReferenceLanguage').textContent = 'Referenzbild derzeit nicht verfügbar';
+  if (displayedRecognitionHints) renderRecognitionFeatures(displayedRecognitionHints);
   image.hidden = true;
   const placeholder = image.parentElement && image.parentElement.querySelector('.bulk-choice-placeholder');
   if (placeholder) placeholder.hidden = false;
@@ -3835,6 +3916,9 @@ async function runRecognition(manual = false) {
     'Rotation, Perspektive, Kontrast und Kartenmerkmale werden lokal ausgewertet.'
   );
   recognition = null;
+  recognizedRotation = 0;
+  candidateFocusIndex = 0;
+  primaryOcrCache.clear();
   renderIdentificationActions();
   learningScan = null;
   candidates = [];
@@ -3858,6 +3942,7 @@ async function runRecognition(manual = false) {
       }
     }
     if (sourceMetadata) prepared = {...prepared, sourceOrientation: sourceMetadata};
+    if (run !== recognitionRun) return null;
     displayNormalizedCard('front', prepared);
     const cropMs = performance.now() - cropStartedAt + Number(normalizedCapture && normalizedCapture.cropProcessingMs || 0);
     setRecState('busy', 'Richte Karte aus …', 'Bestimme die Kartenorientierung vor der Identifier-OCR.');
@@ -3878,6 +3963,7 @@ async function runRecognition(manual = false) {
     hints.priorityRoi = primaryOcr.priorityRoi || {
       x: 0, y: 0.80, width: 0.72, height: 0.185, source: 'normalizedCardImage'
     };
+    hints.scanId = run;
     const collectorNumberParseMs = performance.now() - parseStartedAt;
     let kind = primaryOcr.detectedProfile || Recognition.classifyTcg(hints, selectedTcg);
     if (selectedTcg && selectedTcg !== 'auto') kind = selectedTcg;
@@ -3891,7 +3977,7 @@ async function runRecognition(manual = false) {
         || Math.max(0, performance.now() - primaryOcrStartedAt - Number(primaryOcr.orientationMs || 0)),
       collectorNumberParseMs,
       exactLookupMs: null,
-      fallbackNameOcrMs: null,
+      fallbackNameOcrMs: 0,
       detailedOcrMs: 0,
       totalOcrMs: Number(primaryOcr.totalOcrMs) || 0,
       apiMs: null,
@@ -3922,20 +4008,28 @@ async function runRecognition(manual = false) {
       hints.recognitionPerformance.exactLookupMs = performance.now() - exactLookupStartedAt;
     }
 
-    if (lookup && lookup.candidates.length && run === recognitionRun) {
+    if (lookup && (lookup.candidates.length || hints.catalogMiss) && run === recognitionRun) {
       candidates = resolveCandidateVariants(lookup.candidates);
       candidateFocusIndex = 0;
       renderCandidates(false);
       hints.recognitionPerformance.firstResultMs = normalizedCapture && normalizedCapture.captureStartedEpochMs
         ? Date.now() - normalizedCapture.captureStartedEpochMs : performance.now() - recognitionStartedAt;
+      hints.recognitionPerformance.fastPathComputeMs = performance.now() - recognitionStartedAt;
+      hints.recognitionPerformance.localResultReadyMs = performance.now() - recognitionStartedAt;
       renderRecognitionFeatures(hints);
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        if (run !== recognitionRun) return;
+        hints.recognitionPerformance.firstResultRenderedMs = normalizedCapture?.captureStartedEpochMs
+          ? Date.now() - normalizedCapture.captureStartedEpochMs : performance.now() - recognitionStartedAt;
+        renderRecognitionFeatures(hints);
+      }));
       setRecState('busy', hints.catalogMiss ? `Karte erkannt – Datensatz ${hints.pokemonSetCodes?.[0]?.value || ''} ${String(hints.collectorNumbers?.[0]?.number || '').padStart(3,'0')} im lokalen Katalog nicht vorhanden` : 'Kandidaten gefunden',
         hints.catalogMiss ? 'Andere Ausgaben als mögliche Treffer; die gelesene Set-/Nummerkombination fehlt.' : 'Name, Set und Nummer sind verfügbar.');
     }
     if (run !== recognitionRun) return null;
     learningScan = await learningScanPromise;
     if (run !== recognitionRun) return null;
-    if (!exactPrimaryIdentity && !hints.localSignatureComplete) {
+    if (kind === 'pokemon' ? PokeCatalog.needsFullOcr(hints, exactPrimaryIdentity) : !exactPrimaryIdentity && !hints.localSignatureComplete) {
       setRecState('busy', 'Lese Kartenkopf …', 'Die Nummer war nicht eindeutig; Name und weitere Merkmale werden als Fallback gelesen.');
       const fallbackOcrStartedAt = performance.now();
       let fallbackAnalysis = await recognizeCardFeatures(
@@ -4012,7 +4106,7 @@ async function runRecognition(manual = false) {
       ? Number(lookup.diagnostics.afterFiltering)
       : (lookup.candidates || []).length;
     if (run !== recognitionRun) return null;
-    let foundCandidates = mergeLocalOfflineCandidates(lookup.candidates, learningScan);
+    let foundCandidates = hints.exactSetNumberCandidates > 0 ? lookup.candidates.slice() : mergeLocalOfflineCandidates(lookup.candidates, learningScan);
     foundCandidates = applyLocalLearning(foundCandidates, learningScan);
     if (kind === 'pokemon') foundCandidates = foundCandidates.map(card => PokeCatalog.guardCandidate(card, hints));
     foundCandidates = resolveCandidateVariants(foundCandidates);
@@ -4023,8 +4117,7 @@ async function runRecognition(manual = false) {
       .filter(candidate => candidate.confidence >= 0.45);
     hints.bestArtworkScore = foundCandidates.length && Number.isFinite(Number(foundCandidates[0].artworkScore))
       ? Number(foundCandidates[0].artworkScore) : null;
-    hints.finalCanonicalIdentity = foundCandidates.length
-      ? foundCandidates[0].canonicalIdentity || foundCandidates[0].name || '' : '';
+    hints.finalCanonicalIdentity = PokeCatalog.finalIdentity(foundCandidates);
     if (!hints.localizedName && foundCandidates.length) {
       hints.localizedName = foundCandidates[0].localizedName || '';
     }
@@ -4047,14 +4140,31 @@ async function runRecognition(manual = false) {
     debugRecognitionCandidates('FinalRanking', foundCandidates);
     candidates = foundCandidates;
     candidateFocusIndex = 0;
-    recordScanHistory(candidates.length ? 'MATCHES' : 'NO_MATCH', candidates[0], hints);
+    recordScanHistory(hints.finalCanonicalIdentity ? 'MATCHES' : 'NO_MATCH', hints.finalCanonicalIdentity ? candidates[0] : null, hints);
     renderCandidates(!candidates.length);
+    if (lookup.enrich) {
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        if (run !== recognitionRun) return;
+        lookup.enrich().then(remote => {
+          if (run !== recognitionRun) return;
+          if (!hints.catalogMiss && remote.candidates?.length) {
+            candidates = remote.candidates; candidateFocusIndex = 0;
+            hints.finalCanonicalIdentity = PokeCatalog.finalIdentity(candidates);
+            renderCandidates(false);
+            setRecState('ok', 'Kartendaten gefunden', hints.finalCanonicalIdentity);
+          } else setRecState('warn', 'Karte erkannt – Datensatz ' + hints.pokemonSetCodes?.[0]?.value + ' ' + hints.pokemonNumber + ' im Katalog nicht vorhanden', 'Ähnliche Karten sind keine bestätigte Identität.');
+          hints.recognitionPerformance.backgroundMs = performance.now() - recognitionStartedAt;
+          renderRecognitionFeatures(hints);
+        }).catch(error => { if (run === recognitionRun) setRecState('warn', 'Lokaler Katalog-Miss', 'Online-Prüfung nicht verfügbar; erkannte Merkmale bleiben erhalten.'); });
+      }));
+    }
     if (kind === 'pokemon' && candidates.some(card => !card.similarOnly)) {
       const textCandidates = candidates;
       enrichWithVisualSimilarity(textCandidates, prepared, run).then(updated => {
         if (run !== recognitionRun || candidates !== textCandidates) return;
         candidates = textCandidates.map(card => PokeCatalog.guardCandidate(updated.find(item => item.id === card.id) || card, hints));
         hints.bestArtworkScore = candidates[0]?.artworkScore ?? null;
+        hints.recognitionPerformance.backgroundMs = performance.now() - recognitionStartedAt;
         renderCandidates(false); renderRecognitionFeatures(hints);
       }).catch(error => console.warn('Optionaler Bildvergleich', error.message));
     }
@@ -4084,7 +4194,7 @@ async function runRecognition(manual = false) {
     if (hints.catalogMiss) {
       recognition = null;
       setRecState('warn', `Karte erkannt – Datensatz ${hints.pokemonSetCodes?.[0]?.value || ''} ${String(hints.collectorNumbers?.[0]?.number || '').padStart(3,'0')} im lokalen Katalog nicht vorhanden`,
-        'Die gelesene Kombination aus Name, Set und Nummer fehlt auch nach dem Online-Lookup. Andere Ausgaben sind nur mögliche Alternativen.');
+        'Die gelesene Kombination fehlt lokal. Die Online-Prüfung läuft unabhängig; andere Ausgaben sind nur ähnliche Karten.');
       return best;
     }
     const decision = Recognition.confidenceDecision(candidates);
@@ -4154,7 +4264,7 @@ $('#manualSearch').onclick = async () => {
     }
     const lookup = await lookupCandidates(kind, hints, query, run);
     if (run !== recognitionRun) return;
-    let foundCandidates = mergeLocalOfflineCandidates(lookup.candidates, learningScan);
+    let foundCandidates = hints.exactSetNumberCandidates > 0 ? lookup.candidates.slice() : mergeLocalOfflineCandidates(lookup.candidates, learningScan);
     const frontFile = $('#front').files[0];
     if (frontFile && !hasExactStructuredIdentity(kind, foundCandidates, lookup)
       && foundCandidates.some(candidate => candidate.imageSmall || candidate.imageLarge)) {
@@ -5206,6 +5316,13 @@ function renderCollectionCard(card) {
 }
 
 window.collectionImageFailed = image => {
+  const card = candidates.find(card => String(card.id) === image.dataset.cardId);
+  if (card) {
+    card.artworkState = {...card.artworkState, [image.currentSrc || image.src]: {loaded: false, error: 'nicht verfügbar'}};
+    if (image.id === 'bestReferenceImg') { card.artworkLoaded = false; card.artworkError = 'Referenzbild derzeit nicht verfügbar'; card.artworkUrl = image.currentSrc || image.src; }
+  }
+  if (image.id === 'bestReferenceImg') $('#bestReferenceLanguage').textContent = 'Referenzbild derzeit nicht verfügbar';
+  if (displayedRecognitionHints) renderRecognitionFeatures(displayedRecognitionHints);
   image.hidden = true;
   const placeholder = document.createElement('span');
   placeholder.className = 'collection-image-placeholder';

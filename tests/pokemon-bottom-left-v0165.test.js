@@ -99,7 +99,7 @@ test('native ROI ist fokussiert und der normale Scan führt Exact Lookup vor Ful
   const flow = app.slice(app.indexOf('async function runRecognition'), app.indexOf("$('#recognize').onclick"));
   assert.ok(flow.indexOf('nativePrimaryIdentifierOcr') < flow.indexOf('recognizeCardFeatures'));
   assert.ok(flow.indexOf('lookupCandidates(kind, hints') < flow.indexOf('recognizeCardFeatures'));
-  assert.match(flow, /if \(!exactPrimaryIdentity && !hints\.localSignatureComplete\)/);
+  assert.match(flow, /PokeCatalog\.needsFullOcr\(hints, exactPrimaryIdentity\)/);
   assert.match(flow, /PRIMARY_IDENTIFIER_EARLY_EXIT/);
 });
 
